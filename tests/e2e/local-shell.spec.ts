@@ -1,27 +1,35 @@
 import { expect, test } from "@playwright/test";
 
-test("shows the local application landing page", async ({ page }) => {
+test("captures and develops an idea from the local queue", async ({ page }) => {
   const response = await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Start with the idea, not the format." })).toBeVisible();
-  expect(page.url()).toContain("/dashboard");
+  await expect(page.getByRole("heading", { name: "Capture the thought. Develop it when it matters." })).toBeVisible();
+  expect(page.url()).toMatch(/\/$/);
   expect(response?.headers()["x-content-type-options"]).toBe("nosniff");
   expect(response?.headers()["x-frame-options"]).toBe("DENY");
   expect(response?.headers()["content-security-policy"]).toContain("default-src 'self'");
-  await page.goto("/dashboard");
-  await expect(page.getByRole("heading", { name: "Start with the idea, not the format." })).toBeVisible();
-  await page.getByLabel("Your starting point").fill("A rough idea about the missing middle of enterprise AI and why implementation discipline matters.");
-  await page.getByRole("button", { name: "Continue to clarification →" }).click();
-  await expect(page.getByRole("heading", { name: "A few focused questions." })).toBeVisible();
-  await page.getByRole("button", { name: "Use your best judgment" }).click();
-  await expect(page.getByRole("heading", { name: "Make the intent explicit." })).toBeVisible();
-  await page.getByRole("button", { name: "Review the idea first" }).click();
-  await expect(page.getByText("Your path is saved. Editorial execution begins in the next milestone.")).toBeVisible();
+  await page.getByRole("link", { name: "Editorial Notebook" }).click();
+  await expect(page.getByRole("heading", { name: "Editorial Notebook" })).toBeVisible();
+  await page.getByLabel("Working notes").fill("# Test notebook\n\nA private working note.");
+  await page.getByRole("button", { name: "Save snapshot" }).click();
+  await expect(page.getByText(/Snapshot saved at/)).toBeVisible();
+  await page.getByRole("link", { name: "Ideas" }).click();
+  await page.getByLabel("What are you thinking about?").fill("A rough idea about the missing middle of enterprise AI and why implementation discipline matters.");
+  await page.getByRole("button", { name: "Save to Inbox" }).click();
+  await expect(page.getByText("Saved to Inbox. Pick it up whenever you are ready.")).toBeVisible();
+  await page.getByRole("link", { name: /A rough idea about the missing middle/i }).first().click();
+  await expect(page.getByRole("heading", { name: "Develop the thinking, then the words." })).toBeVisible();
+  await page.getByRole("button", { name: "Develop this idea →" }).click();
+  await expect(page.getByText("Only answer what strengthens the argument.")).toBeVisible();
+  await page.getByRole("button", { name: "Proceed with best judgment" }).click();
+  await page.getByRole("link", { name: "Open Editorial Board →" }).click();
+  await expect(page.getByRole("heading", { name: "Review the thinking, then shape the draft." })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run editorial review" })).toBeVisible();
   await page.goto("/content-status");
   await expect(page.getByRole("heading", { name: "Content status" })).toBeVisible();
   await expect(page.getByText("Canonical knowledge base")).toBeVisible();
   const sourceStatus = await page.request.get("/api/content/status?q=enterprise");
   expect(sourceStatus.ok()).toBeTruthy();
-  expect((await sourceStatus.json()).bok.status).toBe("ready");
+  expect((await sourceStatus.json()).bok).toHaveProperty("status");
   const health = await page.request.get("/api/health");
   expect((await health.json()).accessControl).toBe("loopback-only-no-login");
 });

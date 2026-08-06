@@ -14,7 +14,7 @@ function fixture() {
   fs.mkdirSync(voiceDirectory);
   fs.writeFileSync(bok, "# Editorial strategy\n\nUse a clear point of view.\n\n## Audience\n\nWrite for thoughtful operators.");
   fs.writeFileSync(path.join(voiceDirectory, "SKILL.md"), "# Voice\n\nNatural and direct.");
-  return { root, bok, voiceDirectory, config: { appBaseUrl: "http://127.0.0.1:3100", databasePath: path.join(root, "board.sqlite"), bokPath: bok, voiceSkillPath: voiceDirectory } };
+  return { root, bok, voiceDirectory, config: { appBaseUrl: "http://127.0.0.1:3100", databasePath: path.join(root, "board.sqlite"), bokPath: bok, voiceSkillPath: voiceDirectory, editorialNotebookPath: path.join(root, "EDITORIAL_NOTEBOOK.md") } };
 }
 
 afterEach(() => { for (const directory of temporaryDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true }); });

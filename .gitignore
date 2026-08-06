@@ -9,5 +9,6 @@ data/
 .env
 .env.*
 content/knowledge/
+content/editorial-notebook/
 AGENTS.md
 CLAUDE.md

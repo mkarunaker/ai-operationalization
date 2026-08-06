@@ -25,6 +25,9 @@ describe("foundation migration", () => {
     expect(tables).toContain("model_calls");
     expect(tables).toContain("retrieval_records");
     expect(tables).toContain("knowledge_search");
+    expect(tables).toContain("themes");
+    expect(tables).toContain("idea_themes");
+    expect(tables).toContain("research_items");
     expect(fs.statSync(path.join(directory, "test.sqlite")).mode & 0o777).toBe(0o600);
   });
 });

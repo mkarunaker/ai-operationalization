@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { QueueClient } from "./queue-client";
 
 export default function HomePage() {
-  redirect("/dashboard");
+  return <QueueClient />;
 }

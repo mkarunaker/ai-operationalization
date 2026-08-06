@@ -5,6 +5,7 @@ export type AppConfig = {
   databasePath: string;
   bokPath: string;
   voiceSkillPath: string;
+  editorialNotebookPath: string;
 };
 
 function resolveLocalPath(value: string): string {
@@ -25,5 +26,6 @@ export function getAppConfig(): AppConfig {
       process.env.EAIO_BOK_PATH ?? "./content/knowledge/EAIO_Canonical_Knowledge_Base.md",
     ),
     voiceSkillPath: expandHomePath(process.env.KK_VOICE_SKILL_PATH ?? "~/.codex/skills/kk-spoken-voice"),
+    editorialNotebookPath: resolveLocalPath(process.env.EDITORIAL_NOTEBOOK_PATH ?? "./content/editorial-notebook/EDITORIAL_NOTEBOOK.md"),
   };
 }

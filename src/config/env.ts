@@ -5,8 +5,6 @@ export type AppConfig = {
   databasePath: string;
   bokPath: string;
   voiceSkillPath: string;
-  localAuthPassword?: string;
-  sessionSecret?: string;
 };
 
 function resolveLocalPath(value: string): string {
@@ -21,7 +19,5 @@ export function getAppConfig(): AppConfig {
       process.env.EAIO_BOK_PATH ?? "./content/knowledge/EAIO_Canonical_Knowledge_Base.md",
     ),
     voiceSkillPath: process.env.KK_VOICE_SKILL_PATH ?? "~/.codex/skills/kk-spoken-voice",
-    localAuthPassword: process.env.LOCAL_AUTH_PASSWORD,
-    sessionSecret: process.env.APP_SESSION_SECRET,
   };
 }

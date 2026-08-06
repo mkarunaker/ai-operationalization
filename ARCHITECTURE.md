@@ -35,7 +35,7 @@ Proposed MVP architecture. This document is based exclusively on `AI_Editorial_B
 
 ### Authentication and testing
 
-- Local-only single-user authentication with a locally configured passphrase and persistent session. Do not add OAuth or managed identity integration.
+- Local-only loopback access with no application login by explicit user decision. Do not add OAuth, managed identity integration, or network exposure.
 - Bind the application to the loopback interface by default so it is not exposed to the local network unintentionally.
 - Vitest for unit, schema, service, and adapter-contract tests.
 - Playwright for basic end-to-end flows.
@@ -189,7 +189,7 @@ Unsupported parameters must be removed or translated inside the adapter. Domain 
 
 - Store only environment-variable or secrets-manager references to API keys, never plaintext keys in application tables.
 - Enforce authorization at application-service and route boundaries.
-- Apply CSRF protection where cookie-authenticated mutation routes require it.
+- Reintroduce CSRF protection before adding cookie-authenticated mutation routes in any future shared or hosted deployment.
 - Validate and limit all user content and external-file reads.
 - Restrict configured content loaders to explicit paths and read-only operations.
 - Route content according to sensitivity and provider privacy policy before making a call.

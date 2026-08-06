@@ -1,8 +1,6 @@
 import Link from "next/link";
-import { requireLocalSession } from "@/auth/session";
 
-export default async function DashboardPage() {
-  await requireLocalSession();
+export default function DashboardPage() {
   return (
     <main>
       <h1>AI Editorial Board</h1>

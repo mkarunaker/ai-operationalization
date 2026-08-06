@@ -1,11 +1,9 @@
 # Security
 
-- The app binds to `127.0.0.1` by default.
-- Local authentication uses a passphrase and signed, HTTP-only session cookie.
-- `APP_SESSION_SECRET` and `LOCAL_AUTH_PASSWORD` belong only in `.env.local`.
+- The app binds to `127.0.0.1` by default and intentionally has no login for the local-only MVP.
+- Anyone with access to the same macOS user account can open the application while it is running. Do not expose it to the local network or host it without reintroducing authentication.
 - Provider keys are optional and must never enter source control or database records.
 - BOK, voice skill, prompts, and agent instructions are read-only filesystem sources.
-- Login attempts are rate limited locally to five per minute.
 - Security headers set CSP, no-referrer, no-sniff, deny-frame, and disabled browser-device permissions.
 - SQLite database files are created with owner-only permissions.
 - `npm run security:secrets` scans source and documentation for common committed-secret patterns.

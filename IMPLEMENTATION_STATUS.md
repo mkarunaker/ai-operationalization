@@ -22,11 +22,11 @@ Milestone 1 is complete. The application foundation is implemented and validated
 - Converted the specification phases into eight concrete milestones with acceptance criteria.
 - Defined the detailed objective, planned files/components, acceptance criteria, and non-goals for Milestone 1.
 - Implemented the local Next.js and TypeScript scaffold with loopback-only development/start commands.
-- Added local passphrase authentication, signed HTTP-only sessions, a protected dashboard, and a readiness endpoint. The application uses loopback port 3100 by default to avoid the user's other local services on port 3000.
+- Added a direct local dashboard and readiness endpoint. By explicit user decision, the application has no login and uses loopback port 3100 by default to avoid the user's other local services on port 3000.
 - Added the complete SQLite foundation schema, FTS5 table, SQL migration runner, owner-only database permissions, and migration tests.
 - Added all eight role definitions, model-provider contract, provider registry, deterministic mock adapter, structured-output schema, and partial-failure review state machine.
 - Added shared/role prompt files, prompt-injection boundary helpers, suspicious-context detection, and injection-defense tests.
-- Added local login rate limiting, response security headers, secret-pattern scanning, dependency audit commands, and an isolated Playwright smoke test.
+- Added response security headers, secret-pattern scanning, dependency audit commands, prompt-injection defenses, and an isolated Playwright smoke test.
 - Added required repository documentation and ADR 0001 for the native SQLite decision.
 
 ## Milestone status
@@ -58,10 +58,10 @@ Milestone 1 is complete. The application foundation is implemented and validated
 - Confirmed `AI_Editorial_Board_Spec.md` retained its pre-checkpoint modification timestamp and size.
 - `npm run db:validate` passed: one migration file validated.
 - `npm run db:migrate` passed: the local SQLite schema applied and is current.
-- `npm test` passed: seven test files and eleven tests passed, including local passphrase, signed-session tampering, rate-limit, prompt-injection, provider-contract, structured-output, job-state, and migration coverage.
+- `npm test` passed: five test files and eight tests passed, covering prompt-injection, provider-contract, structured-output, job-state, and migration behavior for the direct-access implementation.
 - `npm run lint`, `npm run typecheck`, and `npm run build` passed.
 - `npm run content:index` passed its Milestone 1 source-path validation: BOK and voice skill found.
-- `npm run security:secrets` passed: 66 source and documentation files scanned with no secret-pattern findings.
+- `npm run security:secrets` passed: 59 source and documentation files scanned with no secret-pattern findings.
 - `npm run security:audit` passed: zero dependency vulnerabilities reported across runtime and development tooling.
 - `npm run test:e2e` passed: the isolated local browser smoke test passed on loopback port 3100.
 
@@ -72,7 +72,7 @@ Milestone 1 is complete. The application foundation is implemented and validated
 - Repository structure proposed.
 - Milestones and acceptance criteria defined.
 - Milestone 1 scope and checkpoint defined.
-- Local application scaffold, auth boundary, schema, model abstraction, test suite, security baseline, and documentation implemented.
+- Local application scaffold, direct-access boundary, schema, model abstraction, test suite, security baseline, and documentation implemented.
 
 ## Incomplete
 
@@ -82,7 +82,7 @@ Milestone 1 is complete. The application foundation is implemented and validated
 
 ## Technical debt
 
-- Login rate limiting is process-local and resets when the application restarts. This is appropriate for the local single-user MVP but should be revisited if the app is ever shared or network-exposed.
+- The app intentionally has no login. Anyone using the same macOS user account can open it while it is running. Authentication must be restored before network exposure, hosting, or multi-user access.
 - Secret-pattern scanning is a lightweight baseline, not a replacement for a dedicated SAST or secret-scanning service.
 - Dependency audit reports the advisory state at validation time; it should run again whenever dependencies change.
 - The prompt-injection detector catches known text patterns and enforces a trusted/untrusted prompt boundary. It is defense-in-depth, not proof that a model can never be manipulated; later model-call workflows must use this boundary for every request.

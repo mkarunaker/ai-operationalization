@@ -8,11 +8,12 @@ Milestone 1 foundation is implemented. Conversational intake, BOK indexing, and 
 
 ## Local setup
 
-1. Create an untracked `.env.local` using [ENVIRONMENT.example.md](ENVIRONMENT.example.md), then set `APP_SESSION_SECRET` and `LOCAL_AUTH_PASSWORD`.
-2. Run `npm install`.
-3. Run `npm run db:migrate`.
-4. Run `npm run dev`.
-5. Open `http://127.0.0.1:3100`.
+1. Run `npm install`.
+2. Run `npm run db:migrate`.
+3. Run `npm run dev`.
+4. Open `http://127.0.0.1:3100`.
+
+No password or session secret is required for this local-only MVP. Keep the application bound to `127.0.0.1`; anyone with access to your Mac user account can open it while it is running.
 
 Standard validation requires no API keys:
 

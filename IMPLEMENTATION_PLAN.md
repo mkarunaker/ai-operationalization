@@ -64,7 +64,7 @@ Create a runnable, documented, secure foundation with a complete relational sche
 
 - Project configuration: `package.json`, lockfile, TypeScript, Next.js, lint, formatting, Vitest, and Playwright configuration.
 - Local infrastructure: configurable SQLite database path, FTS5 capability validation, and database environment examples. Docker is not required.
-- Application shell: root layout, authenticated route boundary, placeholder dashboard, health/readiness endpoint, and persisted in-process job-state foundation.
+- Application shell: root layout, direct local dashboard, health/readiness endpoint, and persisted in-process job-state foundation.
 - Domain modules: entity identifiers, shared status types, errors, role catalog, and repository/application ports.
 - Persistence: schema definitions, migrations, indexes, transaction boundary, and repository contracts for all Section 13 entities.
 - Provider layer: normalized request/response types, provider interface, provider registry contract, error taxonomy, usage normalization, and deterministic mock adapter.
@@ -79,14 +79,14 @@ Create a runnable, documented, secure foundation with a complete relational sche
 - A local SQLite database can be created and all migrations apply to an empty database without Docker or a host database server.
 - The schema represents every required Section 13 entity, including intake history, brief versions, draft lineage, model pricing, call usage, retrieval records, publication data, feedback, and retrospectives.
 - Database constraints, relational indexes, and FTS5 indexes cover core foreign keys, unique versions, active role configuration, review status, and retrieval queries.
-- The web shell exposes an authenticated application boundary and a health/readiness response without hard-coded credentials.
+- The web shell exposes direct loopback-only local access and a health/readiness response without any credentials or secrets.
 - All eight stable roles exist as role data or typed seed definitions without any vendor/model binding.
 - Application and domain code compile without importing vendor SDKs.
 - The normalized provider interface covers structured output, reasoning effort, token categories, latency, provider IDs, and raw usage.
 - The deterministic mock adapter satisfies provider contract tests and enables tests without API keys.
 - Prompt files exist for every role and shared policy; the external voice skill is not copied into the repository.
 - Job-state tests prove that one failed reviewer does not invalidate successful reviewer results.
-- Local authentication has no hard-coded credentials, rate limits failed attempts, uses signed HTTP-only cookies, and binds the app to loopback by default.
+- The app binds to loopback by default and documents that it must not be network-exposed without reintroducing authentication.
 - Security headers, owner-only SQLite file permissions, secret-pattern scanning, dependency advisory scanning, and prompt-injection boundary tests pass.
 - Untrusted input is never merged into a trusted role prompt or permitted to control tools, configuration, budgets, or provider selection.
 - `npm run lint`, `npm run typecheck`, `npm test`, and migration validation pass.
@@ -126,7 +126,7 @@ Implement idea capture, clarification, Content Intent Brief creation and editing
 
 ### Acceptance criteria
 
-- The first authenticated screen asks **What are you thinking about?**
+- The first application screen asks **What are you thinking about?**
 - Bullets, rough notes, incomplete thoughts, transcripts, links, and existing drafts are accepted without mandatory metadata.
 - The Intake role asks at most five focused questions in one generation call where practical.
 - Questions already answered by input or retrievable sources are excluded.
@@ -233,7 +233,7 @@ Close cross-cutting security, privacy, operational, accessibility, documentation
 - No embeddings or vector database unless later retrieval evidence justifies them.
 - Node built-in SQLite with explicit SQL migrations.
 - No Docker, PostgreSQL, Redis, OAuth, hosting platform, or external filesystem mounting.
-- Local single-user passphrase authentication and loopback-only binding by default.
+- Local loopback-only access with no login by explicit user decision.
 - OpenAI-compatible plus Anthropic as the first production adapters.
 - Polling for job status in the initial UI; streaming can be added behind the optional provider stream interface.
 
@@ -245,7 +245,7 @@ Close cross-cutting security, privacy, operational, accessibility, documentation
 - FTS5 tokenization and heading boosts need deterministic fixtures, but no vector-score fusion is required.
 - Startup must remain quick: validate paths, checksums, schema, and last-index status; perform parsing and indexing through explicit refresh jobs.
 - Authentication must support simple local development without weakening deployed security.
-- The local passphrase/session design must avoid exposing the app to other machines on the network.
+- The no-login local design must never be exposed to other machines on the network.
 - Provider API calls still send selected private context off-machine when the user enables a cloud provider; local storage alone does not make model execution local.
 - Prompt injection is a standing security threat. Every model call must preserve a trusted instruction boundary, label all retrieved/user-provided material as untrusted data, detect common attack signals, prohibit untrusted tool/configuration instructions, and surface suspicious context for user review.
 

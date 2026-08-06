@@ -136,6 +136,14 @@ Implement idea capture, clarification, Content Intent Brief creation and editing
 - Draft versions are immutable and linked through parent/version metadata.
 - Intake and workspace API, schema, service, and end-to-end tests pass using the mock provider.
 
+### Planned checkpoint scope
+
+- Professional conversational workspace UI with an accessible local-first design system.
+- Persistent idea and intake-message services backed by the existing SQLite schema.
+- A deterministic mock Intake and Clarification Agent that asks no more than five focused questions.
+- Editable, versioned Content Intent Brief UI and API, with explicit **Skip** and **Use your best judgment** choices persisted in the intake history.
+- Existing-draft capture and the three post-brief path choices as persisted selections; no live model provider call is required.
+
 ## Milestone 4: Three paths and Editorial Board orchestration
 
 ### Objective

@@ -1,14 +1,9 @@
-import fs from "node:fs";
-import path from "node:path";
-import { getAppConfig } from "../src/config/env";
+import { refreshContent } from "../src/content/loader";
 
-const config = getAppConfig();
-const bokExists = fs.existsSync(config.bokPath);
-const voicePath = config.voiceSkillPath.startsWith("~/")
-  ? path.join(process.env.HOME ?? "", config.voiceSkillPath.slice(2))
-  : config.voiceSkillPath;
-
-console.log(`BOK: ${bokExists ? "found" : "missing"} (${config.bokPath})`);
-console.log(`Voice skill: ${fs.existsSync(voicePath) ? "found" : "missing"} (${voicePath})`);
-console.log("Content parsing and FTS indexing begin in Milestone 2.");
-process.exit(bokExists ? 0 : 1);
+const report = refreshContent();
+console.log(`BOK: ${report.bok.status} (${report.bok.path})`);
+console.log(`  version: ${report.bok.version ?? "—"}; sections: ${report.bok.indexedSectionCount ?? 0}`);
+console.log(`Voice skill: ${report.voiceSkill.status} (${report.voiceSkill.path})`);
+console.log(`  version: ${report.voiceSkill.version ?? "—"}`);
+console.log(`Index result: ${report.changed} changed, ${report.skipped} skipped, ${report.retired} retired, ${report.failed} failed.`);
+process.exit(report.bok.status === "ready" ? 0 : 1);

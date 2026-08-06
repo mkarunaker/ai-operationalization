@@ -1,5 +1,5 @@
-import { WorkspaceClient } from "./dashboard/workspace-client";
+import { redirect } from "next/navigation";
 
 export default function HomePage() {
-  return <WorkspaceClient />;
+  redirect("/dashboard");
 }

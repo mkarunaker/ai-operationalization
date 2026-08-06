@@ -1,7 +1,9 @@
-import { createIntake } from "@/intake/service";
+import { createIntake, listSavedWorkspaces } from "@/intake/service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+export function GET() { return Response.json({ items: listSavedWorkspaces() }); }
 
 export async function POST(request: Request) {
   try { return Response.json(await createIntake(await request.json()), { status: 201 }); }

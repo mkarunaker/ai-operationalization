@@ -151,3 +151,10 @@ export function getWorkspace(ideaId: string): IntakeWorkspace | undefined {
     return { id: idea.id, rawNotes: idea.raw_notes, existingDraft, status: idea.status, questions, answers, brief, selectedPath: messages.find((message) => message.message_type === "workflow_choice")?.body };
   } finally { db.close(); }
 }
+
+export function listSavedWorkspaces() {
+  const db = database();
+  try {
+    return db.prepare("SELECT id, COALESCE(title, 'Untitled editorial idea') AS title, status, updated_at FROM ideas ORDER BY updated_at DESC LIMIT 50").all() as Array<{ id: string; title: string; status: string; updated_at: string }>;
+  } finally { db.close(); }
+}

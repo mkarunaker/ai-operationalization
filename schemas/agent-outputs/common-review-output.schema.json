@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Common review output",
+  "type": "object",
+  "required": ["role", "summary", "confidence", "findings", "strengths", "risks", "top_recommendations", "recommended_action"],
+  "properties": {
+    "role": { "type": "string" },
+    "summary": { "type": "string" },
+    "confidence": {
+      "type": "object",
+      "required": ["score", "reason"],
+      "properties": { "score": { "type": "number", "minimum": 0, "maximum": 1 }, "reason": { "type": "string" } }
+    },
+    "findings": { "type": "array" },
+    "strengths": { "type": "array", "items": { "type": "string" } },
+    "risks": { "type": "array", "items": { "type": "string" } },
+    "top_recommendations": { "type": "array", "items": { "type": "string" } },
+    "recommended_action": { "type": "string" }
+  }
+}

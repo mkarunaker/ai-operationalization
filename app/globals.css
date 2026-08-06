@@ -1,0 +1,10 @@
+:root { color-scheme: light; font-family: Arial, Helvetica, sans-serif; background: #f7f7f5; color: #222; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 960px; margin: 0 auto; padding: 3rem 1.5rem; }
+a { color: #1b5e5a; }
+.card { background: white; border: 1px solid #deded8; border-radius: 12px; padding: 1.5rem; margin-top: 1rem; }
+.muted { color: #5f625f; }
+button { border: 0; background: #1b5e5a; color: white; border-radius: 7px; padding: 0.65rem 1rem; font: inherit; cursor: pointer; }
+input { display: block; width: 100%; margin: 0.5rem 0 1rem; padding: 0.65rem; border: 1px solid #aaa; border-radius: 6px; }
+.error { color: #a02020; }

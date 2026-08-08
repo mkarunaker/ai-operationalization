@@ -6,15 +6,14 @@ import { createUntrustedContextBlock, TRUSTED_INSTRUCTION_BOUNDARY } from "@/ai/
 import { commonReviewOutputSchema } from "@/ai/structured-output";
 import { getAppConfig } from "@/config/env";
 import type { AgentRole } from "@/domain/roles";
-import { openDatabase } from "@/persistence/database";
-import { migrateDatabase } from "@/persistence/migrations";
+import { openInitializedDatabase } from "@/persistence/database";
 import { getContentStatus, searchKnowledge } from "@/content/loader";
 
 const identifier = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
 const timestamp = () => new Date().toISOString();
 const promptPath = (role: string) => path.resolve(process.cwd(), `prompts/roles/${role === "initial_drafter" ? "initial-drafter" : role}.md`);
 
-function db() { const config = getAppConfig(); const database = openDatabase(config.databasePath); migrateDatabase(database, path.resolve(process.cwd(), "migrations")); return database; }
+function db() { return openInitializedDatabase(getAppConfig().databasePath); }
 function seedRole(database: ReturnType<typeof db>, role: AgentRole) { const file = promptPath(role); const prompt = fs.readFileSync(/* turbopackIgnore: true */ file, "utf8"); database.prepare("INSERT OR IGNORE INTO agent_roles (id, name, description, prompt_path, prompt_version, prompt_checksum) VALUES (?, ?, ?, ?, '1', ?)").run(`role_${role}`, role, role, file, crypto.createHash("sha256").update(prompt).digest("hex")); }
 
 export type BoardResult = { runId: string; status: string; estimatedCost: number; actualCost: number; reviews: Array<{ id: string; role: string; status: string; summary: string; confidence: number; recommendations: Array<{ id: string; text: string; decision?: string }> }>; synthesis?: { summary: string; disagreements: string[] }; context: Array<{ headingPath: string; sourceLocation: string; text: string }> };

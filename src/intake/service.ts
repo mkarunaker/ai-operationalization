@@ -1,11 +1,9 @@
 import crypto from "node:crypto";
-import path from "node:path";
 import { z } from "zod";
 import { MockModelProvider } from "@/ai/mock-provider";
 import { createUntrustedContextBlock, TRUSTED_INSTRUCTION_BOUNDARY } from "@/ai/prompt-boundary";
 import { getAppConfig } from "@/config/env";
-import { openDatabase } from "@/persistence/database";
-import { migrateDatabase } from "@/persistence/migrations";
+import { openInitializedDatabase } from "@/persistence/database";
 
 const createInput = z.object({ rawNotes: z.string().trim().min(3).max(50_000), existingDraft: z.string().trim().max(80_000).optional().default("") });
 const answerInput = z.object({ question: z.string().min(1).max(500), answer: z.string().max(5_000), choice: z.enum(["answered", "skipped", "best_judgment"]) });
@@ -22,9 +20,7 @@ const now = () => new Date().toISOString();
 
 function database() {
   const config = getAppConfig();
-  const db = openDatabase(config.databasePath);
-  migrateDatabase(db, path.resolve(process.cwd(), "migrations"));
-  return db;
+  return openInitializedDatabase(config.databasePath);
 }
 
 function ensureLocalProject(db: ReturnType<typeof database>) {

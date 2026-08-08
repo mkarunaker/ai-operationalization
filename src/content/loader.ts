@@ -2,11 +2,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { getAppConfig, type AppConfig } from "../config/env";
-import { openDatabase } from "../persistence/database";
-import { migrateDatabase } from "../persistence/migrations";
+import { openInitializedDatabase, openReadOnlyDatabase } from "../persistence/database";
 import { parseMarkdownSections, type ParsedSection } from "./markdown";
 
-type Database = ReturnType<typeof openDatabase>;
+type Database = ReturnType<typeof openInitializedDatabase>;
 type SourceState = "ready" | "missing" | "error";
 
 export type ContentSourceStatus = {
@@ -39,14 +38,8 @@ const checksum = (value: string | Buffer) => crypto.createHash("sha256").update(
 const stableId = (prefix: string, value: string) => `${prefix}_${checksum(value).slice(0, 28)}`;
 const now = () => new Date().toISOString();
 
-function migrationsDirectory(): string {
-  return path.resolve(process.cwd(), "migrations");
-}
-
 function prepareDatabase(config: AppConfig): Database {
-  const database = openDatabase(config.databasePath);
-  migrateDatabase(database, migrationsDirectory());
-  return database;
+  return openInitializedDatabase(config.databasePath);
 }
 
 function voiceSkillFile(config: AppConfig): string {
@@ -64,7 +57,7 @@ function getDocumentStatus(database: Database, sourcePath: string): ContentSourc
   const count = database.prepare(`
     SELECT COUNT(*) AS count FROM knowledge_sections section
     JOIN knowledge_documents document ON document.id = section.document_id
-    WHERE document.source_path = ?
+    WHERE document.source_path = ? AND section.source_version = document.version
   `).get(sourcePath) as { count: number };
   return {
     path: sourcePath,
@@ -83,16 +76,23 @@ function syncBookOfKnowledge(database: Database, config: AppConfig): { status: C
   const source = fs.readFileSync(/* turbopackIgnore: true */ sourcePath, "utf8");
   const sourceChecksum = checksum(source);
   const prior = getDocumentStatus(database, sourcePath);
-  if (prior?.checksum === sourceChecksum && prior.status === "ready") {
-    return { status: prior, changed: 0, skipped: prior.indexedSectionCount ?? 0, retired: 0 };
-  }
-
   const parsed = parseMarkdownSections(source);
   if (parsed.length === 0) throw new Error("The Book of Knowledge does not contain indexable Markdown sections.");
+  if (prior?.checksum === sourceChecksum && prior.status === "ready") {
+    const priorVersion = prior.version ?? "";
+    database
+      .prepare(
+        "UPDATE knowledge_sections SET source_version = ? WHERE document_id = (SELECT id FROM knowledge_documents WHERE source_path = ?) AND source_version IS NULL",
+      )
+      .run(priorVersion, sourcePath);
+    const current = getDocumentStatus(database, sourcePath) ?? prior;
+    return { status: current, changed: 0, skipped: current.indexedSectionCount ?? 0, retired: 0 };
+  }
+
   const documentId = stableId("bok", sourcePath);
   const version = sourceChecksum.slice(0, 12);
   const indexedAt = now();
-  const existing = database.prepare("SELECT COUNT(*) AS count FROM knowledge_sections WHERE document_id = ?").get(documentId) as { count: number };
+  const existing = database.prepare("SELECT COUNT(*) AS count FROM knowledge_sections WHERE document_id = ? AND source_version = ?").get(documentId, prior?.version ?? "") as { count: number };
 
   database.exec("BEGIN IMMEDIATE;");
   try {
@@ -102,16 +102,27 @@ function syncBookOfKnowledge(database: Database, config: AppConfig): { status: C
       ON CONFLICT(source_path) DO UPDATE SET title = excluded.title, version = excluded.version,
         checksum = excluded.checksum, status = 'ready', metadata = excluded.metadata, updated_at = excluded.updated_at
     `).run(documentId, path.basename(sourcePath), sourcePath, version, sourceChecksum, JSON.stringify({ indexedAt }), indexedAt, indexedAt);
+    if (prior?.version)
+      database
+        .prepare("UPDATE knowledge_sections SET source_version = ? WHERE document_id = ? AND source_version IS NULL")
+        .run(prior.version, documentId);
     database.prepare("DELETE FROM knowledge_search WHERE section_id IN (SELECT id FROM knowledge_sections WHERE document_id = ?)").run(documentId);
-    database.prepare("DELETE FROM knowledge_sections WHERE document_id = ?").run(documentId);
+    const maxSequence = database.prepare("SELECT COALESCE(MAX(sequence), 0) AS value FROM knowledge_sections WHERE document_id = ?").get(documentId) as { value: number };
     const sectionInsert = database.prepare(`
-      INSERT INTO knowledge_sections (id, document_id, heading_path, text, sequence, metadata)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO knowledge_sections (id, document_id, heading_path, text, sequence, source_version, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        document_id = excluded.document_id,
+        heading_path = excluded.heading_path,
+        text = excluded.text,
+        sequence = excluded.sequence,
+        source_version = excluded.source_version,
+        metadata = excluded.metadata
     `);
     const searchInsert = database.prepare("INSERT INTO knowledge_search (section_id, heading_path, text) VALUES (?, ?, ?)");
     for (const section of parsed) {
-      const sectionId = stableId("section", `${sourcePath}:${section.headingPath}:${section.sequence}:${checksum(section.text)}`);
-      sectionInsert.run(sectionId, documentId, section.headingPath, section.text, section.sequence, JSON.stringify({ sourceLocation: section.sourceLocation, checksum: checksum(section.text) }));
+      const sectionId = stableId("section", `${sourcePath}:${version}:${section.headingPath}:${section.sequence}:${checksum(section.text)}`);
+      sectionInsert.run(sectionId, documentId, section.headingPath, section.text, maxSequence.value + section.sequence, version, JSON.stringify({ sourceLocation: section.sourceLocation, checksum: checksum(section.text) }));
       searchInsert.run(sectionId, section.headingPath, section.text);
     }
     database.exec("COMMIT;");
@@ -165,7 +176,15 @@ export function refreshContent(config = getAppConfig()): ContentIndexReport {
 }
 
 export function getContentStatus(config = getAppConfig()): { bok: ContentSourceStatus; voiceSkill: ContentSourceStatus } {
-  const database = prepareDatabase(config);
+  let database: Database;
+  try {
+    database = openReadOnlyDatabase(config.databasePath);
+  } catch {
+    return {
+      bok: { path: config.bokPath, status: "error", error: "The local content index is unavailable. Run npm run db:migrate, then npm run content:index." },
+      voiceSkill: { path: voiceSkillFile(config), status: "error", error: "The local content index is unavailable. Run npm run db:migrate, then npm run content:index." },
+    };
+  }
   try {
     const bok = getDocumentStatus(database, config.bokPath) ?? { path: config.bokPath, status: fs.existsSync(/* turbopackIgnore: true */ config.bokPath) ? "error" : "missing", error: "Not indexed yet. Run npm run content:index." };
     const skillPath = voiceSkillFile(config);
@@ -177,7 +196,12 @@ export function getContentStatus(config = getAppConfig()): { bok: ContentSourceS
 export function searchKnowledge(query: string, limit = 12, config = getAppConfig()): KnowledgeSearchResult[] {
   const cleanQuery = query.trim().replace(/[^\p{L}\p{N}_ -]/gu, " ").trim();
   if (!cleanQuery) return [];
-  const database = prepareDatabase(config);
+  let database: Database;
+  try {
+    database = openReadOnlyDatabase(config.databasePath);
+  } catch {
+    return [];
+  }
   try {
     const rows = database.prepare(`
       SELECT section.heading_path, section.text, section.sequence, section.metadata, document.title, document.version,
@@ -185,7 +209,7 @@ export function searchKnowledge(query: string, limit = 12, config = getAppConfig
       FROM knowledge_search
       JOIN knowledge_sections section ON section.id = knowledge_search.section_id
       JOIN knowledge_documents document ON document.id = section.document_id
-      WHERE knowledge_search MATCH ? AND document.status = 'ready'
+      WHERE knowledge_search MATCH ? AND document.status = 'ready' AND section.source_version = document.version
       ORDER BY score LIMIT ?
     `).all(cleanQuery.split(/\s+/).map((term) => `"${term}"`).join(" OR "), Math.min(Math.max(limit, 1), 30)) as Array<{ heading_path: string; text: string; sequence: number; metadata: string; title: string; version: string; score: number }>;
     return rows.map((row) => ({ headingPath: row.heading_path, text: row.text, sequence: row.sequence, sourceLocation: (JSON.parse(row.metadata) as { sourceLocation: string }).sourceLocation, documentTitle: row.title, version: row.version, score: Math.abs(row.score), retrievalMethod: "fts5" }));

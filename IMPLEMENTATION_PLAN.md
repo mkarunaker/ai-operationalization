@@ -1,8 +1,8 @@
-# Implementation Plan — Lean Refactor Proposal
+# Implementation Plan — Historical Lean Refactor Record
 
 ## Status
 
-Milestone 1 is complete. Milestones 2 and 4 are substantially implemented as a testable local workflow. Milestones 3 and 5 have useful foundations but remain incomplete. The authoritative specification remains unchanged; the lean refactor is tracked in `LEAN_PRODUCT_SCOPE.md` and `REVISED_BUILD_PROMPT.md`.
+This is a historical implementation record. It must not be used as the active delivery sequence or as proof that a capability works. The accepted lean scope is `LEAN_PRODUCT_SCOPE.md`; the active milestones and acceptance criteria are in `BUILD_ROADMAP.md`. The visible workflow remains a deterministic/mock prototype until Milestone 2 in the active roadmap is complete.
 
 ## Delivery approach
 

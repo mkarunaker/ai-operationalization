@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { refreshContent, searchKnowledge } from "../../src/content/loader";
+import { openDatabase } from "../../src/persistence/database";
+import { migrateDatabase } from "../../src/persistence/migrations";
 
 const temporaryDirectories: string[] = [];
 
@@ -14,7 +16,14 @@ function fixture() {
   fs.mkdirSync(voiceDirectory);
   fs.writeFileSync(bok, "# Editorial strategy\n\nUse a clear point of view.\n\n## Audience\n\nWrite for thoughtful operators.");
   fs.writeFileSync(path.join(voiceDirectory, "SKILL.md"), "# Voice\n\nNatural and direct.");
-  return { root, bok, voiceDirectory, config: { appBaseUrl: "http://127.0.0.1:3100", databasePath: path.join(root, "board.sqlite"), bokPath: bok, voiceSkillPath: voiceDirectory, editorialNotebookPath: path.join(root, "EDITORIAL_NOTEBOOK.md") } };
+  const databasePath = path.join(root, "board.sqlite");
+  const database = openDatabase(databasePath);
+  try {
+    migrateDatabase(database, path.join(process.cwd(), "migrations"));
+  } finally {
+    database.close();
+  }
+  return { root, bok, voiceDirectory, config: { appBaseUrl: "http://127.0.0.1:3100", databasePath, bokPath: bok, voiceSkillPath: voiceDirectory, editorialNotebookPath: path.join(root, "EDITORIAL_NOTEBOOK.md") } };
 }
 
 afterEach(() => { for (const directory of temporaryDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true }); });

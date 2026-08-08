@@ -4,10 +4,21 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runBoard } from "@/board/service";
 import { choosePath, completeIntake, createIntake, getWorkspace } from "@/intake/service";
+import { openDatabase } from "@/persistence/database";
+import { migrateDatabase } from "@/persistence/migrations";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "aeb-board-"));
 const priorDatabasePath = process.env.DATABASE_PATH;
-beforeAll(() => { process.env.DATABASE_PATH = path.join(root, "board.sqlite"); });
+beforeAll(() => {
+  const databasePath = path.join(root, "board.sqlite");
+  process.env.DATABASE_PATH = databasePath;
+  const database = openDatabase(databasePath);
+  try {
+    migrateDatabase(database, path.join(process.cwd(), "migrations"));
+  } finally {
+    database.close();
+  }
+});
 afterAll(() => { if (priorDatabasePath === undefined) delete process.env.DATABASE_PATH; else process.env.DATABASE_PATH = priorDatabasePath; fs.rmSync(root, { recursive: true, force: true }); });
 
 describe("Editorial Board orchestration", () => {

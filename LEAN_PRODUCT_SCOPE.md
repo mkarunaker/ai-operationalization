@@ -1,8 +1,8 @@
-# Lean Product Scope Proposal — AI Editorial Board
+# Lean Product Scope — AI Editorial Board
 
 ## Status and authority
 
-This is a proposed replacement product direction, prepared on 2026-08-06. It does not amend `AI_Editorial_Board_Spec.md`; that 27-section document remains authoritative until KK explicitly approves a specification update. No application code is changed by this proposal.
+This is the accepted lean product direction, approved by KK on 2026-08-06. `BUILD_ROADMAP.md` is the execution sequence. `AI_Editorial_Board_Spec.md` remains the source for requirements not superseded by this lean direction; it is not modified by this document.
 
 ## Product intent
 

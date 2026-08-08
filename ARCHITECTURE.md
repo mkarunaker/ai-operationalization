@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed MVP architecture. This document is based exclusively on `AI_Editorial_Board_Spec.md`, which is the authoritative product specification.
+Historical architecture reference for the broader specification. The accepted local product contract and active milestone order are in `LEAN_PRODUCT_SCOPE.md` and `BUILD_ROADMAP.md`. This document contains useful reusable design material, but its dashboard, five-question intake, Content Intent Brief, three-path workflow, and persisted-job-runner descriptions are legacy unless a current roadmap milestone explicitly adopts them.
 
 ## Architectural goals
 

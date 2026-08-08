@@ -12,4 +12,9 @@ describe("final human-voice check", () => {
   it("keeps direct writing at low risk", () => {
     expect(checkHumanVoice("A pilot can be useful. It is not proof that the operating model is ready.").label).toBe("low");
   });
+
+  it("flags Markdown formatting so publication copy stays plain prose", () => {
+    const result = checkHumanVoice("## Heading\n\n- A Markdown list item");
+    expect(result.findings.map((finding) => finding.id)).toContain("markdown_formatting");
+  });
 });

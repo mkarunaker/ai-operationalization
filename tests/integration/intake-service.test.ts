@@ -3,11 +3,22 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { choosePath, completeIntake, createIntake, getWorkspace, updateBrief } from "@/intake/service";
+import { openDatabase } from "@/persistence/database";
+import { migrateDatabase } from "@/persistence/migrations";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "aeb-intake-"));
 const previousDatabasePath = process.env.DATABASE_PATH;
 
-beforeAll(() => { process.env.DATABASE_PATH = path.join(root, "intake.sqlite"); });
+beforeAll(() => {
+  const databasePath = path.join(root, "intake.sqlite");
+  process.env.DATABASE_PATH = databasePath;
+  const database = openDatabase(databasePath);
+  try {
+    migrateDatabase(database, path.join(process.cwd(), "migrations"));
+  } finally {
+    database.close();
+  }
+});
 afterAll(() => { if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH; else process.env.DATABASE_PATH = previousDatabasePath; fs.rmSync(root, { recursive: true, force: true }); });
 
 describe("conversational intake service", () => {

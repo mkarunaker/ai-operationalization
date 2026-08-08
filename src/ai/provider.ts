@@ -38,6 +38,11 @@ export type CostEstimate = {
   estimated: true;
 };
 
+export type CostContext = {
+  provider?: string;
+  tier?: "low" | "medium" | "high";
+};
+
 export type ModelResponse = TokenUsage & {
   text: string;
   structuredOutput?: unknown;
@@ -55,6 +60,6 @@ export interface ModelProvider {
   readonly name: string;
   generate(request: ModelRequest): Promise<ModelResponse>;
   stream?(request: ModelRequest): AsyncIterable<ModelStreamEvent>;
-  estimateCost?(usage: TokenUsage, model: string): CostEstimate;
+  estimateCost?(usage: TokenUsage, model: string, context?: CostContext): CostEstimate;
   listModels?(): Promise<Array<{ id: string; displayName: string }>>;
 }

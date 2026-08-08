@@ -2,7 +2,7 @@
 
 ## Scope and instruction precedence
 
-Refactor the existing local AI Editorial Board application into a lean, personal thinking and writing workspace for one user, KK. This prompt is a proposed scope replacement and must be approved before implementation changes begin. Until then, `AI_Editorial_Board_Spec.md` remains the authoritative specification.
+Refactor the existing local AI Editorial Board application into a lean, personal thinking and writing workspace for one user, KK. This direction was approved on 2026-08-06. `BUILD_ROADMAP.md` is the active milestone sequence; `AI_Editorial_Board_Spec.md` remains authoritative for requirements not superseded by this lean contract.
 
 Do not modify the externally managed Book of Knowledge or voice skill. Do not commit secrets, `.env` files, databases, BOK files, or voice-skill files.
 
@@ -28,12 +28,11 @@ It is not a multi-user, enterprise, or autonomous content factory. The surface s
 - Themes are internal planning labels, not public content-series promises.
 - Offer an optional existing-theme picker at capture and development, a way to add a theme, and a blank/no-theme option. Never block saving for a missing theme.
 - Seed or offer these editable initial themes:
-  - From AI hype to AI value
-  - Enterprise AI operationalization
-  - Responsible AI leadership and decision-making
-  - AI solution intake and use-case discipline
-  - Principles for building agentic systems responsibly
-  - Thinking clearly about AI and organizational change
+  - See through the AI hype
+  - Understand the operationalization gap
+  - Improve leadership judgment
+  - Select the right work
+  - Build, adopt, and operate with principles
 - Support one or more themes per idea.
 
 ### 3. Idea development

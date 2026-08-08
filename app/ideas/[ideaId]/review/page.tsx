@@ -1,6 +1,6 @@
-import { IdeaWorkspaceClient } from "../idea-workspace-client";
+import { redirect } from "next/navigation";
 
 export default async function EditorialBoardPage({ params }: { params: Promise<{ ideaId: string }> }) {
   const { ideaId } = await params;
-  return <IdeaWorkspaceClient ideaId={ideaId} mode="review" />;
+  redirect(`/ideas/${ideaId}/board`);
 }

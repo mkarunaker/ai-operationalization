@@ -1,70 +1,2169 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { createUntrustedContextBlock } from "@/ai/prompt-boundary";
-import { refreshContent, searchKnowledge } from "@/content/loader";
+import { searchKnowledge } from "@/content/loader";
 import { getAppConfig } from "@/config/env";
-import { openDatabase } from "@/persistence/database";
-import { migrateDatabase } from "@/persistence/migrations";
+import { openInitializedDatabase, openReadOnlyDatabase } from "@/persistence/database";
 import { checkHumanVoice } from "@/voice/final-check";
+import { assertPlainPublicationProse } from "@/editorial/plain-text";
+import { renderVisualSvg, type VisualCompanion, visualCompanionFor } from "@/visual/companion";
 
-const statuses = ["inbox", "developing", "ready_to_review", "drafted", "published", "parked"] as const;
-const plans = ["linkedin", "medium", "substack", "medium_linkedin", "substack_linkedin"] as const;
+const statuses = [
+  "inbox",
+  "developing",
+  "ready_to_review",
+  "drafted",
+  "published",
+  "parked",
+] as const;
+const plans = [
+  "linkedin",
+  "medium",
+  "substack",
+  "medium_linkedin",
+  "substack_linkedin",
+] as const;
+type PublicationPlan = (typeof plans)[number];
+export type DraftFormat = "linkedin" | "canonical" | "linkedin_companion";
 const starterThemes = [
-  "From AI hype to AI value",
-  "Enterprise AI operationalization",
-  "Responsible AI leadership and decision-making",
-  "AI solution intake and use-case discipline",
-  "Principles for building agentic systems responsibly",
-  "Thinking clearly about AI and organizational change",
+  "See through the AI hype",
+  "Understand the operationalization gap",
+  "Improve leadership judgment",
+  "Select the right work",
+  "Build, adopt, and operate with principles",
 ];
 
-const createInput = z.object({ rawNotes: z.string().trim().min(2).max(50_000), themeIds: z.array(z.string()).max(12).default([]) });
-const updateInput = z.object({ title: z.string().trim().min(1).max(300).optional(), status: z.enum(statuses).optional(), priority: z.number().int().min(-100_000).max(100_000).optional(), publicationPlan: z.enum(plans).nullable().optional(), themeIds: z.array(z.string()).max(12).optional(), note: z.string().trim().min(1).max(20_000).optional(), existingDraft: z.string().trim().min(1).max(80_000).optional() });
-const developmentInput = z.object({ answers: z.array(z.object({ question: z.string().max(500), answer: z.string().max(5_000), choice: z.enum(["answered", "skipped", "best_judgment"]) })).max(4), useBestJudgment: z.boolean().default(false) });
-const publishInput = z.object({ platform: z.enum(["linkedin", "medium", "substack"]), url: z.string().url().max(2_000).optional().or(z.literal("")), publishedAt: z.string().datetime().optional(), finalText: z.string().trim().min(1).max(80_000), title: z.string().trim().max(300).optional(), voiceCheckAcknowledged: z.boolean().default(false) });
+const createInput = z.object({
+  rawNotes: z.string().trim().min(2).max(50_000),
+  themeIds: z.array(z.string()).max(12).default([]),
+});
+const updateInput = z.object({
+  title: z.string().trim().min(1).max(300).optional(),
+  status: z.enum(statuses).optional(),
+  priority: z.number().int().min(-100_000).max(100_000).optional(),
+  publicationPlan: z.enum(plans).nullable().optional(),
+  themeIds: z.array(z.string()).max(12).optional(),
+  note: z.string().trim().min(1).max(20_000).optional(),
+  existingDraft: z.string().trim().min(1).max(80_000).optional(),
+});
+const developmentInput = z.object({
+  answers: z
+    .array(
+      z.object({
+        question: z.string().max(500),
+        answer: z.string().max(5_000),
+        choice: z.enum(["answered", "skipped", "best_judgment"]),
+      }),
+    )
+    .max(4),
+  useBestJudgment: z.boolean().default(false),
+});
+const publishInput = z.object({
+  platform: z.enum(["linkedin", "medium", "substack"]),
+  url: z.string().url().max(2_000).optional().or(z.literal("")),
+  publishedAt: z.string().datetime().optional(),
+  finalText: z.string().trim().min(1).max(80_000),
+  voiceCheckAcknowledged: z.boolean().default(false),
+  draftVersionId: z.string().trim().min(1).max(200),
+  draftFormat: z.enum(["linkedin", "canonical", "linkedin_companion"]),
+});
+const voiceCheckInput = z.object({
+  draftVersionId: z.string().trim().min(1).max(200),
+  format: z.enum(["linkedin", "canonical", "linkedin_companion"]),
+});
 
-export type IdeaSummary = { id: string; title: string; rawNotes: string; status: typeof statuses[number]; priority: number; publicationPlan: typeof plans[number] | null; createdAt: string; updatedAt: string; themes: Array<{ id: string; name: string }> };
-export type IdeaDetail = IdeaSummary & { notes: Array<{ id: string; body: string; createdAt: string }>; questions: string[]; answers: Array<{ question: string; answer: string; choice: string }>; draft?: { id: string; body: string; version: number; createdBy: string }; editorialBrief?: EditorialBrief; context: Array<{ headingPath: string; sourceLocation: string; text: string }> };
-export type EditorialBrief = { runId: string; thesis: string; strongest: string; unclear: string; counterargument: string; evidenceNeeded: string; recommendedChanges: string[]; nextStep: string; reviews: Array<{ role: string; summary: string; confidence: number; details: string[] }> };
+export type IdeaSummary = {
+  id: string;
+  title: string;
+  rawNotes: string;
+  status: (typeof statuses)[number];
+  priority: number;
+  publicationPlan: PublicationPlan | null;
+  createdAt: string;
+  updatedAt: string;
+  themes: Array<{ id: string; name: string }>;
+};
+export type IdeaDetail = IdeaSummary & {
+  notes: Array<{ id: string; body: string; createdAt: string }>;
+  questions: string[];
+  answers: Array<{ question: string; answer: string; choice: string }>;
+  draft?: { id: string; body: string; version: number; createdBy: string; voiceSkillVersion?: string };
+  canonicalDraft?: { id: string; body: string; version: number; createdBy: string; approved: boolean; voiceSkillVersion?: string };
+  linkedinCompanion?: { id: string; body: string; version: number; createdBy: string; stale: boolean; approved: boolean; sourceCanonicalVersion: number; voiceSkillVersion?: string };
+  editorialBrief?: EditorialBrief;
+  finalReview?: FinalDraftReview;
+  linkedinCompanionFinalReview?: FinalDraftReview;
+  publications: Array<{
+    draftVersionId: string;
+    platform: "linkedin" | "medium" | "substack";
+    publishedAt: string;
+    url?: string;
+  }>;
+  reviewHistory: ReviewHistoryItem[];
+  visualCompanion?: VisualCompanion;
+  context: Array<{ headingPath: string; sourceLocation: string; text: string }>;
+  grounding?: GroundingProvenance;
+  escalations: EscalationOutcome[];
+  publicationIntegrityWarning?: string;
+};
+export type GroundingProvenance = {
+  runId: string;
+  executionMode: "grounded_test" | "live";
+  draftVersionId?: string;
+  bok: { version: string; checksum: string };
+  voice: { version: string; checksum: string };
+  sections: Array<{ headingPath: string; sourceLocation: string; text: string; score: number; rank: number }>;
+  calls: Array<{
+    role: string;
+    provider: string;
+    model: string;
+    promptVersion?: string;
+    success: boolean;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    latencyMs?: number;
+    estimatedCost: number;
+    retryCount: number;
+    errorCategory?: string;
+  }>;
+};
+export type EscalationOutcome = {
+  modelCallId: string;
+  role: string;
+  provider: string;
+  model: string;
+  tier?: string;
+  escalationReason: string;
+  reviewSummary?: string;
+  lowerCost?: {
+    modelCallId: string;
+    provider: string;
+    model: string;
+    tier?: string;
+    reviewSummary?: string;
+  };
+  outputAccepted?: boolean;
+  influencedFinalDraft?: boolean;
+  materiallyImproved?: boolean;
+};
+export type EditorialBrief = {
+  runId: string;
+  executionMode?: string;
+  runStatus?: "completed" | "partially_completed";
+  thesis: string;
+  strongest: string;
+  unclear: string;
+  counterargument: string;
+  evidenceNeeded: string;
+  recommendedChanges: string[];
+  nextStep: string;
+  reviews: Array<{
+    role: string;
+    status?: string;
+    summary: string;
+    confidence: number;
+    details: string[];
+  }>;
+};
+export type FinalDraftReview = {
+  runId: string;
+  draftVersionId: string;
+  readiness: "ready" | "revise";
+  summary: string;
+  initialRecommendations: string[];
+  recommendationStatuses: Array<{
+    recommendation: string;
+    disposition?: "resolved" | "revised" | "superseded" | "still_open";
+  }>;
+  addressed: string[];
+  remaining: string[];
+  newConcerns: string[];
+  polishSuggestions: Array<{
+    id: string;
+    current: string;
+    suggested: string;
+    reason: string;
+  }>;
+  nextStep: string;
+  reviews: Array<{
+    role: string;
+    summary: string;
+    confidence: number;
+    checkStatus?: "pass" | "review" | "needs_revision";
+    details: string[];
+  }>;
+};
+
+function finalPolishSuggestions(draft: string): FinalDraftReview["polishSuggestions"] {
+  const suggestions: FinalDraftReview["polishSuggestions"] = [];
+  if (draft.includes("Most organizations")) {
+    suggestions.push({
+      id: "qualify-most-organizations",
+      current: "Most organizations",
+      suggested: "Many organizations",
+      reason: "Keeps the opening confident without making a claim about nearly every organization.",
+    });
+  }
+  if (/technical excitement/i.test(draft)) {
+    const current = draft.match(/technical excitement/i)?.[0] ?? "technical excitement";
+    suggestions.push({
+      id: "neutralize-technical-excitement",
+      current,
+      suggested: "technical performance alone",
+      reason: "Preserves the point without sounding dismissive of experimentation or technical progress.",
+    });
+  }
+  const paragraphs = draft.trim().split(/\n\s*\n/).filter(Boolean);
+  const closing = paragraphs.at(-1);
+  if (closing && !closing.trim().endsWith("?") && suggestions.length < 3) {
+    const invitation = /pilot|dependable workflow|production/i.test(draft)
+      ? "What have you found matters most when moving from a promising pilot to a dependable workflow?"
+      : "What have you seen in practice?";
+    suggestions.push({
+      id: "add-reader-invitation",
+      current: closing,
+      suggested: `${closing}\n\n${invitation}`,
+      reason: "Ends with an invitation to contribute rather than leaving the post as a declaration.",
+    });
+  }
+  return suggestions.slice(0, 3);
+}
+export type ReviewHistoryItem = {
+  runId: string;
+  reviewType: "editorial" | "final_draft";
+  draftVersion: number;
+  draftVersionId: string;
+  completedAt: string;
+  summary: string;
+  reviews: Array<{
+    role: string;
+    summary: string;
+    confidence: number;
+    checkStatus?: "pass" | "review" | "needs_revision";
+    details: string[];
+  }>;
+};
 
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
 const now = () => new Date().toISOString();
-function db() { const config = getAppConfig(); const database = openDatabase(config.databasePath); migrateDatabase(database, path.resolve(process.cwd(), "migrations")); return database; }
-function ensureLocalProject(database: ReturnType<typeof db>) {
-  database.prepare("INSERT OR IGNORE INTO users (id, name, email) VALUES ('local-user', 'Local owner', 'local@ai-editorial-board.local')").run();
-  database.prepare("INSERT OR IGNORE INTO projects (id, user_id, title, description, status) VALUES ('local-editorial-board', 'local-user', 'AI Editorial Board', 'Local private editorial workspace', 'active')").run();
-  for (const name of starterThemes) database.prepare("INSERT OR IGNORE INTO themes (id, name) VALUES (?, ?)").run(`theme_${crypto.createHash("sha256").update(name).digest("hex").slice(0, 20)}`, name);
+function db() {
+  const config = getAppConfig();
+  return openInitializedDatabase(config.databasePath);
 }
-function titleFrom(notes: string) { return notes.replace(/\s+/g, " ").trim().split(/[.!?]/)[0].slice(0, 300) || "Untitled idea"; }
-function normalizeStatus(value: string): typeof statuses[number] { return statuses.includes(value as typeof statuses[number]) ? value as typeof statuses[number] : "inbox"; }
-function themesFor(database: ReturnType<typeof db>, ideaId: string) { return database.prepare("SELECT theme.id, theme.name FROM themes theme JOIN idea_themes link ON link.theme_id = theme.id WHERE link.idea_id = ? ORDER BY theme.name").all(ideaId) as Array<{ id: string; name: string }>; }
+function readDb() {
+  return openReadOnlyDatabase(getAppConfig().databasePath);
+}
+function ensureLocalProject(database: ReturnType<typeof db>) {
+  database
+    .prepare(
+      "INSERT OR IGNORE INTO users (id, name, email) VALUES ('local-user', 'Local owner', 'local@ai-editorial-board.local')",
+    )
+    .run();
+  database
+    .prepare(
+      "INSERT OR IGNORE INTO projects (id, user_id, title, description, status) VALUES ('local-editorial-board', 'local-user', 'AI Editorial Board', 'Local private editorial workspace', 'active')",
+    )
+    .run();
+  for (const name of starterThemes)
+    database
+      .prepare("INSERT OR IGNORE INTO themes (id, name) VALUES (?, ?)")
+      .run(
+        `theme_${crypto.createHash("sha256").update(name).digest("hex").slice(0, 20)}`,
+        name,
+      );
+}
+function titleFrom(notes: string) {
+  const lines = notes
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*(?:#|[-*]|\d+[.)])\s*/, "").trim())
+    .filter(Boolean);
+  const explicitTitle = lines.find((line) => /^title\s*:/i.test(line));
+  const contentLines = lines.filter(
+    (line) => !/^(?:theme|platform|format|post type|publication plan)\s*:/i.test(line),
+  );
+  const firstIdea = (explicitTitle ?? contentLines[0] ?? "")
+    .replace(/^title\s*:\s*/i, "")
+    .replace(/^(?:i want to write (?:about|to understand)\s+|a rough idea (?:about|on)\s+|possible post (?:about|on)\s+)/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const sentence = firstIdea.split(/[.!?]/)[0].trim();
+  if (sentence.length <= 88) return sentence || "Untitled idea";
+  const compact = sentence.slice(0, 88);
+  return `${compact.slice(0, Math.max(1, compact.lastIndexOf(" "))).trim()}…`;
+}
+function normalizeStatus(value: string): (typeof statuses)[number] {
+  return statuses.includes(value as (typeof statuses)[number])
+    ? (value as (typeof statuses)[number])
+    : "inbox";
+}
+function themesFor(database: ReturnType<typeof db>, ideaId: string) {
+  return database
+    .prepare(
+      "SELECT theme.id, theme.name FROM themes theme JOIN idea_themes link ON link.theme_id = theme.id WHERE link.idea_id = ? ORDER BY theme.name",
+    )
+    .all(ideaId) as Array<{ id: string; name: string }>;
+}
 function questionsFor(input: string) {
   const lower = input.toLowerCase();
   const possible = [
-    ["What is the one point you want a reader to remember?", /(one point|takeaway|remember|thesis)/],
-    ["What triggered this observation or question?", /(trigger|because|noticed|observed|conversation|article)/],
-    ["What assumption or behavior are you challenging?", /(assumption|challenge|problem|tension)/],
-    ["Is there an example, evidence, or uncertainty that should remain visible?", /(example|evidence|research|uncertain)/],
+    [
+      "What is the one point you want a reader to remember?",
+      /(one point|takeaway|remember|thesis)/,
+    ],
+    [
+      "What triggered this observation or question?",
+      /(trigger|because|noticed|observed|conversation|article)/,
+    ],
+    [
+      "What assumption or behavior are you challenging?",
+      /(assumption|challenge|problem|tension)/,
+    ],
+    [
+      "Is there an example, evidence, or uncertainty that should remain visible?",
+      /(example|evidence|research|uncertain)/,
+    ],
   ] as const;
-  return possible.filter(([, pattern]) => !pattern.test(lower)).map(([question]) => question).slice(0, 3);
+  return possible
+    .filter(([, pattern]) => !pattern.test(lower))
+    .map(([question]) => question)
+    .slice(0, 3);
 }
-function mapIdea(row: Record<string, unknown>, themes: IdeaSummary["themes"]): IdeaSummary { const rawNotes = String(row.raw_notes); const storedTitle = String(row.title ?? "Untitled idea"); const title = storedTitle.length === 100 && rawNotes.startsWith(storedTitle) ? titleFrom(rawNotes) : storedTitle; return { id: String(row.id), title, rawNotes, status: normalizeStatus(String(row.status)), priority: Number(row.priority ?? 0), publicationPlan: (row.publication_plan as IdeaSummary["publicationPlan"]) ?? null, createdAt: String(row.created_at), updatedAt: String(row.updated_at), themes }; }
+function mapIdea(
+  row: Record<string, unknown>,
+  themes: IdeaSummary["themes"],
+): IdeaSummary {
+  const rawNotes = String(row.raw_notes);
+  const storedTitle = String(row.title ?? "Untitled idea");
+  const title =
+    storedTitle.length === 100 && rawNotes.startsWith(storedTitle)
+      ? titleFrom(rawNotes)
+      : storedTitle;
+  return {
+    id: String(row.id),
+    title,
+    rawNotes,
+    status: normalizeStatus(String(row.status)),
+    priority: Number(row.priority ?? 0),
+    publicationPlan:
+      (row.publication_plan as IdeaSummary["publicationPlan"]) ?? null,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+    themes,
+  };
+}
 
-export function listThemes() { const database = db(); try { ensureLocalProject(database); return database.prepare("SELECT id, name FROM themes ORDER BY name").all() as Array<{ id: string; name: string }>; } finally { database.close(); } }
-export function createTheme(name: string) { const value = z.string().trim().min(2).max(100).parse(name); const database = db(); try { ensureLocalProject(database); const existing = database.prepare("SELECT id, name FROM themes WHERE name = ? COLLATE NOCASE").get(value) as { id: string; name: string } | undefined; if (existing) return existing; const theme = { id: id("theme"), name: value }; database.prepare("INSERT INTO themes (id, name) VALUES (?, ?)").run(theme.id, theme.name); return theme; } finally { database.close(); } }
-export function listIdeas() { const database = db(); try { ensureLocalProject(database); const rows = database.prepare("SELECT * FROM ideas WHERE project_id = 'local-editorial-board' ORDER BY priority DESC, updated_at DESC").all() as Array<Record<string, unknown>>; return rows.map((row) => mapIdea(row, themesFor(database, String(row.id)))); } finally { database.close(); } }
-export function createIdea(input: unknown) { const value = createInput.parse(input); const database = db(); try { ensureLocalProject(database); const ideaId = id("idea"); const timestamp = now(); database.exec("BEGIN IMMEDIATE"); try { database.prepare("INSERT INTO ideas (id, project_id, title, raw_notes, source, status, priority, created_at, updated_at) VALUES (?, 'local-editorial-board', ?, ?, 'quick_capture', 'inbox', ?, ?, ?)").run(ideaId, titleFrom(value.rawNotes), value.rawNotes, Date.now(), timestamp, timestamp); database.prepare("INSERT INTO content_items (id, project_id, idea_id, content_type, working_title, status) VALUES (?, 'local-editorial-board', ?, 'editorial_post', ?, 'inbox')").run(id("content"), ideaId, titleFrom(value.rawNotes)); setThemes(database, ideaId, value.themeIds); database.exec("COMMIT"); return getIdea(ideaId)!; } catch (error) { database.exec("ROLLBACK"); throw error; } } finally { database.close(); } }
-function setThemes(database: ReturnType<typeof db>, ideaId: string, themeIds: string[]) { database.prepare("DELETE FROM idea_themes WHERE idea_id = ?").run(ideaId); for (const themeId of [...new Set(themeIds)]) { const exists = database.prepare("SELECT id FROM themes WHERE id = ?").get(themeId); if (exists) database.prepare("INSERT INTO idea_themes (idea_id, theme_id) VALUES (?, ?)").run(ideaId, themeId); } }
-export function updateIdea(ideaId: string, input: unknown) { const value = updateInput.parse(input); const database = db(); try { ensureLocalProject(database); const current = database.prepare("SELECT * FROM ideas WHERE id = ?").get(ideaId) as Record<string, unknown> | undefined; if (!current) throw new Error("Idea not found."); database.exec("BEGIN IMMEDIATE"); try { database.prepare("UPDATE ideas SET title = COALESCE(?, title), status = COALESCE(?, status), priority = COALESCE(?, priority), publication_plan = COALESCE(?, publication_plan), updated_at = ? WHERE id = ?").run(value.title ?? null, value.status ?? null, value.priority ?? null, value.publicationPlan === undefined ? null : value.publicationPlan, now(), ideaId); if (value.themeIds) setThemes(database, ideaId, value.themeIds); if (value.note) database.prepare("INSERT INTO idea_notes (id, idea_id, body) VALUES (?, ?, ?)").run(id("note"), ideaId, value.note); if (value.existingDraft) saveDraft(database, ideaId, value.existingDraft, "user", "User-provided draft."); database.exec("COMMIT"); return getIdea(ideaId)!; } catch (error) { database.exec("ROLLBACK"); throw error; } } finally { database.close(); } }
-export function moveIdea(ideaId: string, direction: "up" | "down") { const database = db(); try { ensureLocalProject(database); const rows = database.prepare("SELECT id, priority FROM ideas WHERE project_id = 'local-editorial-board' ORDER BY priority DESC, updated_at DESC").all() as Array<{ id: string; priority: number }>; const index = rows.findIndex((row) => row.id === ideaId); if (index < 0) throw new Error("Idea not found."); const target = rows[direction === "up" ? index - 1 : index + 1]; if (!target) return getIdea(ideaId)!; database.exec("BEGIN IMMEDIATE"); try { const current = rows[index]; database.prepare("UPDATE ideas SET priority = ?, updated_at = ? WHERE id = ?").run(target.priority, now(), current.id); database.prepare("UPDATE ideas SET priority = ?, updated_at = ? WHERE id = ?").run(current.priority, now(), target.id); database.exec("COMMIT"); return getIdea(ideaId)!; } catch (error) { database.exec("ROLLBACK"); throw error; } } finally { database.close(); } }
-function saveDraft(database: ReturnType<typeof db>, ideaId: string, body: string, createdBy: string, summary: string) { const content = database.prepare("SELECT id FROM content_items WHERE idea_id = ?").get(ideaId) as { id: string } | undefined; if (!content) throw new Error("Content record not found."); const version = (database.prepare("SELECT COALESCE(MAX(version_number), 0) + 1 AS value FROM draft_versions WHERE content_item_id = ?").get(content.id) as { value: number }).value; const draftId = id("draft"); database.prepare("INSERT INTO draft_versions (id, content_item_id, version_number, body, created_by, change_summary) VALUES (?, ?, ?, ?, ?, ?)").run(draftId, content.id, version, body, createdBy, summary); return draftId; }
-export function getIdea(ideaId: string): IdeaDetail | undefined { const database = db(); try { ensureLocalProject(database); const row = database.prepare("SELECT * FROM ideas WHERE id = ?").get(ideaId) as Record<string, unknown> | undefined; if (!row) return undefined; const idea = mapIdea(row, themesFor(database, ideaId)); const notes = database.prepare("SELECT id, body, created_at FROM idea_notes WHERE idea_id = ? ORDER BY created_at DESC").all(ideaId).map((note) => ({ id: String((note as Record<string, unknown>).id), body: String((note as Record<string, unknown>).body), createdAt: String((note as Record<string, unknown>).created_at) })); const messages = database.prepare("SELECT body, message_type FROM intake_messages message JOIN intake_conversations conversation ON conversation.id = message.conversation_id WHERE conversation.idea_id = ? ORDER BY sequence").all(ideaId) as Array<{ body: string; message_type: string }>; const answers = messages.filter((message) => ["answered", "skipped", "best_judgment"].includes(message.message_type)).map((message) => JSON.parse(message.body) as { question: string; answer: string; choice: string }); const content = database.prepare("SELECT id FROM content_items WHERE idea_id = ?").get(ideaId) as { id: string } | undefined; const draft = content ? database.prepare("SELECT id, body, version_number, created_by FROM draft_versions WHERE content_item_id = ? ORDER BY version_number DESC LIMIT 1").get(content.id) as { id: string; body: string; version_number: number; created_by: string } | undefined : undefined; const latestRun = content ? database.prepare("SELECT id FROM review_runs WHERE content_item_id = ? ORDER BY completed_at DESC LIMIT 1").get(content.id) as { id: string } | undefined : undefined; return { ...idea, notes, questions: questionsFor(`${idea.rawNotes} ${notes.map((note) => note.body).join(" ")}`), answers, draft: draft ? { id: draft.id, body: draft.body, version: draft.version_number, createdBy: draft.created_by } : undefined, editorialBrief: latestRun ? readBrief(database, latestRun.id, idea) : undefined, context: searchKnowledge(`${idea.title} ${idea.rawNotes}`, 5).map(({ headingPath, sourceLocation, text }) => ({ headingPath, sourceLocation, text })) }; } finally { database.close(); } }
-function readBrief(database: ReturnType<typeof db>, runId: string, idea: IdeaSummary): EditorialBrief | undefined { const rows = database.prepare("SELECT role.name, review.structured_output, review.confidence_score FROM agent_reviews review JOIN agent_roles role ON role.id = review.role_id WHERE review.review_run_id = ? ORDER BY review.created_at").all(runId) as Array<{ name: string; structured_output: string | null; confidence_score: number | null }>; if (!rows.length) return undefined; const reviews = rows.filter((row) => row.name !== "synthesizer").map((row) => { const data = row.structured_output ? JSON.parse(row.structured_output) as { summary: string; top_recommendations: string[] } : { summary: "Review unavailable", top_recommendations: [] }; return { role: row.name, summary: data.summary, confidence: row.confidence_score ?? 0, details: data.top_recommendations }; }); const synthesis = rows.find((row) => row.name === "synthesizer"); const data = synthesis?.structured_output ? JSON.parse(synthesis.structured_output) as { summary: string; top_recommendations: string[] } : undefined; return { runId, thesis: idea.rawNotes.slice(0, 300), strongest: reviews[0]?.summary ?? "The idea has a useful starting point.", unclear: reviews[1]?.summary ?? "Clarify the key claim.", counterargument: "What evidence would change this conclusion?", evidenceNeeded: "Add one concrete example, source, or explicitly labelled uncertainty.", recommendedChanges: data?.top_recommendations ?? reviews.flatMap((review) => review.details).slice(0, 3), nextStep: "Revise the point, then generate or edit a working draft.", reviews }; }
-export function developIdea(ideaId: string, input: unknown) { const value = developmentInput.parse(input); const database = db(); try { const idea = database.prepare("SELECT raw_notes FROM ideas WHERE id = ?").get(ideaId) as { raw_notes: string } | undefined; if (!idea) throw new Error("Idea not found."); database.exec("BEGIN IMMEDIATE"); try { const conversation = database.prepare("SELECT id FROM intake_conversations WHERE idea_id = ?").get(ideaId) as { id: string } | undefined; const conversationId = conversation?.id ?? id("conversation"); if (!conversation) database.prepare("INSERT INTO intake_conversations (id, idea_id, status) VALUES (?, ?, 'completed')").run(conversationId, ideaId); let seq = (database.prepare("SELECT COALESCE(MAX(sequence), 0) AS value FROM intake_messages WHERE conversation_id = ?").get(conversationId) as { value: number }).value; for (const answer of value.answers) database.prepare("INSERT INTO intake_messages (id, conversation_id, role, message_type, body, sequence) VALUES (?, ?, 'user', ?, ?, ?)").run(id("message"), conversationId, value.useBestJudgment ? "best_judgment" : answer.choice, JSON.stringify(answer), ++seq); database.prepare("UPDATE ideas SET status = 'ready_to_review', updated_at = ? WHERE id = ?").run(now(), ideaId); database.prepare("UPDATE content_items SET status = 'ready_to_review', updated_at = ? WHERE idea_id = ?").run(now(), ideaId); database.exec("COMMIT"); return getIdea(ideaId)!; } catch (error) { database.exec("ROLLBACK"); throw error; } } finally { database.close(); } }
-function seedRole(database: ReturnType<typeof db>, role: string) { database.prepare("INSERT OR IGNORE INTO agent_roles (id, name, description, prompt_path, prompt_version, prompt_checksum) VALUES (?, ?, ?, ?, 'lean-1', 'local')").run(`role_${role}`, role, role, `prompts/roles/${role}.md`); }
-function reviewFor(role: string, idea: IdeaDetail) { const thesis = idea.rawNotes.replace(/\s+/g, " ").slice(0, 180); const copy = { strategist: [`The idea can be useful when it makes one operational consequence clear.`, "Narrow the reader takeaway to a single decision or behavior."], skeptic: [`The claim needs a clear boundary: where could this observation fail?`, "Separate observed pattern from a universal claim and name evidence still needed."], editor: [`The opening has a real point of view; make the next sentence explain why it matters.`, "Prefer concrete language, short paragraphs, and an inviting question over a declaration."] }[role] ?? ["Synthesize the independent feedback.", "Prioritize the most useful revision."]; return { role, summary: `${copy[0]} Current starting point: ${thesis}`, confidence: { score: 0.72, reason: "Local deterministic review. Validate factual claims before publication." }, findings: [], strengths: ["A distinct observation is present."], risks: ["The local mock cannot verify factual claims."], top_recommendations: [copy[1]], recommended_action: "revise" }; }
-export function runLeanBoard(ideaId: string): IdeaDetail { refreshContent(); const database = db(); try { const idea = getIdea(ideaId); if (!idea) throw new Error("Idea not found."); const content = database.prepare("SELECT id FROM content_items WHERE idea_id = ?").get(ideaId) as { id: string }; if (!idea.draft) saveDraft(database, ideaId, workingDraft(idea), "initial_drafter", "Local working draft created from the idea and notes."); const currentDraft = database.prepare("SELECT id FROM draft_versions WHERE content_item_id = ? ORDER BY version_number DESC LIMIT 1").get(content.id) as { id: string }; const runId = id("review_run"); database.exec("BEGIN IMMEDIATE"); try { database.prepare("INSERT INTO review_runs (id, content_item_id, draft_version_id, status, estimated_cost, actual_cost, budget_cap, started_at, completed_at) VALUES (?, ?, ?, 'completed', 0, 0, 0, ?, ?)").run(runId, content.id, currentDraft.id, now(), now()); const boundary = createUntrustedContextBlock([{ source: "user idea", text: idea.rawNotes }, ...idea.notes.map((note) => ({ source: "user note", text: note.body }))]); for (const role of ["strategist", "skeptic", "editor"]) { seedRole(database, role); const output = reviewFor(role, idea); const callId = id("model_call"); database.prepare("INSERT INTO model_calls (id, provider, model, agent_role, project_id, draft_version_id, input_tokens, output_tokens, total_tokens, estimated_input_cost, estimated_output_cost, estimated_total_cost, ended_at, latency_ms, success, provider_request_id, raw_usage) VALUES (?, 'mock', 'local-editorial-v1', ?, 'local-editorial-board', ?, ?, 0, ?, 0, 0, 0, ?, 1, 1, 'local', ?)").run(callId, role, currentDraft.id, idea.rawNotes.split(/\s+/).length, idea.rawNotes.split(/\s+/).length, now(), JSON.stringify({ injectionSignals: boundary.injectionSignals })); const reviewId = id("review"); database.prepare("INSERT INTO agent_reviews (id, review_run_id, role_id, prompt_version, structured_output, text_output, confidence_score, status) VALUES (?, ?, ?, 'lean-1', ?, ?, ?, 'completed')").run(reviewId, runId, `role_${role}`, JSON.stringify(output), output.summary, output.confidence.score); for (const recommendation of output.top_recommendations) database.prepare("INSERT INTO recommendations (id, agent_review_id, category, recommendation, severity) VALUES (?, ?, 'editorial', ?, 'medium')").run(id("recommendation"), reviewId, recommendation); } seedRole(database, "synthesizer"); const synthesis = { role: "synthesizer", summary: "Keep the distinct observation, state the practical implication, and make the evidence boundary visible.", confidence: { score: 0.74, reason: "Local deterministic synthesis." }, findings: [], strengths: [], risks: [], top_recommendations: ["Lead with the observation, then explain why operational discipline changes the outcome.", "Use one example or state the uncertainty plainly."], recommended_action: "draft" }; database.prepare("INSERT INTO agent_reviews (id, review_run_id, role_id, prompt_version, structured_output, text_output, confidence_score, status) VALUES (?, ?, 'role_synthesizer', 'lean-1', ?, ?, ?, 'completed')").run(id("review"), runId, JSON.stringify(synthesis), synthesis.summary, synthesis.confidence.score); database.prepare("UPDATE ideas SET status = 'drafted', updated_at = ? WHERE id = ?").run(now(), ideaId); database.prepare("UPDATE content_items SET status = 'drafted', updated_at = ? WHERE idea_id = ?").run(now(), ideaId); database.exec("COMMIT"); return getIdea(ideaId)!; } catch (error) { database.exec("ROLLBACK"); throw error; } } finally { database.close(); } }
-function workingDraft(idea: IdeaDetail) { const source = idea.rawNotes.replace(/\s+/g, " ").trim(); const notes = idea.notes.map((note) => note.body).join(" ").replace(/\s+/g, " ").trim(); return `${idea.title}\n\n${source}\n\nThat is worth pausing on—not because every organization needs the same answer, but because activity can easily be mistaken for progress. The practical question is what changes in the operating model, decision-making, or day-to-day work.\n\n${notes ? `${notes}\n\n` : ""}The useful next step is to make the claim specific, state what evidence would strengthen it, and leave room for the exceptions that matter. What would this look like in your organization?`; }
-export function saveEditedDraft(ideaId: string, body: string) { const value = z.string().trim().min(1).max(80_000).parse(body); const database = db(); try { saveDraft(database, ideaId, value, "user", "Manual edit."); database.prepare("UPDATE ideas SET status = 'drafted', updated_at = ? WHERE id = ?").run(now(), ideaId); return getIdea(ideaId)!; } finally { database.close(); } }
-export function publishIdea(ideaId: string, input: unknown) { const value = publishInput.parse(input); if (!value.voiceCheckAcknowledged) throw new Error("Run and acknowledge the final human-voice check before publishing."); checkHumanVoice(value.finalText); const database = db(); try { const content = database.prepare("SELECT id FROM content_items WHERE idea_id = ?").get(ideaId) as { id: string } | undefined; if (!content) throw new Error("Idea not found."); const draftId = saveDraft(database, ideaId, value.finalText, "user", "Final published text."); database.prepare("INSERT INTO publications (id, content_item_id, draft_version_id, platform, publication_url, published_at, final_text) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id("publication"), content.id, draftId, value.platform, value.url || null, value.publishedAt ?? now(), value.finalText); database.prepare("UPDATE ideas SET title = COALESCE(?, title), status = 'published', updated_at = ? WHERE id = ?").run(value.title ?? null, now(), ideaId); return getIdea(ideaId)!; } finally { database.close(); } }
+export function listThemes() {
+  const database = readDb();
+  try {
+    return database
+      .prepare("SELECT id, name FROM themes ORDER BY name")
+      .all() as Array<{ id: string; name: string }>;
+  } finally {
+    database.close();
+  }
+}
+export function createTheme(name: string) {
+  const value = z.string().trim().min(2).max(100).parse(name);
+  const database = db();
+  try {
+    ensureLocalProject(database);
+    const existing = database
+      .prepare("SELECT id, name FROM themes WHERE name = ? COLLATE NOCASE")
+      .get(value) as { id: string; name: string } | undefined;
+    if (existing) return existing;
+    const theme = { id: id("theme"), name: value };
+    database
+      .prepare("INSERT INTO themes (id, name) VALUES (?, ?)")
+      .run(theme.id, theme.name);
+    return theme;
+  } finally {
+    database.close();
+  }
+}
+export function listIdeas() {
+  const database = readDb();
+  try {
+    const rows = database
+      .prepare(
+        "SELECT * FROM ideas WHERE project_id = 'local-editorial-board' ORDER BY priority DESC, updated_at DESC",
+      )
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((row) => mapIdea(row, themesFor(database, String(row.id))));
+  } finally {
+    database.close();
+  }
+}
+export function createIdea(input: unknown) {
+  const value = createInput.parse(input);
+  const database = db();
+  try {
+    ensureLocalProject(database);
+    const ideaId = id("idea");
+    const timestamp = now();
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      database
+        .prepare(
+          "INSERT INTO ideas (id, project_id, title, raw_notes, source, status, priority, created_at, updated_at) VALUES (?, 'local-editorial-board', ?, ?, 'quick_capture', 'inbox', ?, ?, ?)",
+        )
+        .run(
+          ideaId,
+          titleFrom(value.rawNotes),
+          value.rawNotes,
+          Date.now(),
+          timestamp,
+          timestamp,
+        );
+      database
+        .prepare(
+          "INSERT INTO content_items (id, project_id, idea_id, content_type, working_title, status) VALUES (?, 'local-editorial-board', ?, 'editorial_post', ?, 'inbox')",
+        )
+        .run(id("content"), ideaId, titleFrom(value.rawNotes));
+      setThemes(database, ideaId, value.themeIds);
+      database.exec("COMMIT");
+      return getIdea(ideaId)!;
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    database.close();
+  }
+}
+function setThemes(
+  database: ReturnType<typeof db>,
+  ideaId: string,
+  themeIds: string[],
+) {
+  database.prepare("DELETE FROM idea_themes WHERE idea_id = ?").run(ideaId);
+  for (const themeId of [...new Set(themeIds)]) {
+    const exists = database
+      .prepare("SELECT id FROM themes WHERE id = ?")
+      .get(themeId);
+    if (exists)
+      database
+        .prepare("INSERT INTO idea_themes (idea_id, theme_id) VALUES (?, ?)")
+        .run(ideaId, themeId);
+  }
+}
+export function updateIdea(ideaId: string, input: unknown) {
+  const value = updateInput.parse(input);
+  const database = db();
+  try {
+    ensureLocalProject(database);
+    const current = database
+      .prepare("SELECT * FROM ideas WHERE id = ?")
+      .get(ideaId) as Record<string, unknown> | undefined;
+    if (!current) throw new Error("Idea not found.");
+    assertWorkflowNotPublished(database, ideaId);
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      database
+        .prepare(
+          "UPDATE ideas SET title = COALESCE(?, title), status = COALESCE(?, status), priority = COALESCE(?, priority), publication_plan = COALESCE(?, publication_plan), updated_at = ? WHERE id = ?",
+        )
+        .run(
+          value.title ?? null,
+          value.status ?? null,
+          value.priority ?? null,
+          value.publicationPlan === undefined ? null : value.publicationPlan,
+          now(),
+          ideaId,
+        );
+      if (value.title !== undefined || value.status !== undefined)
+        database
+          .prepare(
+            "UPDATE content_items SET working_title = COALESCE(?, working_title), status = COALESCE(?, status), updated_at = ? WHERE idea_id = ?",
+          )
+          .run(value.title ?? null, value.status ?? null, now(), ideaId);
+      if (value.themeIds) setThemes(database, ideaId, value.themeIds);
+      if (value.note)
+        database
+          .prepare(
+            "INSERT INTO idea_notes (id, idea_id, body) VALUES (?, ?, ?)",
+          )
+          .run(id("note"), ideaId, value.note);
+      if (value.publicationPlan !== undefined && isLongFormPlan(value.publicationPlan)) {
+        const content = database
+          .prepare("SELECT id FROM content_items WHERE idea_id = ?")
+          .get(ideaId) as { id: string } | undefined;
+        if (content && !latestDraftFor(database, content.id, "canonical")) {
+          const prior = latestDraftFor(database, content.id, "linkedin");
+          if (prior)
+            saveDraft(
+              database,
+              ideaId,
+              prior.body,
+              "publication_plan_transition",
+              "Canonical article preserved when the publication plan changed from LinkedIn-only.",
+              "canonical",
+            );
+        }
+      }
+      if (value.existingDraft)
+        saveDraft(
+          database,
+          ideaId,
+          value.existingDraft,
+          "user",
+          "User-provided draft.",
+          primaryDraftFormat(value.publicationPlan ?? (current.publication_plan as PublicationPlan | null) ?? null),
+        );
+      database.exec("COMMIT");
+      return getIdea(ideaId)!;
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    database.close();
+  }
+}
+export function moveIdea(ideaId: string, direction: "up" | "down") {
+  const database = db();
+  try {
+    ensureLocalProject(database);
+    assertWorkflowNotPublished(database, ideaId);
+    const rows = database
+      .prepare(
+        "SELECT id, priority FROM ideas WHERE project_id = 'local-editorial-board' ORDER BY priority DESC, updated_at DESC",
+      )
+      .all() as Array<{ id: string; priority: number }>;
+    const index = rows.findIndex((row) => row.id === ideaId);
+    if (index < 0) throw new Error("Idea not found.");
+    const target = rows[direction === "up" ? index - 1 : index + 1];
+    if (!target) return getIdea(ideaId)!;
+    const outerNeighbor = rows[direction === "up" ? index - 2 : index + 2];
+    const nextPriority = outerNeighbor
+      ? (target.priority + outerNeighbor.priority) / 2
+      : target.priority + (direction === "up" ? 1_000 : -1_000);
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const current = rows[index];
+      database
+        .prepare("UPDATE ideas SET priority = ?, updated_at = ? WHERE id = ?")
+        .run(nextPriority, now(), current.id);
+      database.exec("COMMIT");
+      return getIdea(ideaId)!;
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    database.close();
+  }
+}
+
+/** Permanently removes an unpublished local idea and its dependent local workflow records. */
+export function deleteUnpublishedIdea(ideaId: string) {
+  const database = db();
+  try {
+    const idea = database.prepare("SELECT status FROM ideas WHERE id = ?").get(ideaId) as { status: string } | undefined;
+    if (!idea) throw new Error("Idea not found.");
+    if (idea.status === "published") throw new Error("Published ideas are retained as part of your publication history.");
+    const content = database.prepare("SELECT id FROM content_items WHERE idea_id = ?").get(ideaId) as { id: string } | undefined;
+    if (content) {
+      const publication = database.prepare("SELECT 1 FROM publications WHERE content_item_id = ? LIMIT 1").get(content.id);
+      if (publication) throw new Error("An idea with a publication record cannot be deleted.");
+    }
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      if (content) {
+        database.prepare("DELETE FROM retrieval_records WHERE model_call_id IN (SELECT id FROM model_calls WHERE draft_version_id IN (SELECT id FROM draft_versions WHERE content_item_id = ?))").run(content.id);
+        database.prepare("DELETE FROM escalation_outcomes WHERE model_call_id IN (SELECT id FROM model_calls WHERE draft_version_id IN (SELECT id FROM draft_versions WHERE content_item_id = ?))").run(content.id);
+        database.prepare("DELETE FROM recommendations WHERE agent_review_id IN (SELECT id FROM agent_reviews WHERE review_run_id IN (SELECT id FROM review_runs WHERE content_item_id = ?))").run(content.id);
+        database.prepare("DELETE FROM agent_reviews WHERE review_run_id IN (SELECT id FROM review_runs WHERE content_item_id = ?)").run(content.id);
+        database.prepare("DELETE FROM editorial_run_snapshots WHERE review_run_id IN (SELECT id FROM review_runs WHERE content_item_id = ?)").run(content.id);
+        database.prepare("UPDATE model_calls SET prior_lower_cost_model_call_id = NULL WHERE draft_version_id IN (SELECT id FROM draft_versions WHERE content_item_id = ?)").run(content.id);
+        database.prepare("DELETE FROM model_calls WHERE draft_version_id IN (SELECT id FROM draft_versions WHERE content_item_id = ?)").run(content.id);
+        database.prepare("DELETE FROM review_runs WHERE content_item_id = ?").run(content.id);
+        database.prepare("DELETE FROM content_intent_briefs WHERE content_item_id = ?").run(content.id);
+        database.prepare("UPDATE draft_versions SET parent_version_id = NULL WHERE content_item_id = ?").run(content.id);
+        database.prepare("DELETE FROM draft_versions WHERE content_item_id = ?").run(content.id);
+        database.prepare("DELETE FROM content_items WHERE id = ?").run(content.id);
+      }
+      database.prepare("DELETE FROM intake_messages WHERE conversation_id IN (SELECT id FROM intake_conversations WHERE idea_id = ?)").run(ideaId);
+      database.prepare("DELETE FROM intake_conversations WHERE idea_id = ?").run(ideaId);
+      database.prepare("DELETE FROM ideas WHERE id = ?").run(ideaId);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  } finally { database.close(); }
+}
+function saveDraft(
+  database: ReturnType<typeof db>,
+  ideaId: string,
+  body: string,
+  createdBy: string,
+  summary: string,
+  publicationFormat: DraftFormat = "linkedin",
+) {
+  const content = database
+    .prepare("SELECT id FROM content_items WHERE idea_id = ?")
+    .get(ideaId) as { id: string } | undefined;
+  if (!content) throw new Error("Content record not found.");
+  const version = (
+    database
+      .prepare(
+        "SELECT COALESCE(MAX(version_number), 0) + 1 AS value FROM draft_versions WHERE content_item_id = ?",
+      )
+      .get(content.id) as { value: number }
+  ).value;
+  const draftId = id("draft");
+  database
+    .prepare(
+      "INSERT INTO draft_versions (id, content_item_id, version_number, body, created_by, change_summary, publication_format) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .run(draftId, content.id, version, body, createdBy, summary, publicationFormat);
+  return draftId;
+}
+
+function isLongFormPlan(plan: PublicationPlan | null) {
+  return plan === "medium" || plan === "substack" || plan === "medium_linkedin" || plan === "substack_linkedin";
+}
+
+function includesLinkedinCompanion(plan: PublicationPlan | null) {
+  return plan === "medium_linkedin" || plan === "substack_linkedin";
+}
+
+function primaryDraftFormat(plan: PublicationPlan | null): DraftFormat {
+  return isLongFormPlan(plan) ? "canonical" : "linkedin";
+}
+
+function assertFormatAllowedForPlan(plan: PublicationPlan | null, format: DraftFormat) {
+  const allowed = format === primaryDraftFormat(plan) || (format === "linkedin_companion" && includesLinkedinCompanion(plan));
+  if (!allowed) throw new Error("The selected draft format does not match this idea's publication plan.");
+}
+
+type StoredDraft = { id: string; body: string; version_number: number; created_by: string; voice_skill_version: string | null };
+type CompanionSource = {
+  id: string;
+  version_number: number;
+  parent_content_item_id: string;
+  child_content_item_id: string;
+  parent_publication_format: DraftFormat;
+  child_publication_format: DraftFormat;
+  relationship_count: number;
+};
+function latestDraftFor(database: ReturnType<typeof db> | ReturnType<typeof readDb>, contentId: string, format: DraftFormat) {
+  return database.prepare(
+    "SELECT draft.id, draft.body, draft.version_number, draft.created_by, voice.version AS voice_skill_version FROM draft_versions draft LEFT JOIN voice_skill_versions voice ON voice.id = draft.voice_skill_version_id WHERE draft.content_item_id = ? AND draft.created_by != 'development_snapshot' AND draft.publication_format = ? ORDER BY draft.version_number DESC LIMIT 1",
+  ).get(contentId, format) as StoredDraft | undefined;
+}
+
+/** Published output versions are immutable local records; revisions must start from a new workflow. */
+function assertWorkflowNotPublished(
+  database: ReturnType<typeof db> | ReturnType<typeof readDb>,
+  ideaId: string,
+) {
+  const publication = database
+    .prepare(
+      "SELECT 1 FROM publications publication JOIN content_items content ON content.id = publication.content_item_id WHERE content.idea_id = ? LIMIT 1",
+    )
+    .get(ideaId);
+  if (publication)
+    throw new Error(
+      "Published workflow is locked. Published history remains read-only; create a new idea to develop fresh content.",
+    );
+}
+
+/** Blocks Board and development mutations once an idea has publication history. */
+export function assertPublishedWorkflowUnlocked(ideaId: string) {
+  const database = readDb();
+  try {
+    assertWorkflowNotPublished(database, ideaId);
+  } finally {
+    database.close();
+  }
+}
+
+function assertDraftNotPublished(
+  database: ReturnType<typeof db> | ReturnType<typeof readDb>,
+  draftVersionId: string,
+) {
+  const publication = database
+    .prepare("SELECT id FROM publications WHERE draft_version_id = ? LIMIT 1")
+    .get(draftVersionId) as { id: string } | undefined;
+  if (publication)
+    throw new Error(
+      "This exact output is already published and cannot be changed, reviewed, or regenerated. Create a new revision instead.",
+    );
+}
+
+function exactCurrentDraft(
+  database: ReturnType<typeof db> | ReturnType<typeof readDb>,
+  contentId: string,
+  draftVersionId: string,
+  format: DraftFormat,
+) {
+  const selected = database.prepare(
+    "SELECT id, body, version_number, created_by, publication_format FROM draft_versions WHERE id = ? AND content_item_id = ? AND publication_format = ?",
+  ).get(draftVersionId, contentId, format) as (StoredDraft & { publication_format: DraftFormat }) | undefined;
+  const current = latestDraftFor(database, contentId, format);
+  if (!selected || !current || selected.id !== current.id)
+    throw new Error("The selected draft version or format is no longer current. Reload it before continuing.");
+  return selected;
+}
+
+function assertCurrentCompanionRelationship(
+  database: ReturnType<typeof db> | ReturnType<typeof readDb>,
+  contentId: string,
+  companionId: string,
+) {
+  const source = companionSource(database, companionId);
+  const currentCanonical = latestDraftFor(database, contentId, "canonical");
+  if (
+    !source ||
+    source.relationship_count !== 1 ||
+    source.parent_content_item_id !== contentId ||
+    source.child_content_item_id !== contentId ||
+    source.parent_publication_format !== "canonical" ||
+    source.child_publication_format !== "linkedin_companion" ||
+    !currentCanonical ||
+    source.id !== currentCanonical.id
+  )
+    throw new Error("This LinkedIn companion is stale or unlinked. Create a new companion from the current canonical article before continuing.");
+  return source;
+}
+
+function companionSource(database: ReturnType<typeof db> | ReturnType<typeof readDb>, companionId: string) {
+  return database.prepare(
+    `SELECT parent.id, parent.version_number, parent.content_item_id AS parent_content_item_id,
+      child.content_item_id AS child_content_item_id, parent.publication_format AS parent_publication_format,
+      child.publication_format AS child_publication_format,
+      (SELECT COUNT(*) FROM draft_relationships count_relationship
+        WHERE count_relationship.child_draft_version_id = child.id
+          AND count_relationship.relationship_type = 'linkedin_companion') AS relationship_count
+      FROM draft_versions child
+      JOIN draft_relationships relationship
+        ON relationship.child_draft_version_id = child.id
+        AND relationship.relationship_type = 'linkedin_companion'
+      JOIN draft_versions parent ON parent.id = relationship.parent_draft_version_id
+      WHERE child.id = ?
+      LIMIT 1`,
+  ).get(companionId) as CompanionSource | undefined;
+}
+
+function publicationIntegrityWarning(
+  database: ReturnType<typeof db> | ReturnType<typeof readDb>,
+  contentId: string,
+) {
+  const publishedCompanions = database
+    .prepare(
+      `SELECT publication.draft_version_id
+        FROM publications publication
+        JOIN draft_versions draft ON draft.id = publication.draft_version_id
+        WHERE publication.content_item_id = ? AND draft.publication_format = 'linkedin_companion'`,
+    )
+    .all(contentId) as Array<{ draft_version_id: string }>;
+  for (const companion of publishedCompanions) {
+    const source = companionSource(database, companion.draft_version_id);
+    if (
+      !source ||
+      source.relationship_count !== 1 ||
+      source.parent_content_item_id !== contentId ||
+      source.child_content_item_id !== contentId ||
+      source.parent_publication_format !== "canonical" ||
+      source.child_publication_format !== "linkedin_companion"
+    )
+      return "Publication history is inconsistent: a published LinkedIn companion has no valid canonical source. Existing records were preserved. Create a new idea or revision instead of changing this workflow.";
+    const sourcePublication = database
+      .prepare("SELECT 1 FROM publications WHERE content_item_id = ? AND draft_version_id = ? LIMIT 1")
+      .get(contentId, source.id);
+    if (!sourcePublication)
+      return "Publication history is inconsistent: a LinkedIn companion was recorded before its canonical article. Existing records were preserved. Create a new idea or revision instead of changing this workflow.";
+  }
+  return undefined;
+}
+
+function assertPublicationHistoryConsistent(
+  database: ReturnType<typeof db> | ReturnType<typeof readDb>,
+  contentId: string,
+) {
+  const warning = publicationIntegrityWarning(database, contentId);
+  if (warning) throw new Error(warning);
+}
+
+function visualDirectoryName(title: string) {
+  const normalized = title
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 96);
+  return normalized || "untitled-idea";
+}
+
+function visualFileName(version: number) {
+  const timestamp = now().replace(/[-:.]/g, "").replace("Z", "Z");
+  return `draft_${version}_${timestamp}.svg`;
+}
+
+function readVisualCompanion(
+  database: ReturnType<typeof db>,
+  draftVersionId: string,
+): VisualCompanion | undefined {
+  const row = database
+    .prepare(
+      "SELECT id, draft_version_id, visual_type, title, subtitle, steps_json, alt_text, caption, file_path, created_at FROM visual_companions WHERE draft_version_id = ? ORDER BY created_at DESC LIMIT 1",
+    )
+    .get(draftVersionId) as {
+    id: string;
+    draft_version_id: string;
+    visual_type: "flow";
+    title: string;
+    subtitle: string;
+    steps_json: string;
+    alt_text: string;
+    caption: string;
+    file_path: string;
+    created_at: string;
+  } | undefined;
+  if (!row) return undefined;
+  return {
+    id: row.id,
+    draftVersionId: row.draft_version_id,
+    type: row.visual_type,
+    eyebrow: "A SIMPLE DIAGNOSTIC",
+    title: row.title,
+    subtitle: row.subtitle,
+    steps: JSON.parse(row.steps_json) as VisualCompanion["steps"],
+    altText: row.alt_text,
+    caption: row.caption,
+    filePath: row.file_path,
+    createdAt: row.created_at,
+  };
+}
+
+export function getIdea(ideaId: string): IdeaDetail | undefined {
+  const database = readDb();
+  try {
+    const row = database
+      .prepare("SELECT * FROM ideas WHERE id = ?")
+      .get(ideaId) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    const idea = mapIdea(row, themesFor(database, ideaId));
+    const notes = database
+      .prepare(
+        "SELECT id, body, created_at FROM idea_notes WHERE idea_id = ? ORDER BY created_at DESC",
+      )
+      .all(ideaId)
+      .map((note) => ({
+        id: String((note as Record<string, unknown>).id),
+        body: String((note as Record<string, unknown>).body),
+        createdAt: String((note as Record<string, unknown>).created_at),
+      }));
+    const messages = database
+      .prepare(
+        "SELECT body, message_type FROM intake_messages message JOIN intake_conversations conversation ON conversation.id = message.conversation_id WHERE conversation.idea_id = ? ORDER BY sequence",
+      )
+      .all(ideaId) as Array<{ body: string; message_type: string }>;
+    const answers = messages
+      .filter((message) =>
+        ["answered", "skipped", "best_judgment"].includes(message.message_type),
+      )
+      .map(
+        (message) =>
+          JSON.parse(message.body) as {
+            question: string;
+            answer: string;
+            choice: string;
+          },
+      );
+    const content = database
+      .prepare("SELECT id FROM content_items WHERE idea_id = ?")
+      .get(ideaId) as { id: string } | undefined;
+    const primaryFormat = primaryDraftFormat(idea.publicationPlan);
+    const primary = content ? latestDraftFor(database, content.id, primaryFormat) : undefined;
+    const legacy = content && !primary ? latestDraftFor(database, content.id, "linkedin") : undefined;
+    const draft = primary ?? legacy;
+    const canonical = content ? latestDraftFor(database, content.id, "canonical") : undefined;
+    const companion = content ? latestDraftFor(database, content.id, "linkedin_companion") : undefined;
+    const canonicalApproved = canonical
+      ? Boolean(database.prepare("SELECT 1 FROM canonical_draft_approvals WHERE canonical_draft_version_id = ?").get(canonical.id))
+      : false;
+    const companionParent = companion ? companionSource(database, companion.id) : undefined;
+    const companionRelationshipIsValid = Boolean(
+      companionParent &&
+      companionParent.relationship_count === 1 &&
+      companionParent.parent_content_item_id === content?.id &&
+      companionParent.child_content_item_id === content?.id &&
+      companionParent.parent_publication_format === "canonical" &&
+      companionParent.child_publication_format === "linkedin_companion",
+    );
+    const companionApproved = companion
+      ? Boolean(database.prepare("SELECT 1 FROM linkedin_companion_approvals WHERE companion_draft_version_id = ?").get(companion.id))
+      : false;
+    const initialRun = content
+      ? (database
+          .prepare(
+            "SELECT run.id, run.execution_mode, run.status FROM review_runs run WHERE run.content_item_id = ? AND run.review_type = 'editorial' AND run.status IN ('completed', 'partially_completed') AND (run.execution_mode = 'simulation' OR EXISTS (SELECT 1 FROM editorial_run_snapshots snapshot WHERE snapshot.review_run_id = run.id)) ORDER BY CASE run.execution_mode WHEN 'live' THEN 0 WHEN 'grounded_test' THEN 1 ELSE 2 END, run.completed_at DESC LIMIT 1",
+          )
+          .get(content.id) as { id: string; execution_mode: string; status: "completed" | "partially_completed" } | undefined)
+      : undefined;
+    const finalRun =
+      content && draft
+        ? (database
+            .prepare(
+              "SELECT id FROM review_runs WHERE content_item_id = ? AND draft_version_id = ? AND review_type = 'final_draft' ORDER BY completed_at DESC LIMIT 1",
+            )
+            .get(content.id, draft.id) as { id: string } | undefined)
+        : undefined;
+    const companionFinalRun =
+      content && companion
+        ? (database
+            .prepare(
+              "SELECT id FROM review_runs WHERE content_item_id = ? AND draft_version_id = ? AND review_type = 'final_draft' ORDER BY completed_at DESC LIMIT 1",
+            )
+            .get(content.id, companion.id) as { id: string } | undefined)
+        : undefined;
+    const publications = content
+      ? (database
+          .prepare(
+            "SELECT draft_version_id, platform, published_at, publication_url FROM publications WHERE content_item_id = ? ORDER BY published_at DESC",
+          )
+          .all(content.id) as Array<{
+            draft_version_id: string;
+            platform: "linkedin" | "medium" | "substack";
+            published_at: string;
+            publication_url: string | null;
+          }>).map((publication) => ({
+            draftVersionId: publication.draft_version_id,
+            platform: publication.platform,
+            publishedAt: publication.published_at,
+            url: publication.publication_url ?? undefined,
+          }))
+      : [];
+    return {
+      ...idea,
+      notes,
+      questions: questionsFor(
+        `${idea.rawNotes} ${notes.map((note) => note.body).join(" ")}`,
+      ),
+      answers,
+      draft: draft
+        ? {
+            id: draft.id,
+            body: draft.body,
+            version: draft.version_number,
+            createdBy: draft.created_by,
+            voiceSkillVersion: draft.voice_skill_version ?? undefined,
+          }
+        : undefined,
+      canonicalDraft: canonical ? {
+        id: canonical.id, body: canonical.body, version: canonical.version_number, createdBy: canonical.created_by,
+        approved: canonicalApproved, voiceSkillVersion: canonical.voice_skill_version ?? undefined,
+      } : undefined,
+      linkedinCompanion: companion && companionParent ? {
+        id: companion.id, body: companion.body, version: companion.version_number, createdBy: companion.created_by,
+        stale: !companionRelationshipIsValid || companionParent.id !== canonical?.id,
+        approved: companionApproved,
+        sourceCanonicalVersion: companionParent.version_number,
+        voiceSkillVersion: companion.voice_skill_version ?? undefined,
+      } : undefined,
+      editorialBrief: initialRun
+        ? readBrief(database, initialRun.id, idea, initialRun.execution_mode, initialRun.status)
+        : undefined,
+      finalReview:
+        finalRun && draft
+          ? readFinalReview(database, finalRun.id, draft.id, initialRun?.id)
+          : undefined,
+      linkedinCompanionFinalReview:
+        companionFinalRun && companion
+          ? readFinalReview(database, companionFinalRun.id, companion.id, initialRun?.id)
+          : undefined,
+      publications,
+      reviewHistory: content ? readReviewHistory(database, content.id) : [],
+      visualCompanion: draft ? readVisualCompanion(database, draft.id) : undefined,
+      escalations: content ? readEscalationOutcomes(database, content.id) : [],
+      publicationIntegrityWarning: content ? publicationIntegrityWarning(database, content.id) : undefined,
+      grounding: initialRun && ["grounded_test", "live"].includes(initialRun.execution_mode)
+        ? readGroundingProvenance(database, initialRun.id, draft?.id)
+        : undefined,
+      context: initialRun && ["grounded_test", "live"].includes(initialRun.execution_mode)
+        ? readGroundingProvenance(database, initialRun.id, draft?.id)?.sections.map(({ headingPath, sourceLocation, text }) => ({ headingPath, sourceLocation, text })) ?? []
+        : searchKnowledge(`${idea.title} ${idea.rawNotes}`, 5).map(
+            ({ headingPath, sourceLocation, text }) => ({ headingPath, sourceLocation, text }),
+          ),
+    };
+  } finally {
+    database.close();
+  }
+}
+function readBrief(
+  database: ReturnType<typeof db>,
+  runId: string,
+  idea: IdeaSummary,
+  executionMode = "simulation",
+  runStatus: "completed" | "partially_completed" = "completed",
+): EditorialBrief | undefined {
+  const rows = database
+    .prepare(
+      "SELECT role.name, review.structured_output, review.text_output, review.confidence_score, review.status FROM agent_reviews review JOIN agent_roles role ON role.id = review.role_id WHERE review.review_run_id = ? ORDER BY review.created_at",
+    )
+    .all(runId) as Array<{
+    name: string;
+    structured_output: string | null;
+    text_output: string | null;
+    confidence_score: number | null;
+    status: string;
+  }>;
+  if (!rows.length) return undefined;
+  const reviews = rows
+    .filter((row) => row.name !== "synthesizer")
+    .map((row) => {
+      const data = row.structured_output
+        ? (JSON.parse(row.structured_output) as {
+            summary: string;
+            top_recommendations: string[];
+          })
+        : { summary: row.text_output ?? "Review unavailable", top_recommendations: [] };
+      return {
+        role: row.name,
+        status: row.status,
+        summary: data.summary,
+        confidence: row.confidence_score ?? 0,
+        details: data.top_recommendations,
+      };
+    });
+  const synthesis = rows.find((row) => row.name === "synthesizer");
+  const data = synthesis?.structured_output
+    ? (JSON.parse(synthesis.structured_output) as {
+        summary: string;
+        top_recommendations: string[];
+      })
+    : undefined;
+  const grounded = data as
+    | (typeof data & {
+        central_thesis?: string;
+        strongest?: string;
+        unclear?: string;
+        counterargument?: string;
+        evidence_needed?: string;
+        recommended_changes?: string[];
+        next_step?: string;
+      })
+    | undefined;
+  return {
+    runId,
+    executionMode,
+    runStatus,
+    thesis: grounded?.central_thesis ?? idea.rawNotes.slice(0, 300),
+    strongest: grounded?.strongest ?? reviews[0]?.summary ?? "The idea has a useful starting point.",
+    unclear: grounded?.unclear ?? reviews[1]?.summary ?? "Clarify the key claim.",
+    counterargument: grounded?.counterargument ?? "What evidence would change this conclusion?",
+    evidenceNeeded: grounded?.evidence_needed ?? "Add one concrete example, source, or explicitly labelled uncertainty.",
+    recommendedChanges:
+      grounded?.recommended_changes ??
+      data?.top_recommendations ??
+      reviews.flatMap((review) => review.details).slice(0, 3),
+    nextStep: grounded?.next_step ?? "Revise the point, then generate or edit a working draft.",
+    reviews,
+  };
+}
+
+function readGroundingProvenance(
+  database: ReturnType<typeof db>,
+  runId: string,
+  currentDraftId?: string,
+): GroundingProvenance | undefined {
+  const snapshot = database
+    .prepare(
+      "SELECT snapshot.bok_version, snapshot.bok_checksum, snapshot.voice_skill_version, snapshot.voice_skill_checksum, snapshot.generated_draft_version_id, run.execution_mode, run.draft_version_id FROM editorial_run_snapshots snapshot JOIN review_runs run ON run.id = snapshot.review_run_id WHERE snapshot.review_run_id = ?",
+    )
+    .get(runId) as
+    | {
+        bok_version: string;
+        bok_checksum: string;
+        voice_skill_version: string;
+        voice_skill_checksum: string;
+        generated_draft_version_id: string | null;
+        execution_mode: "grounded_test" | "live";
+        draft_version_id: string;
+      }
+    | undefined;
+  if (!snapshot) return undefined;
+  const sections = database
+    .prepare(
+      "SELECT section.heading_path, json_extract(section.metadata, '$.sourceLocation') AS source_location, section.text, record.relevance_score, record.rank FROM retrieval_records record JOIN model_calls call ON call.id = record.model_call_id JOIN knowledge_sections section ON section.id = record.knowledge_section_id WHERE call.draft_version_id = ? AND call.agent_role = 'retrieval' ORDER BY record.rank ASC",
+    )
+    .all(snapshot.draft_version_id) as Array<{
+    heading_path: string;
+    source_location: string;
+    text: string;
+    relevance_score: number;
+    rank: number;
+  }>;
+  const calls = database
+    .prepare(
+      "SELECT agent_role, provider, model, prompt_template_version, success, input_tokens, output_tokens, total_tokens, latency_ms, estimated_total_cost, retry_count, error_category FROM model_calls WHERE draft_version_id = ? OR draft_version_id = ? ORDER BY started_at ASC, rowid ASC",
+    )
+    .all(snapshot.draft_version_id, snapshot.generated_draft_version_id ?? "") as Array<{
+    agent_role: string;
+    provider: string;
+    model: string;
+    prompt_template_version: string | null;
+    success: number;
+    input_tokens: number | null;
+    output_tokens: number | null;
+    total_tokens: number | null;
+    latency_ms: number | null;
+    estimated_total_cost: number | null;
+    retry_count: number;
+    error_category: string | null;
+  }>;
+  return {
+    runId,
+    executionMode: snapshot.execution_mode,
+    draftVersionId:
+      currentDraftId === snapshot.generated_draft_version_id
+        ? snapshot.generated_draft_version_id ?? undefined
+        : undefined,
+    bok: { version: snapshot.bok_version, checksum: snapshot.bok_checksum },
+    voice: { version: snapshot.voice_skill_version, checksum: snapshot.voice_skill_checksum },
+    sections: sections.map((section) => ({
+      headingPath: section.heading_path,
+      sourceLocation: section.source_location,
+      text: section.text,
+      score: section.relevance_score,
+      rank: section.rank,
+    })),
+    calls: calls.map((call) => ({
+      role: call.agent_role,
+      provider: call.provider,
+      model: call.model,
+      promptVersion: call.prompt_template_version ?? undefined,
+      success: Boolean(call.success),
+      inputTokens: call.input_tokens ?? undefined,
+      outputTokens: call.output_tokens ?? undefined,
+      totalTokens: call.total_tokens ?? undefined,
+      latencyMs: call.latency_ms ?? undefined,
+      estimatedCost: call.estimated_total_cost ?? 0,
+      retryCount: call.retry_count,
+      errorCategory: call.error_category ?? undefined,
+    })),
+  };
+}
+function readFinalReview(
+  database: ReturnType<typeof db>,
+  runId: string,
+  draftVersionId: string,
+  sourceReviewRunId?: string,
+): FinalDraftReview | undefined {
+  const rows = database
+    .prepare(
+      "SELECT role.name, review.structured_output, review.text_output, review.confidence_score, review.status FROM agent_reviews review JOIN agent_roles role ON role.id = review.role_id WHERE review.review_run_id = ? ORDER BY review.created_at",
+    )
+    .all(runId) as Array<{
+    name: string;
+    structured_output: string | null;
+    text_output: string | null;
+    confidence_score: number | null;
+    status: string;
+  }>;
+  const synthesis = rows.find((row) => row.name === "synthesizer");
+  if (!synthesis?.structured_output) return undefined;
+  const data = JSON.parse(synthesis.structured_output) as Omit<
+    FinalDraftReview,
+    "runId" | "draftVersionId" | "reviews"
+  >;
+  const reviews = rows
+    .filter((row) => row.name !== "synthesizer")
+    .map((row) => {
+      const output = row.structured_output
+        ? (JSON.parse(row.structured_output) as {
+            summary: string;
+            top_recommendations: string[];
+            check_status?: "pass" | "review" | "needs_revision";
+          })
+        : { summary: row.text_output ?? "Review unavailable", top_recommendations: [] };
+      return {
+        role: row.name,
+        status: row.status,
+        summary: output.summary,
+        confidence: row.confidence_score ?? 0,
+        checkStatus: output.check_status,
+        details: output.top_recommendations,
+      };
+    });
+  const initialRecommendations = data.initialRecommendations ?? [];
+  const recommendationStatuses = recommendationStatusesFor(database, sourceReviewRunId, initialRecommendations);
+  const dispositionByRecommendation = new Map(
+    recommendationStatuses.map((item) => [item.recommendation, item.disposition]),
+  );
+  const explicitlyAddressed = recommendationStatuses
+    .filter((item) => ["resolved", "revised", "superseded"].includes(item.disposition ?? ""))
+    .map((item) => item.recommendation);
+  const remaining = (data.remaining ?? []).filter((item) => {
+    const disposition = dispositionByRecommendation.get(item);
+    return !disposition || disposition === "still_open";
+  });
+  for (const item of recommendationStatuses) {
+    if (item.disposition === "still_open" && !remaining.includes(item.recommendation))
+      remaining.push(item.recommendation);
+  }
+  return {
+    runId,
+    draftVersionId,
+    ...data,
+    recommendationStatuses,
+    addressed: [...new Set([...(data.addressed ?? []), ...explicitlyAddressed])],
+    remaining: [...new Set(remaining)],
+    reviews,
+  };
+}
+
+function recommendationStatusesFor(
+  database: ReturnType<typeof db>,
+  sourceReviewRunId: string | undefined,
+  recommendations: string[],
+): FinalDraftReview["recommendationStatuses"] {
+  if (!sourceReviewRunId) return recommendations.map((recommendation) => ({ recommendation }));
+  const rows = database
+    .prepare(
+      "SELECT recommendation_text, disposition FROM recommendation_dispositions WHERE source_review_run_id = ?",
+    )
+    .all(sourceReviewRunId) as Array<{
+      recommendation_text: string;
+      disposition: "resolved" | "revised" | "superseded" | "still_open";
+    }>;
+  const byText = new Map(rows.map((row) => [row.recommendation_text, row.disposition]));
+  return recommendations.map((recommendation) => ({
+    recommendation,
+    disposition: byText.get(recommendation),
+  }));
+}
+
+function reviewSummary(structured: string | null, fallback: string | null) {
+  if (structured) {
+    try {
+      const parsed = JSON.parse(structured) as { summary?: unknown };
+      if (typeof parsed.summary === "string") return parsed.summary;
+    } catch {
+      // Historical malformed output is not executable and remains unavailable.
+    }
+  }
+  return fallback ?? undefined;
+}
+
+function readEscalationOutcomes(
+  database: ReturnType<typeof db>,
+  contentItemId: string,
+): EscalationOutcome[] {
+  const rows = database
+    .prepare(
+      `SELECT outcome.model_call_id, outcome.output_accepted, outcome.influenced_final_draft,
+        outcome.materially_improved, current_call.agent_role, current_call.provider,
+        current_call.model, current_call.escalation_reason,
+        json_extract(current_call.raw_usage, '$.routeTier') AS current_tier,
+        current_review.structured_output AS current_structured,
+        current_review.text_output AS current_text,
+        prior_call.id AS prior_call_id, prior_call.provider AS prior_provider,
+        prior_call.model AS prior_model, json_extract(prior_call.raw_usage, '$.routeTier') AS prior_tier,
+        prior_review.structured_output AS prior_structured, prior_review.text_output AS prior_text
+      FROM escalation_outcomes outcome
+      JOIN model_calls current_call ON current_call.id = outcome.model_call_id
+      JOIN draft_versions draft ON draft.id = current_call.draft_version_id
+      LEFT JOIN model_calls prior_call ON prior_call.id = outcome.prior_lower_cost_model_call_id
+      LEFT JOIN agent_reviews current_review
+        ON current_review.review_run_id = outcome.review_run_id
+        AND current_review.role_id = 'role_' || current_call.agent_role
+      LEFT JOIN agent_reviews prior_review
+        ON prior_review.review_run_id = outcome.prior_review_run_id
+        AND prior_review.role_id = 'role_' || current_call.agent_role
+      WHERE draft.content_item_id = ?
+      ORDER BY outcome.updated_at DESC`,
+    )
+    .all(contentItemId) as Array<{
+      model_call_id: string;
+      output_accepted: number | null;
+      influenced_final_draft: number | null;
+      materially_improved: number | null;
+      agent_role: string;
+      provider: string;
+      model: string;
+      escalation_reason: string | null;
+      current_tier: string | null;
+      current_structured: string | null;
+      current_text: string | null;
+      prior_call_id: string | null;
+      prior_provider: string | null;
+      prior_model: string | null;
+      prior_tier: string | null;
+      prior_structured: string | null;
+      prior_text: string | null;
+    }>;
+  return rows.map((row) => ({
+    modelCallId: row.model_call_id,
+    role: row.agent_role,
+    provider: row.provider,
+    model: row.model,
+    tier: row.current_tier ?? undefined,
+    escalationReason: row.escalation_reason ?? "Explicit reviewer rerun.",
+    reviewSummary: reviewSummary(row.current_structured, row.current_text),
+    lowerCost: row.prior_call_id && row.prior_provider && row.prior_model
+      ? {
+          modelCallId: row.prior_call_id,
+          provider: row.prior_provider,
+          model: row.prior_model,
+          tier: row.prior_tier ?? undefined,
+          reviewSummary: reviewSummary(row.prior_structured, row.prior_text),
+        }
+      : undefined,
+    outputAccepted: row.output_accepted === null ? undefined : Boolean(row.output_accepted),
+    influencedFinalDraft: row.influenced_final_draft === null ? undefined : Boolean(row.influenced_final_draft),
+    materiallyImproved: row.materially_improved === null ? undefined : Boolean(row.materially_improved),
+  }));
+}
+function readReviewHistory(
+  database: ReturnType<typeof db>,
+  contentId: string,
+): ReviewHistoryItem[] {
+  const runs = database
+    .prepare(
+      "SELECT run.id, run.review_type, run.draft_version_id, run.completed_at, draft.version_number FROM review_runs run JOIN draft_versions draft ON draft.id = run.draft_version_id WHERE run.content_item_id = ? AND run.status = 'completed' ORDER BY run.completed_at DESC",
+    )
+    .all(contentId) as Array<{
+    id: string;
+    review_type: "editorial" | "final_draft";
+    draft_version_id: string;
+    completed_at: string;
+    version_number: number;
+  }>;
+  return runs.map((run) => {
+    const rows = database
+      .prepare(
+        "SELECT role.name, review.structured_output, review.text_output, review.confidence_score, review.status FROM agent_reviews review JOIN agent_roles role ON role.id = review.role_id WHERE review.review_run_id = ? ORDER BY review.created_at",
+      )
+      .all(run.id) as Array<{
+        name: string;
+        structured_output: string | null;
+        text_output: string | null;
+        confidence_score: number | null;
+        status: string;
+    }>;
+    const synthesis = rows.find((row) => row.name === "synthesizer");
+    const synthesisOutput = synthesis?.structured_output
+      ? (JSON.parse(synthesis.structured_output) as { summary?: string })
+      : undefined;
+    return {
+      runId: run.id,
+      reviewType: run.review_type,
+      draftVersion: run.version_number,
+      draftVersionId: run.draft_version_id,
+      completedAt: run.completed_at,
+      summary: synthesisOutput?.summary ?? "Review completed.",
+      reviews: rows
+        .filter((row) => row.name !== "synthesizer")
+        .map((row) => {
+          const output = row.structured_output
+            ? (JSON.parse(row.structured_output) as {
+                summary: string;
+                top_recommendations: string[];
+                check_status?: "pass" | "review" | "needs_revision";
+              })
+            : { summary: row.text_output ?? "Review unavailable", top_recommendations: [] };
+          return {
+            role: row.name,
+            status: row.status,
+            summary: output.summary,
+            confidence: row.confidence_score ?? 0,
+            checkStatus: output.check_status,
+            details: output.top_recommendations,
+          };
+        }),
+    };
+  });
+}
+export function developIdea(ideaId: string, input: unknown) {
+  const value = developmentInput.parse(input);
+  const database = db();
+  try {
+    const idea = database
+      .prepare("SELECT raw_notes FROM ideas WHERE id = ?")
+      .get(ideaId) as { raw_notes: string } | undefined;
+    if (!idea) throw new Error("Idea not found.");
+    assertWorkflowNotPublished(database, ideaId);
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const conversation = database
+        .prepare("SELECT id FROM intake_conversations WHERE idea_id = ?")
+        .get(ideaId) as { id: string } | undefined;
+      const conversationId = conversation?.id ?? id("conversation");
+      if (!conversation)
+        database
+          .prepare(
+            "INSERT INTO intake_conversations (id, idea_id, status) VALUES (?, ?, 'completed')",
+          )
+          .run(conversationId, ideaId);
+      let seq = (
+        database
+          .prepare(
+            "SELECT COALESCE(MAX(sequence), 0) AS value FROM intake_messages WHERE conversation_id = ?",
+          )
+          .get(conversationId) as { value: number }
+      ).value;
+      for (const answer of value.answers)
+        database
+          .prepare(
+            "INSERT INTO intake_messages (id, conversation_id, role, message_type, body, sequence) VALUES (?, ?, 'user', ?, ?, ?)",
+          )
+          .run(
+            id("message"),
+            conversationId,
+            value.useBestJudgment ? "best_judgment" : answer.choice,
+            JSON.stringify(answer),
+            ++seq,
+          );
+      database
+        .prepare(
+          "UPDATE ideas SET status = 'ready_to_review', updated_at = ? WHERE id = ?",
+        )
+        .run(now(), ideaId);
+      database
+        .prepare(
+          "UPDATE content_items SET status = 'ready_to_review', updated_at = ? WHERE idea_id = ?",
+        )
+        .run(now(), ideaId);
+      database.exec("COMMIT");
+      return getIdea(ideaId)!;
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    database.close();
+  }
+}
+function seedRole(database: ReturnType<typeof db>, role: string) {
+  database
+    .prepare(
+      "INSERT OR IGNORE INTO agent_roles (id, name, description, prompt_path, prompt_version, prompt_checksum) VALUES (?, ?, ?, ?, 'lean-1', 'local')",
+    )
+    .run(`role_${role}`, role, role, `prompts/roles/${role}.md`);
+}
+function reviewFor(role: string, idea: IdeaDetail) {
+  const thesis = idea.rawNotes.replace(/\s+/g, " ").slice(0, 180);
+  const copy = {
+    strategist: [
+      `The idea can be useful when it makes one operational consequence clear.`,
+      "Narrow the reader takeaway to a single decision or behavior.",
+    ],
+    skeptic: [
+      `The claim needs a clear boundary: where could this observation fail?`,
+      "Separate observed pattern from a universal claim and name evidence still needed.",
+    ],
+    editor: [
+      `The opening has a real point of view; make the next sentence explain why it matters.`,
+      "Prefer concrete language, short paragraphs, and an inviting question over a declaration.",
+    ],
+  }[role] ?? [
+    "Synthesize the independent feedback.",
+    "Prioritize the most useful revision.",
+  ];
+  return {
+    role,
+    summary: `${copy[0]} Current starting point: ${thesis}`,
+    confidence: {
+      score: 0.72,
+      reason:
+        "Local deterministic review. Validate factual claims before publication.",
+    },
+    findings: [],
+    strengths: ["A distinct observation is present."],
+    risks: ["The local mock cannot verify factual claims."],
+    top_recommendations: [copy[1]],
+    recommended_action: "revise",
+  };
+}
+export function runLeanBoard(ideaId: string): IdeaDetail {
+  const database = db();
+  try {
+    const idea = getIdea(ideaId);
+    if (!idea) throw new Error("Idea not found.");
+    assertWorkflowNotPublished(database, ideaId);
+    const content = database
+      .prepare("SELECT id FROM content_items WHERE idea_id = ?")
+      .get(ideaId) as { id: string };
+    if (!idea.draft)
+      saveDraft(
+        database,
+        ideaId,
+        workingDraft(idea),
+        "initial_drafter",
+        "Local working draft created from the idea and notes.",
+        primaryDraftFormat(idea.publicationPlan),
+      );
+    const currentDraft = database
+      .prepare(
+        "SELECT id FROM draft_versions WHERE content_item_id = ? AND publication_format = ? ORDER BY version_number DESC LIMIT 1",
+      )
+      .get(content.id, primaryDraftFormat(idea.publicationPlan)) as { id: string };
+    const runId = id("review_run");
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      database
+        .prepare(
+          "INSERT INTO review_runs (id, content_item_id, draft_version_id, status, estimated_cost, actual_cost, budget_cap, started_at, completed_at) VALUES (?, ?, ?, 'completed', 0, 0, 0, ?, ?)",
+        )
+        .run(runId, content.id, currentDraft.id, now(), now());
+      const boundary = createUntrustedContextBlock([
+        { source: "user idea", text: idea.rawNotes },
+        ...idea.notes.map((note) => ({ source: "user note", text: note.body })),
+      ]);
+      for (const role of ["strategist", "skeptic", "editor"]) {
+        seedRole(database, role);
+        const output = reviewFor(role, idea);
+        const callId = id("model_call");
+        database
+          .prepare(
+            "INSERT INTO model_calls (id, provider, model, agent_role, project_id, draft_version_id, input_tokens, output_tokens, total_tokens, estimated_input_cost, estimated_output_cost, estimated_total_cost, ended_at, latency_ms, success, provider_request_id, raw_usage) VALUES (?, 'mock', 'local-editorial-v1', ?, 'local-editorial-board', ?, ?, 0, ?, 0, 0, 0, ?, 1, 1, 'local', ?)",
+          )
+          .run(
+            callId,
+            role,
+            currentDraft.id,
+            idea.rawNotes.split(/\s+/).length,
+            idea.rawNotes.split(/\s+/).length,
+            now(),
+            JSON.stringify({ injectionSignals: boundary.injectionSignals }),
+          );
+        const reviewId = id("review");
+        database
+          .prepare(
+            "INSERT INTO agent_reviews (id, review_run_id, role_id, prompt_version, structured_output, text_output, confidence_score, status) VALUES (?, ?, ?, 'lean-1', ?, ?, ?, 'completed')",
+          )
+          .run(
+            reviewId,
+            runId,
+            `role_${role}`,
+            JSON.stringify(output),
+            output.summary,
+            output.confidence.score,
+          );
+        for (const recommendation of output.top_recommendations)
+          database
+            .prepare(
+              "INSERT INTO recommendations (id, agent_review_id, category, recommendation, severity) VALUES (?, ?, 'editorial', ?, 'medium')",
+            )
+            .run(id("recommendation"), reviewId, recommendation);
+      }
+      seedRole(database, "synthesizer");
+      const synthesis = {
+        role: "synthesizer",
+        summary:
+          "Keep the distinct observation, state the practical implication, and make the evidence boundary visible.",
+        confidence: { score: 0.74, reason: "Local deterministic synthesis." },
+        findings: [],
+        strengths: [],
+        risks: [],
+        top_recommendations: [
+          "Lead with the observation, then explain why operational discipline changes the outcome.",
+          "Use one example or state the uncertainty plainly.",
+        ],
+        recommended_action: "draft",
+      };
+      database
+        .prepare(
+          "INSERT INTO agent_reviews (id, review_run_id, role_id, prompt_version, structured_output, text_output, confidence_score, status) VALUES (?, ?, 'role_synthesizer', 'lean-1', ?, ?, ?, 'completed')",
+        )
+        .run(
+          id("review"),
+          runId,
+          JSON.stringify(synthesis),
+          synthesis.summary,
+          synthesis.confidence.score,
+        );
+      database
+        .prepare(
+          "UPDATE ideas SET status = 'drafted', updated_at = ? WHERE id = ?",
+        )
+        .run(now(), ideaId);
+      database
+        .prepare(
+          "UPDATE content_items SET status = 'drafted', updated_at = ? WHERE idea_id = ?",
+        )
+        .run(now(), ideaId);
+      database.exec("COMMIT");
+      return getIdea(ideaId)!;
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    database.close();
+  }
+}
+function workingDraft(idea: IdeaDetail) {
+  const source = idea.rawNotes.replace(/\s+/g, " ").trim();
+  const notes = idea.notes
+    .map((note) => note.body)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const short = `${idea.title}\n\n${source}\n\nThat is worth pausing on, not because every organization needs the same answer, but because activity can easily be mistaken for progress. The practical question is what changes in the operating model, decision-making, or day-to-day work.\n\n${notes ? `${notes}\n\n` : ""}The useful next step is to make the claim specific, state what evidence would strengthen it, and leave room for the exceptions that matter. What would this look like in your organization?`;
+  if (!isLongFormPlan(idea.publicationPlan)) return short;
+  return `${short}\n\nFor a longer piece, it helps to stay with the operating consequence. A useful starting point is to describe the current workflow, the decision someone is trying to make, and the condition that would show genuine improvement. That keeps the argument connected to work rather than to a generic statement about technology.\n\nIt is also worth naming the boundary. A model, data quality, or use-case fit may still be the limiting factor. The point is not that operating discipline explains every outcome. It is that once a use case has technical promise, ownership, controls, support, and measurement often decide whether it becomes dependable.\n\nThat distinction gives leaders a more useful question than whether the latest tool is impressive: what has to be true for this work to be trusted, owned, and worth continuing?`;
+}
+
+function finalDraftReviewFor(
+  role: "strategist" | "skeptic" | "editor",
+  draft: string,
+  initialRecommendations: string[],
+) {
+  const words = draft.trim().split(/\s+/).filter(Boolean).length;
+  const hasQuestion = /\?/.test(draft);
+  const hasBoundary =
+    /\b(may|might|can|could|unless|depends|not every|exception|uncertain)\b/i.test(
+      draft,
+    );
+  const hasConcreteSupport =
+    /\b(for example|for instance|for me|i saw|i have seen|because|evidence|data|research)\b/i.test(
+      draft,
+    );
+  const copy = {
+    strategist: hasQuestion
+      ? "The draft has an inviting posture and a visible reader takeaway."
+      : "The draft has a point of view, but the reader invitation could be more specific.",
+    skeptic:
+      hasBoundary && hasConcreteSupport
+        ? "The draft includes useful limits or support rather than presenting the claim as universal."
+        : "The core claim still needs either a concrete example, a named evidence boundary, or both.",
+    editor:
+      words >= 90
+        ? "The draft has enough substance to evaluate as a publishable working post."
+        : "The draft is still too short to judge its full flow and support.",
+  }[role];
+  const recommendation =
+    role === "strategist"
+      ? hasQuestion
+        ? "Keep the current reader invitation; it supports the observation-and-invitation posture."
+        : "End with a specific, reader-relevant question or quieter invitation."
+      : role === "skeptic"
+        ? hasBoundary && hasConcreteSupport
+          ? "Keep the stated limits and support visible in the final edit."
+          : "Add one concrete example or explicitly state the uncertainty or boundary."
+        : words >= 90
+          ? "Do one final read for clarity and natural rhythm."
+          : "Expand the middle so the practical implication is clear.";
+  const checkStatus =
+    role === "strategist"
+      ? hasQuestion ? "pass" : "needs_revision"
+      : role === "skeptic"
+        ? hasBoundary && hasConcreteSupport ? "pass" : "needs_revision"
+        : words >= 90 ? "review" : "needs_revision";
+  return {
+    role,
+    check_status: checkStatus,
+    summary: copy,
+    confidence: {
+      score: 0.72,
+      reason:
+        "Local deterministic final review. Validate factual claims before publication.",
+    },
+    top_recommendations: [recommendation],
+    initialRecommendations,
+  };
+}
+
+export function runFinalDraftReview(
+  ideaId: string,
+  body: unknown,
+  format: DraftFormat,
+  draftVersionId: string,
+) {
+  const database = db();
+  try {
+    const idea = getIdea(ideaId);
+    if (!idea)
+      throw new Error("Create a working draft before running final review.");
+    assertFormatAllowedForPlan(idea.publicationPlan, format);
+    const content = database
+      .prepare("SELECT id FROM content_items WHERE idea_id = ?")
+      .get(ideaId) as { id: string };
+    const selected = exactCurrentDraft(database, content.id, draftVersionId, format);
+    if (format === "linkedin_companion") {
+      assertPublicationHistoryConsistent(database, content.id);
+      assertCurrentCompanionRelationship(database, content.id, selected.id);
+    } else {
+      assertWorkflowNotPublished(database, ideaId);
+    }
+    assertDraftNotPublished(database, selected.id);
+    const submitted = z.string().trim().min(1).max(80_000).parse(body);
+    if (submitted !== selected.body)
+      throw new Error("The submitted review text does not match the selected saved draft version.");
+    const draft = {
+      id: selected.id,
+      body: selected.body,
+      version: selected.version_number,
+      createdBy: selected.created_by,
+    };
+    const initialRecommendations =
+      idea.editorialBrief?.recommendedChanges ?? [];
+    const recommendationStatuses = recommendationStatusesFor(
+      database,
+      idea.editorialBrief?.runId,
+      initialRecommendations,
+    );
+    const roles = ["strategist", "skeptic", "editor"] as const;
+    const outputs = roles.map((role) =>
+      finalDraftReviewFor(role, draft.body, initialRecommendations),
+    );
+    const remaining = outputs
+      .flatMap((output) => output.top_recommendations)
+      .filter((item) => !item.startsWith("Keep") && !item.startsWith("Do one"));
+    const addressed = recommendationStatuses
+      .filter((item) => ["resolved", "revised", "superseded"].includes(item.disposition ?? ""))
+      .map((item) => item.recommendation);
+    const openInitial = recommendationStatuses
+      .filter((item) => item.disposition === "still_open")
+      .map((item) => item.recommendation);
+    const readiness: FinalDraftReview["readiness"] =
+      remaining.length ? "revise" : "ready";
+    const synthesis = {
+      readiness,
+      summary:
+        readiness === "ready"
+          ? "The draft addresses the initial editorial concerns well enough for your final judgment."
+          : "The draft is stronger, but one or more editorial concerns still need attention before publication.",
+      initialRecommendations,
+      recommendationStatuses,
+      addressed,
+      remaining: [...new Set([...openInitial, ...remaining])],
+      newConcerns: [],
+      polishSuggestions: finalPolishSuggestions(draft.body),
+      nextStep:
+        readiness === "ready"
+          ? "Review the optional final-polish suggestions, apply only what sounds like you, then run the human-voice check."
+          : "Address the open items, save a new draft version, then rerun only the review that is still useful.",
+      role: "synthesizer",
+      confidence: { score: 0.74, reason: "Local deterministic synthesis." },
+      top_recommendations: [],
+    };
+    const runId = id("review_run");
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      database
+        .prepare(
+          "INSERT INTO review_runs (id, content_item_id, draft_version_id, review_type, status, estimated_cost, actual_cost, budget_cap, started_at, completed_at) VALUES (?, ?, ?, 'final_draft', 'completed', 0, 0, 0, ?, ?)",
+        )
+        .run(runId, content.id, draft.id, now(), now());
+      const boundary = createUntrustedContextBlock([
+        { source: "user draft", text: draft.body },
+      ]);
+      for (const output of outputs) {
+        seedRole(database, output.role);
+        database
+          .prepare(
+            "INSERT INTO model_calls (id, provider, model, agent_role, project_id, draft_version_id, input_tokens, output_tokens, total_tokens, estimated_input_cost, estimated_output_cost, estimated_total_cost, ended_at, latency_ms, success, provider_request_id, raw_usage) VALUES (?, 'mock', 'local-editorial-v1', ?, 'local-editorial-board', ?, ?, 0, ?, 0, 0, 0, ?, 1, 1, 'local', ?)",
+          )
+          .run(
+            id("model_call"),
+            output.role,
+            draft.id,
+            draft.body.split(/\s+/).length,
+            draft.body.split(/\s+/).length,
+            now(),
+            JSON.stringify({
+              injectionSignals: boundary.injectionSignals,
+              reviewType: "final_draft",
+            }),
+          );
+        database
+          .prepare(
+            "INSERT INTO agent_reviews (id, review_run_id, role_id, prompt_version, structured_output, text_output, confidence_score, status) VALUES (?, ?, ?, 'lean-final-1', ?, ?, ?, 'completed')",
+          )
+          .run(
+            id("review"),
+            runId,
+            `role_${output.role}`,
+            JSON.stringify(output),
+            output.summary,
+            output.confidence.score,
+          );
+      }
+      seedRole(database, "synthesizer");
+      database
+        .prepare(
+          "INSERT INTO agent_reviews (id, review_run_id, role_id, prompt_version, structured_output, text_output, confidence_score, status) VALUES (?, ?, 'role_synthesizer', 'lean-final-1', ?, ?, ?, 'completed')",
+        )
+        .run(
+          id("review"),
+          runId,
+          JSON.stringify(synthesis),
+          synthesis.summary,
+          synthesis.confidence.score,
+        );
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    return getIdea(ideaId)!;
+  } finally {
+    database.close();
+  }
+}
+
+/** Returns a local human-voice assessment only for the current, unpublished exact output. */
+export function checkExactDraftVoice(ideaId: string, input: unknown) {
+  const value = voiceCheckInput.parse(input);
+  const database = readDb();
+  try {
+    const idea = getIdea(ideaId);
+    if (!idea) throw new Error("The selected draft version is no longer current. Reload it before running the final voice check.");
+    assertFormatAllowedForPlan(idea.publicationPlan, value.format);
+    const content = database.prepare("SELECT id FROM content_items WHERE idea_id = ?").get(ideaId) as { id: string } | undefined;
+    if (!content) throw new Error("The selected draft version is no longer current. Reload it before running the final voice check.");
+    const output = exactCurrentDraft(database, content.id, value.draftVersionId, value.format);
+    if (value.format === "linkedin_companion") {
+      assertPublicationHistoryConsistent(database, content.id);
+      assertCurrentCompanionRelationship(database, content.id, output.id);
+    } else {
+      assertWorkflowNotPublished(database, ideaId);
+    }
+    assertDraftNotPublished(database, output.id);
+    return checkHumanVoice(output.body);
+  } finally {
+    database.close();
+  }
+}
+
+const recommendationDispositionInput = z.object({
+  sourceReviewRunId: z.string().trim().min(1).max(200),
+  recommendation: z.string().trim().min(1).max(4_000),
+  disposition: z.enum(["resolved", "revised", "superseded", "still_open"]),
+  note: z.string().trim().max(4_000).optional(),
+});
+
+/** Records the author's decision without claiming an automatic review inferred it. */
+export function setRecommendationDisposition(ideaId: string, input: unknown) {
+  const value = recommendationDispositionInput.parse(input);
+  const database = db();
+  try {
+    const matchingRun = database
+      .prepare(
+        "SELECT run.id FROM review_runs run JOIN content_items content ON content.id = run.content_item_id WHERE run.id = ? AND content.idea_id = ? AND run.review_type = 'editorial'",
+      )
+      .get(value.sourceReviewRunId, ideaId) as { id: string } | undefined;
+    if (!matchingRun) throw new Error("The original Editorial Board recommendation was not found for this idea.");
+    assertWorkflowNotPublished(database, ideaId);
+    database
+      .prepare(
+        "INSERT INTO recommendation_dispositions (source_review_run_id, recommendation_text, disposition, note, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(source_review_run_id, recommendation_text) DO UPDATE SET disposition = excluded.disposition, note = excluded.note, updated_at = excluded.updated_at",
+      )
+      .run(value.sourceReviewRunId, value.recommendation, value.disposition, value.note ?? null, now());
+    return getIdea(ideaId)!;
+  } finally {
+    database.close();
+  }
+}
+
+const escalationOutcomeInput = z.object({
+  modelCallId: z.string().trim().min(1).max(200),
+  outputAccepted: z.boolean().optional(),
+  influencedFinalDraft: z.boolean().optional(),
+  materiallyImproved: z.boolean().optional(),
+}).refine(
+  (value) => value.outputAccepted !== undefined || value.influencedFinalDraft !== undefined || value.materiallyImproved !== undefined,
+  "Record at least one escalation outcome.",
+);
+
+/** Records the author's outcome assessment for one explicit reviewer escalation. */
+export function setEscalationOutcome(ideaId: string, input: unknown) {
+  const value = escalationOutcomeInput.parse(input);
+  const database = db();
+  try {
+    const matching = database
+      .prepare(
+        "SELECT outcome.model_call_id FROM escalation_outcomes outcome JOIN model_calls call ON call.id = outcome.model_call_id JOIN draft_versions draft ON draft.id = call.draft_version_id JOIN content_items content ON content.id = draft.content_item_id WHERE outcome.model_call_id = ? AND content.idea_id = ?",
+      )
+      .get(value.modelCallId, ideaId) as { model_call_id: string } | undefined;
+    if (!matching) throw new Error("The reviewer escalation was not found for this idea.");
+    assertWorkflowNotPublished(database, ideaId);
+    const hasAccepted = value.outputAccepted !== undefined ? 1 : 0;
+    const hasInfluenced = value.influencedFinalDraft !== undefined ? 1 : 0;
+    const hasImproved = value.materiallyImproved !== undefined ? 1 : 0;
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      database
+        .prepare(
+          "UPDATE escalation_outcomes SET output_accepted = CASE WHEN ? THEN ? ELSE output_accepted END, influenced_final_draft = CASE WHEN ? THEN ? ELSE influenced_final_draft END, materially_improved = CASE WHEN ? THEN ? ELSE materially_improved END, updated_at = ? WHERE model_call_id = ?",
+        )
+        .run(hasAccepted, value.outputAccepted ? 1 : 0, hasInfluenced, value.influencedFinalDraft ? 1 : 0, hasImproved, value.materiallyImproved ? 1 : 0, now(), value.modelCallId);
+      database
+        .prepare(
+          "UPDATE model_calls SET output_accepted = CASE WHEN ? THEN ? ELSE output_accepted END, influenced_final_draft = CASE WHEN ? THEN ? ELSE influenced_final_draft END, escalation_materially_improved = CASE WHEN ? THEN ? ELSE escalation_materially_improved END WHERE id = ?",
+        )
+        .run(hasAccepted, value.outputAccepted ? 1 : 0, hasInfluenced, value.influencedFinalDraft ? 1 : 0, hasImproved, value.materiallyImproved ? 1 : 0, value.modelCallId);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    return getIdea(ideaId)!;
+  } finally {
+    database.close();
+  }
+}
+export function saveEditedDraft(ideaId: string, body: string, format?: DraftFormat) {
+  const value = z.string().trim().min(1).max(80_000).parse(body);
+  const database = db();
+  try {
+    const idea = database.prepare("SELECT publication_plan FROM ideas WHERE id = ?").get(ideaId) as { publication_plan: PublicationPlan | null } | undefined;
+    if (!idea) throw new Error("Idea not found.");
+    const targetFormat = format ?? primaryDraftFormat(idea.publication_plan);
+    if (targetFormat === "linkedin_companion")
+      throw new Error("Use the dedicated LinkedIn companion action to save a companion version.");
+    assertFormatAllowedForPlan(idea.publication_plan, targetFormat);
+    assertWorkflowNotPublished(database, ideaId);
+    const content = database
+      .prepare("SELECT id FROM content_items WHERE idea_id = ?")
+      .get(ideaId) as { id: string } | undefined;
+    const current = content ? latestDraftFor(database, content.id, targetFormat) : undefined;
+    if (current) assertDraftNotPublished(database, current.id);
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      saveDraft(database, ideaId, value, "user", "Manual edit.", targetFormat);
+      database
+        .prepare(
+          "UPDATE ideas SET status = 'drafted', updated_at = ? WHERE id = ?",
+        )
+        .run(now(), ideaId);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    return getIdea(ideaId)!;
+  } finally {
+    database.close();
+  }
+}
+
+function linkedinCompanionFrom(canonical: string) {
+  const paragraphs = canonical.trim().split(/\n\s*\n/).map((item) => item.trim()).filter(Boolean);
+  const opening = paragraphs.slice(0, 2).join("\n\n");
+  const closing = paragraphs.at(-1) ?? "What would this look like in your organization?";
+  return `${opening}\n\nThe longer piece looks at the practical conditions behind that gap: ownership, sensible controls, and a way to tell whether the work helped.\n\n${closing}`;
+}
+
+/** Creates a companion only from the exact canonical version explicitly approved by the author. */
+export function createLinkedinCompanion(ideaId: string) {
+  const database = db();
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const plan = (database.prepare("SELECT publication_plan FROM ideas WHERE id = ?").get(ideaId) as { publication_plan: PublicationPlan | null } | undefined)?.publication_plan;
+      if (!includesLinkedinCompanion(plan ?? null))
+        throw new Error("A LinkedIn companion is available only for an approved Medium or Substack canonical article.");
+      assertWorkflowNotPublished(database, ideaId);
+      const content = database.prepare("SELECT id FROM content_items WHERE idea_id = ?").get(ideaId) as { id: string } | undefined;
+      if (!content) throw new Error("A LinkedIn companion is available only for an approved Medium or Substack canonical article.");
+      const canonical = latestDraftFor(database, content.id, "canonical");
+      if (!canonical)
+        throw new Error("A LinkedIn companion is available only for an approved Medium or Substack canonical article.");
+      // This explicit action is the author's confirmation that this exact canonical
+      // version is the source for a companion. It is not publication approval.
+      database.prepare(
+        "INSERT OR IGNORE INTO canonical_draft_approvals (canonical_draft_version_id, idea_id, approved_at) VALUES (?, ?, ?)",
+      ).run(canonical.id, ideaId, now());
+      const companionId = saveDraft(database, ideaId, linkedinCompanionFrom(canonical.body), "linkedin_companion", `LinkedIn companion derived from approved canonical draft version ${canonical.version_number}.`, "linkedin_companion");
+      database.prepare(
+        "INSERT INTO draft_relationships (parent_draft_version_id, child_draft_version_id, relationship_type) VALUES (?, ?, 'linkedin_companion')",
+      ).run(canonical.id, companionId);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    return getIdea(ideaId)!;
+  } finally { database.close(); }
+}
+
+/** Saves a separate companion version while retaining its exact canonical source relationship. */
+export function saveLinkedinCompanionDraft(ideaId: string, body: string) {
+  const value = z.string().trim().min(1).max(80_000).parse(body);
+  const database = db();
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const content = database.prepare("SELECT id FROM content_items WHERE idea_id = ?").get(ideaId) as { id: string } | undefined;
+      if (!content) throw new Error("Create a current LinkedIn companion from an approved canonical article before editing it.");
+      assertPublicationHistoryConsistent(database, content.id);
+      const current = latestDraftFor(database, content.id, "linkedin_companion");
+      if (!current)
+        throw new Error("Create a current LinkedIn companion from an approved canonical article before editing it.");
+      const source = assertCurrentCompanionRelationship(database, content.id, current.id);
+      assertDraftNotPublished(database, current.id);
+      const companionId = saveDraft(database, ideaId, value, "user", `Manual LinkedIn companion edit based on canonical version ${source.version_number}.`, "linkedin_companion");
+      database.prepare(
+        "INSERT INTO draft_relationships (parent_draft_version_id, child_draft_version_id, relationship_type) VALUES (?, ?, 'linkedin_companion')",
+      ).run(source.id, companionId);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    return getIdea(ideaId)!;
+  } finally { database.close(); }
+}
+
+/** Creates a local SVG framework graphic linked to the current saved draft version. */
+export function createVisualCompanion(ideaId: string) {
+  const idea = getIdea(ideaId);
+  if (!idea?.draft) throw new Error("Save a working draft before creating a visual companion.");
+  const database = db();
+  try {
+    const content = database
+      .prepare("SELECT id FROM content_items WHERE idea_id = ?")
+      .get(ideaId) as { id: string } | undefined;
+    if (!content) throw new Error("Content record not found.");
+    assertWorkflowNotPublished(database, ideaId);
+    assertDraftNotPublished(database, idea.draft.id);
+    const existing = readVisualCompanion(database, idea.draft.id);
+    if (existing) {
+      const existingPath = path.resolve(path.dirname(getAppConfig().databasePath), existing.filePath);
+      fs.writeFileSync(existingPath, renderVisualSvg(existing), { encoding: "utf8", mode: 0o600 });
+      return getIdea(ideaId)!;
+    }
+    const draft = visualCompanionFor(idea.title, idea.draft.body);
+    const visualId = id("visual");
+    const relativePath = path.join(
+      visualDirectoryName(idea.title),
+      visualFileName(idea.draft.version),
+    );
+    const outputPath = path.resolve(path.dirname(getAppConfig().databasePath), relativePath);
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      outputPath,
+      renderVisualSvg(draft),
+      { encoding: "utf8", mode: 0o600 },
+    );
+    database
+      .prepare(
+        "INSERT INTO visual_companions (id, idea_id, content_item_id, draft_version_id, visual_type, title, subtitle, steps_json, alt_text, caption, file_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        visualId,
+        ideaId,
+        content.id,
+        idea.draft.id,
+        draft.type,
+        draft.title,
+        draft.subtitle,
+        JSON.stringify(draft.steps),
+        draft.altText,
+        draft.caption,
+        relativePath,
+      );
+    return getIdea(ideaId)!;
+  } finally {
+    database.close();
+  }
+}
+export function publishIdea(ideaId: string, input: unknown) {
+  const value = publishInput.parse(input);
+  if (!value.voiceCheckAcknowledged)
+    throw new Error(
+      "Run and acknowledge the final human-voice check before publishing.",
+    );
+  assertPlainPublicationProse(value.finalText);
+  const voiceCheck = checkHumanVoice(value.finalText);
+  const database = db();
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const content = database
+        .prepare("SELECT id FROM content_items WHERE idea_id = ?")
+        .get(ideaId) as { id: string } | undefined;
+      if (!content) throw new Error("Idea not found.");
+      const plan = (database.prepare("SELECT publication_plan FROM ideas WHERE id = ?").get(ideaId) as { publication_plan: PublicationPlan | null } | undefined)?.publication_plan ?? null;
+      const format = value.draftFormat;
+      assertFormatAllowedForPlan(plan, format);
+      assertPublicationHistoryConsistent(database, content.id);
+      const expectedPlatform =
+        format === "linkedin" || format === "linkedin_companion"
+          ? "linkedin"
+          : plan?.startsWith("substack")
+            ? "substack"
+            : "medium";
+      if (value.platform !== expectedPlatform)
+        throw new Error("The selected platform does not match this publication output.");
+      const currentDraft = exactCurrentDraft(database, content.id, value.draftVersionId, format);
+      if (currentDraft.body !== value.finalText)
+        throw new Error("The publication text does not match the selected saved draft version.");
+      const draftId = currentDraft.id;
+      const existingPublication = database
+        .prepare("SELECT id FROM publications WHERE draft_version_id = ? LIMIT 1")
+        .get(draftId) as { id: string } | undefined;
+      if (existingPublication)
+        throw new Error("This exact output already has a publication record.");
+      if (format === "linkedin_companion") {
+        const source = assertCurrentCompanionRelationship(database, content.id, draftId);
+        const sourcePublication = database
+          .prepare("SELECT 1 FROM publications WHERE content_item_id = ? AND draft_version_id = ? LIMIT 1")
+          .get(content.id, source.id);
+        if (!sourcePublication)
+          throw new Error("Record the exact canonical article publication before recording its LinkedIn companion.");
+      }
+      if (format === "canonical" && includesLinkedinCompanion(plan)) {
+        const currentCompanion = latestDraftFor(database, content.id, "linkedin_companion");
+        if (!currentCompanion)
+          throw new Error("Create a current LinkedIn companion from this article before recording the article publication.");
+        const source = assertCurrentCompanionRelationship(database, content.id, currentCompanion.id);
+        if (source.id !== draftId)
+          throw new Error("Create a current LinkedIn companion from this article before recording the article publication.");
+      }
+      const finalReview = database
+        .prepare("SELECT id FROM review_runs WHERE content_item_id = ? AND draft_version_id = ? AND review_type = 'final_draft' AND status = 'completed' ORDER BY completed_at DESC LIMIT 1")
+        .get(content.id, draftId) as { id: string } | undefined;
+      const editorialRun = database
+        .prepare("SELECT id FROM review_runs WHERE content_item_id = ? AND review_type = 'editorial' AND status IN ('completed', 'partially_completed') ORDER BY completed_at DESC LIMIT 1")
+        .get(content.id) as { id: string } | undefined;
+      const publicationId = id("publication");
+      database
+        .prepare(
+          "INSERT INTO publications (id, content_item_id, draft_version_id, platform, publication_url, published_at, final_text) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          publicationId,
+          content.id,
+          draftId,
+          value.platform,
+          value.url || null,
+          value.publishedAt ?? now(),
+          value.finalText,
+        );
+      database
+        .prepare(
+          "INSERT INTO publication_provenance (publication_id, editorial_review_run_id, final_review_run_id, voice_check_json, reviewed_draft_version_id) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(
+          publicationId,
+          editorialRun?.id ?? null,
+          finalReview?.id ?? null,
+          JSON.stringify({ ...voiceCheck, acknowledged: true, evaluatedTextSha256: crypto.createHash("sha256").update(value.finalText).digest("hex") }),
+          finalReview ? draftId : null,
+        );
+      database
+        .prepare(
+          "UPDATE ideas SET status = 'published', updated_at = ? WHERE id = ?",
+        )
+        .run(now(), ideaId);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    return getIdea(ideaId)!;
+  } finally {
+    database.close();
+  }
+}

@@ -1,4 +1,12 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { defineConfig } from "@playwright/test";
+
+// Each deterministic browser run receives an isolated temporary database and
+// notebook. The configured private BOK and voice sources are never used by E2E.
+const e2eRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aeb-e2e-"));
+const fixtureRoot = path.resolve(process.cwd(), "tests/fixtures");
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -6,12 +14,14 @@ export default defineConfig({
     baseURL: "http://127.0.0.1:3101",
   },
   webServer: {
-    command: "npx next dev --hostname 127.0.0.1 --port 3101",
+    command: "npm run db:migrate && npm run content:index && npm run build && npx next start --hostname 127.0.0.1 --port 3101",
     url: "http://127.0.0.1:3101",
     reuseExistingServer: false,
     env: {
-      DATABASE_PATH: "/tmp/ai-editorial-board-e2e.sqlite",
-      EDITORIAL_NOTEBOOK_PATH: "/tmp/ai-editorial-notebook-e2e/EDITORIAL_NOTEBOOK.md",
+      DATABASE_PATH: path.join(e2eRoot, "editorial.sqlite"),
+      EDITORIAL_NOTEBOOK_PATH: path.join(e2eRoot, "EDITORIAL_NOTEBOOK.md"),
+      EAIO_BOK_PATH: path.join(fixtureRoot, "synthetic-bok.md"),
+      KK_VOICE_SKILL_PATH: path.join(fixtureRoot, "synthetic-voice"),
     },
   },
 });

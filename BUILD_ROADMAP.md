@@ -40,8 +40,8 @@ The dates below are planning targets, not promises: each milestone still stops f
 | Reader-first output contract and integrated quality gate: Milestone 5.1 | Approved | 2026-08-09 | Independent Sol read-only audit found no blocking findings after the direct-regression and complete-local-validation gate |
 | Research and evidence: Milestone 6 | Complete (manual-first) | 2026-08-08 | Manual evidence workflow, explicit zero-cost planning brief, citations, injection tests |
 | Reader-first distribution-neutral reset: Milestone 6.2 | Independently approved | 2026-08-09 | Sol approved the reader/output contract, immutable proofread and scoped boundaries, compatibility migration, and Finalize lifecycle after read-only review |
-| Learning loop: Milestone 7 | Planned | 2026-08-14 | Manual feedback, follow-up ideas, Notebook history and explicit Notebook-to-Inbox flow |
-| Full visual companions: Milestone 8 | Planned | 2026-08-16 | Approved, traceable visuals; any delivery-channel choice remains a Finalize concern |
+| Full visual companions: Milestone 7 | Planned | 2026-08-14 | Approved, traceable visuals; any delivery-channel choice remains a Finalize concern |
+| Learning loop: Milestone 8 | Planned | 2026-08-16 | Manual feedback, follow-up ideas, and Notebook history; no Notebook-to-Inbox flow in current scope |
 | Local personal MVP release gate: Milestone 9 | Planned | 2026-08-19 | Security, recovery, production-mode validation, and honest technical-debt handoff |
 
 Milestone 5.1 is independently approved following Sol's read-only review. The completed manual-first research work remains valid historical delivery evidence; later milestones still require their own acceptance, validation, and audit gates.
@@ -603,35 +603,7 @@ The independent Sol read-only audit approved this milestone on 2026-08-09 with n
 
 ---
 
-## Milestone 7 — Feedback loop and Editorial Notebook integration
-
-### Objective
-
-Turn publishing experience into reusable learning without building a large analytics system.
-
-### Scope
-
-- Record impressions, reactions, comments, reposts, saves, direct feedback, questions raised, surprises, meaningful conversations, and follow-up ideas manually.
-- Add Notebook version browsing and comparison.
-- Allow a Notebook candidate post to be sent to the Inbox explicitly.
-- Never promote Notebook material into the BOK automatically.
-- Keep content-map drafts labelled as proposed until deliberately approved.
-
-### Acceptance criteria
-
-- Feedback can be recorded and revisited for a publication.
-- A follow-up idea can be created while retaining its source publication relationship.
-- Notebook history can be browsed without mutating immutable snapshots.
-- Notebook-to-Inbox requires explicit user action.
-- No automatic BOK modification exists.
-
-### Checkpoint report
-
-Demonstrate publication feedback, a follow-up idea, Notebook history, and Notebook-to-Inbox provenance. Stop.
-
----
-
-## Milestone 8 — Optional visual companions
+## Milestone 7 — Optional visual companions
 
 ### Objective
 
@@ -663,6 +635,32 @@ Create memorable visuals only when they materially improve understanding.
 ### Checkpoint report
 
 Demonstrate one diagram-worthy post and one text-only post, provenance, approval, accessibility, and cost. Stop.
+
+---
+
+## Milestone 8 — Feedback loop and Editorial Notebook integration
+
+### Objective
+
+Turn publishing experience into reusable learning without building a large analytics system.
+
+### Scope
+
+- Record impressions, reactions, comments, reposts, saves, direct feedback, questions raised, surprises, meaningful conversations, and follow-up ideas manually.
+- Add Notebook version browsing and comparison.
+- Never promote Notebook material into the BOK automatically.
+- Keep content-map drafts labelled as proposed until deliberately approved.
+
+### Acceptance criteria
+
+- Feedback can be recorded and revisited for a publication.
+- A follow-up idea can be created while retaining its source publication relationship.
+- Notebook history can be browsed without mutating immutable snapshots.
+- No automatic BOK modification exists.
+
+### Checkpoint report
+
+Demonstrate publication feedback, a follow-up idea, and Notebook history. Stop.
 
 ---
 

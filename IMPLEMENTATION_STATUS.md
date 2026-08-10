@@ -124,7 +124,7 @@ Remaining limitation: this milestone intentionally provides manual research and 
 
 - The next bounded addition is a visual-brief selection step: recommend no visual or one appropriate explanatory grammar, let the author edit the message, claims, labels, caption, and alt text, then require explicit approval before rendering.
 - Initial selection will be transparent and local-first. A low-cost model may later offer an explicitly requested, advisory visual brief bounded to the saved draft and approved BOK/research claims. No image-generation tool is required for this step.
-- Deterministic diagrams remain the default for factual frameworks. Character illustrations and other generative imagery are deferred to optional Milestone 8 work.
+- Deterministic diagrams remain the default for factual frameworks. Character illustrations and other generative imagery are deferred to optional Milestone 7 work.
 
 ### Post-checkpoint writing polish — 2026-08-08
 
@@ -202,7 +202,7 @@ Decisions and remaining limitations:
 
 - Recommendation dispositions and escalation assessments are immutable once any output has been published; they are treated as part of the published workflow history rather than editable retrospective annotations.
 - The coarse `ideas.status` still becomes `published` after the first record. Dual-output progress is intentionally derived from immutable version-linked publication records (`1 of 2 published`, then `2 of 2 published`).
-- The current visual implementation is tied to the canonical/primary exact draft. Platform-specific visual variants remain Milestone 8 work.
+- The current visual implementation is tied to the canonical/primary exact draft. Platform-specific visual variants remain Milestone 7 work.
 - No BOK, voice skill, local database, backups, environment file, secret, user-owned PDF, image, archive, or unrelated working-tree file was modified by this checkpoint.
 
 ### Historical publication UX follow-up audit — originally open 2026-08-07
@@ -288,7 +288,7 @@ Historical note (2026-08-07): Milestone 5 was complete and Milestone 6 (research
 - Verdict: usable local LinkedIn beta; not yet the roadmap-defined local personal MVP.
 - Required before Milestone 5: protect every mutating route, fix recommendation-disposition hydration, make live preview/index checks read-only, align committed budget fallbacks, verify a current backup and restore, complete escalation learning, reconcile documentation, and review the exact Git staging set.
 - Milestone 5 and the Milestone 9 release gate remain incomplete.
-- The current narrow visual slice is not full Milestone 8. The agreed artifact path is `data/<title-name>/draft_<number>_<datetime>.svg`, with no directory per version.
+- The current narrow visual slice is not full Milestone 7. The agreed artifact path is `data/<title-name>/draft_<number>_<datetime>.svg`, with no directory per version.
 - This audit did not read environment files, modify application code or data, touch the BOK or voice skill, or call an external provider.
 - All dated provider-routing and verification entries later in this document are historical implementation evidence. When they conflict with this checkpoint, this checkpoint and `AUDIT_2026-08-07.md` are authoritative.
 

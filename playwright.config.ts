@@ -22,6 +22,12 @@ export default defineConfig({
       EDITORIAL_NOTEBOOK_PATH: path.join(e2eRoot, "EDITORIAL_NOTEBOOK.md"),
       EAIO_BOK_PATH: path.join(fixtureRoot, "synthetic-bok.md"),
       KK_VOICE_SKILL_PATH: path.join(fixtureRoot, "synthetic-voice"),
+      // Deterministic browser tests must not inherit live credentials from the
+      // developer shell. Any accidental provider path fails locally instead.
+      OPENAI_API_KEY: "",
+      ANTHROPIC_API_KEY: "",
+      ZENMUX_API_KEY: "",
+      EDITORIAL_TEST_DISABLE_PROVIDER_CALLS: "1",
     },
   },
 });

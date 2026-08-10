@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AppNav } from "./app-nav";
 import { VisualFlow } from "./visual-flow";
 import type { EditorialRunProgress } from "@/editorial/run-progress";
+import { boardRoleStageStatus, companionCreationStageStatus, isBoardReviewIncomplete, primaryDraftCreationStageStatus } from "@/editorial/board-status";
 
 export type Status =
   | "inbox"
@@ -24,9 +26,36 @@ export type Idea = {
   createdAt: string;
   updatedAt: string;
   themes: Theme[];
+  audienceProfileKey?: "professional" | "executive" | "practitioner" | "general";
+  audienceNotes?: string;
+  outputPreferences?: {
+    longFormEnabled: boolean; longFormMinWords: number; longFormMaxWords: number;
+    shortFormEnabled: boolean; shortFormMinWords: number; shortFormMaxWords: number;
+    shortFormSource: "standalone" | "derived_from_long"; deliveryHint?: string;
+  };
 };
+function outputPreferencesForPlan(plan: string | null): NonNullable<Idea["outputPreferences"]> {
+  const longForm = plan === "medium" || plan === "substack" || plan === "medium_linkedin" || plan === "substack_linkedin";
+  const shortForm = !longForm || plan === "medium_linkedin" || plan === "substack_linkedin";
+  return { longFormEnabled: longForm, longFormMinWords: 800, longFormMaxWords: 1100, shortFormEnabled: shortForm, shortFormMinWords: 180, shortFormMaxWords: 300, shortFormSource: longForm && shortForm ? "derived_from_long" : "standalone" };
+}
 export type Detail = Idea & {
   notes: Array<{ id: string; body: string; createdAt: string }>;
+  research: Array<{
+    id: string;
+    mode: "provided" | "application";
+    executionMode: "manual" | "application_brief";
+    question: string;
+    timeWindow?: string;
+    evidenceSummary?: string;
+    interpretation?: string;
+    toolName?: string;
+    estimatedCost: number;
+    actualCost: number;
+    injectionSignals: string[];
+    createdAt: string;
+    sources: Array<{ title: string; sourceUrl?: string; publishedAt?: string; excerpt?: string; label: string }>;
+  }>;
   questions: string[];
   answers: Array<{ question: string; answer: string; choice: string }>;
   draft?: { id: string; body: string; version: number; createdBy: string };
@@ -36,7 +65,11 @@ export type Detail = Idea & {
   editorialBrief?: {
     runId: string;
     executionMode?: string;
-    runStatus?: "completed" | "partially_completed";
+    runStatus?: "completed" | "partially_completed" | "failed";
+    generatedDraftVersionId?: string;
+    generatedLinkedinCompanionDraftVersionId?: string;
+    runFailures: Array<{ role: string; summary: string }>;
+    attemptedRoles: string[];
     thesis: string;
     strongest: string;
     unclear: string;
@@ -81,6 +114,9 @@ export type Detail = Idea & {
       checkStatus?: "pass" | "review" | "needs_revision";
       details: string[];
     }>;
+    proofreadFindings: Array<{ id: string; category: "spelling" | "grammar" | "punctuation" | "clarity"; severity: "material" | "optional"; current: string; suggestion: string; rationale: string; disposition?: "accepted" | "dismissed" | "revised" | "still_open" }>;
+    proofreadCompleted: boolean;
+    proofreadStatus?: "completed" | "failed" | "not_run";
   };
   linkedinCompanionFinalReview?: Detail["finalReview"];
   publicationIntegrityWarning?: string;
@@ -93,7 +129,7 @@ export type Detail = Idea & {
   visualCompanion?: {
     id: string;
     draftVersionId: string;
-    type: "flow";
+    type: "flow" | "maturity_path" | "contrast" | "decision_fork";
     eyebrow: string;
     title: string;
     subtitle: string;
@@ -102,6 +138,17 @@ export type Detail = Idea & {
     caption: string;
     filePath: string;
     createdAt: string;
+  };
+  companionRecovery?: {
+    id: string;
+    status: "completed" | "failed";
+    kind: "refresh" | "retry" | "escalation";
+    provider: string;
+    model: string;
+    tier?: string;
+    estimatedCost: number;
+    error?: string;
+    escalationReason?: string;
   };
   reviewHistory: Array<{
     runId: string;
@@ -143,6 +190,7 @@ export type Detail = Idea & {
     draftVersionId?: string;
     bok: { version: string; checksum: string };
     voice: { version: string; checksum: string };
+    readerContract?: { audienceProfile: string; audienceNotes?: string; longForm?: { min: number; max: number }; shortForm?: { min: number; max: number; derived: boolean } };
     sections: Array<{
       headingPath: string;
       sourceLocation: string;
@@ -193,9 +241,11 @@ const short = (value: string, size = 140) =>
   value.length > size ? `${value.slice(0, size).trim()}…` : value;
 
 export function QueueClient() {
+  const router = useRouter();
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [themes, setThemes] = useState<Theme[]>([]);
   const [capture, setCapture] = useState("");
+  const [captureTitle, setCaptureTitle] = useState("");
   const [captureThemes, setCaptureThemes] = useState<string[]>([]);
   const [newTheme, setNewTheme] = useState("");
   const [filter, setFilter] = useState<Status | "all">("all");
@@ -225,15 +275,15 @@ export function QueueClient() {
       const response = await fetch("/api/ideas", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rawNotes: capture, themeIds: captureThemes }),
+        body: JSON.stringify({ rawNotes: capture, title: captureTitle || undefined, themeIds: captureThemes }),
       });
       const data = (await response.json()) as { idea?: Detail; error?: string };
       if (!response.ok || !data.idea)
         throw new Error(data.error ?? "Could not save the idea.");
       setCapture("");
+      setCaptureTitle("");
       setCaptureThemes([]);
-      setMessage("Saved to Inbox. Pick it up whenever you are ready.");
-      await refresh();
+      router.push(`/ideas/${data.idea.id}`);
     } catch (error) {
       setMessage(
         error instanceof Error ? error.message : "Could not save the idea.",
@@ -304,6 +354,16 @@ export function QueueClient() {
           </p>
         )}
         <form className="capture-card" onSubmit={createIdea}>
+          <label htmlFor="capture-title" className="capture-title-field">
+            <strong>Working title <span>Optional</span></strong>
+            <input
+              id="capture-title"
+              value={captureTitle}
+              onChange={(event) => setCaptureTitle(event.target.value)}
+              placeholder="Add one, or let the app suggest it"
+              maxLength={300}
+            />
+          </label>
           <label htmlFor="capture">
             <strong>What are you thinking about?</strong>
             <span>
@@ -416,10 +476,12 @@ export function IdeaDetailView({
   board,
   livePreview,
   liveBoard,
+  retryLinkedinCompanion,
   executionStatus,
   executionProgress,
   rerunReviewer,
   finalReview,
+  setReviewFindingDisposition,
   setRecommendationDisposition,
   setEscalationOutcome,
   draft,
@@ -438,7 +500,6 @@ export function IdeaDetailView({
   voiceChecks,
   checkVoice,
   createVisual,
-  createLinkedinCompanion,
   companionDraft,
   setCompanionDraft,
   saveLinkedinCompanion,
@@ -446,6 +507,8 @@ export function IdeaDetailView({
   onDraftChange,
   companionDirty = false,
   onCompanionChange,
+  saveProvidedResearch,
+  createApplicationResearchBrief,
 }: {
   idea: Detail;
   themes: Theme[];
@@ -475,12 +538,17 @@ export function IdeaDetailView({
       medium: { provider: string; model: string; tier: "medium"; estimatedCost: number; available: boolean };
       high: { provider: string; model: string; tier: "high"; estimatedCost: number; available: boolean };
     };
+    linkedinRefresh: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
+    linkedinEscalation: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
+    proofreader?: { provider: string; model: string; tier: "low" | "medium" | "high"; estimates: { linkedin: number; canonical: number; linkedin_companion: number }; available: boolean };
   };
   liveBoard?: (budgetCap: number) => Promise<void>;
+  retryLinkedinCompanion?: (budgetCap: number, mode: "refresh" | "retry" | "escalation") => Promise<void>;
   executionStatus?: string;
   executionProgress?: EditorialRunProgress;
   rerunReviewer?: (role: "strategist" | "skeptic" | "editor", budgetCap: number, tier: "medium" | "high") => Promise<void>;
   finalReview: (format: "linkedin" | "canonical" | "linkedin_companion") => Promise<void>;
+  setReviewFindingDisposition?: (reviewRunId: string, findingId: string, disposition: "accepted" | "dismissed" | "revised" | "still_open") => Promise<void>;
   setRecommendationDisposition: (recommendation: string, disposition: "resolved" | "revised" | "superseded" | "still_open") => Promise<void>;
   setEscalationOutcome?: (modelCallId: string, outcome: { outputAccepted?: boolean; influencedFinalDraft?: boolean; materiallyImproved?: boolean }) => Promise<void>;
   draft: string;
@@ -503,8 +571,7 @@ export function IdeaDetailView({
   reviewHref?: string;
   voiceChecks?: Partial<Record<"linkedin" | "canonical" | "linkedin_companion", VoiceCheckResult>>;
   checkVoice?: (format: "linkedin" | "canonical" | "linkedin_companion") => Promise<void>;
-  createVisual?: () => Promise<void>;
-  createLinkedinCompanion?: () => Promise<void>;
+  createVisual?: (template: "flow" | "vertical_path" | "contrast" | "decision_fork") => Promise<void>;
   companionDraft?: string;
   setCompanionDraft?: (value: string) => void;
   saveLinkedinCompanion?: () => Promise<void>;
@@ -512,6 +579,8 @@ export function IdeaDetailView({
   onDraftChange?: (value: string) => void;
   companionDirty?: boolean;
   onCompanionChange?: (value: string) => void;
+  saveProvidedResearch?: (input: { question: string; timeWindow?: string; evidenceSummary: string; interpretation?: string; sources: Array<{ title: string; sourceUrl?: string; publishedAt?: string; excerpt?: string; label: "fact" | "evidence" | "observation" | "pattern" | "opinion" | "hypothesis" | "recommended_default" }> }) => Promise<void>;
+  createApplicationResearchBrief?: (input: { question: string; timeWindow: string }) => Promise<void>;
 }) {
   const toggleTheme = (id: string) =>
     setSelected({
@@ -523,8 +592,39 @@ export function IdeaDetailView({
   const [editingTitle, setEditingTitle] = useState(false);
   const [liveBudgetOverride, setLiveBudgetOverride] = useState<number>();
   const [confirmedHighTierRole, setConfirmedHighTierRole] = useState<string>();
+  const [researchMode, setResearchMode] = useState<"provided" | "application">("provided");
+  const [researchQuestion, setResearchQuestion] = useState("");
+  const [researchWindow, setResearchWindow] = useState("Last 30 days");
+  const [researchEvidence, setResearchEvidence] = useState("");
+  const [researchInterpretation, setResearchInterpretation] = useState("");
+  const [researchSources, setResearchSources] = useState("");
+  const [visualTemplate, setVisualTemplate] = useState<"flow" | "vertical_path" | "contrast" | "decision_fork">(
+    idea.visualCompanion?.type === "decision_fork" ? "decision_fork" : idea.visualCompanion?.type === "maturity_path" ? "vertical_path" : idea.visualCompanion?.type === "flow" ? "flow" : "contrast",
+  );
   const liveBudget = liveBudgetOverride ?? livePreview?.budgetCap ?? 0.5;
-  const reviewIncomplete = idea.editorialBrief?.runStatus === "partially_completed";
+  const isDualOutputPlan = idea.publicationPlan === "medium_linkedin" || idea.publicationPlan === "substack_linkedin";
+  const failedBoardRoles = idea.editorialBrief?.runFailures ?? [];
+  const finalDrafterFailed = failedBoardRoles.some((failure) => failure.role === "final_drafter");
+  const synthesizerFailed = failedBoardRoles.some((failure) => failure.role === "synthesizer");
+  const initialDrafterFailed = failedBoardRoles.some((failure) => failure.role === "initial_drafter");
+  // A scoped retry deliberately preserves the original failed model-call and
+  // review record for provenance. Once it has created a current companion for
+  // the exact canonical draft, that historical failure must not keep the
+  // current workflow labelled incomplete after a reload.
+  const linkedinFailureRecovered = Boolean(
+    isDualOutputPlan
+      && finalDrafterFailed
+      && idea.linkedinCompanion
+      && !idea.linkedinCompanion.stale
+      && idea.companionRecovery?.status === "completed",
+  );
+  // A companion recovery only resolves the Final Drafter output. It must
+  // never turn an independently failed review/synthesis role into success.
+  const reviewIncomplete = Boolean(idea.editorialBrief && isBoardReviewIncomplete({
+    runStatus: idea.editorialBrief.runStatus,
+    failures: failedBoardRoles,
+    finalDrafterRecovered: linkedinFailureRecovered,
+  }));
   const primaryPublished = Boolean(
     idea.draft && idea.publications.some((publication) => publication.draftVersionId === idea.draft!.id),
   );
@@ -552,6 +652,27 @@ export function IdeaDetailView({
     setDraft(nextDraft);
     onDraftChange?.(nextDraft);
   };
+  const proofreaderDisclosure = (format: "linkedin" | "canonical" | "linkedin_companion") => {
+    const proofreader = livePreview?.proofreader;
+    if (!proofreader) return "";
+    if (!proofreader.available) return " · Editorial assessment + local deterministic proofread · $0.00 · no provider call";
+    return ` · Editorial assessment + ${proofreader.model} proofread · est. $${proofreader.estimates[format].toFixed(4)}`;
+  };
+  const applyCompanionPolishSuggestion = (current: string, suggested: string) => {
+    const activeCompanion = companionDraft ?? idea.linkedinCompanion?.body ?? "";
+    const start = activeCompanion.indexOf(current);
+    if (start < 0) return;
+    const nextDraft = `${activeCompanion.slice(0, start)}${suggested}${activeCompanion.slice(start + current.length)}`;
+    setCompanionDraft?.(nextDraft);
+    onCompanionChange?.(nextDraft);
+  };
+  const companionNextEdit = (item: string) => {
+    if (/expand the middle/i.test(item))
+      return "Add one short sentence after the opening that explains the practical consequence for the reader. Keep it specific to this post rather than repeating the full article framework.";
+    if (/example|evidence|uncertainty|boundary/i.test(item))
+      return "Add one concrete, clearly labelled example or state the boundary in plain language. Do not turn the companion into a list of unsupported claims.";
+    return "Make this one change in the LinkedIn version, save it as a new version, then rerun only the LinkedIn review.";
+  };
   const draftReviewLabel = (
     checkStatus?: "pass" | "review" | "needs_revision",
     details: string[] = [],
@@ -567,6 +688,32 @@ export function IdeaDetailView({
             : details[0]?.startsWith("Do one")
               ? "Review"
               : "Needs revision";
+  const reviewStatusBadge = (
+    checkStatus?: "pass" | "review" | "needs_revision",
+    details: string[] = [],
+  ) => {
+    const label = draftReviewLabel(checkStatus, details);
+    const state = label === "Pass" ? "pass" : label === "Review" ? "review" : "needs-revision";
+    return <span className={`review-status-badge ${state}`}>{label}</span>;
+  };
+  const executionSummary = () => {
+    if (executionStatus) return executionStatus;
+    if (executionProgress?.kind === "companion_recovery") {
+      if (executionProgress.status === "completed") return "LinkedIn recovery complete";
+      return executionProgress.recoveryFailure === "persisted_provider_failure"
+        ? "LinkedIn recovery failed after provider dispatch"
+        : "LinkedIn recovery rejected before provider dispatch";
+    }
+    return executionProgress?.status === "completed"
+      ? "Live Editorial Board complete"
+      : executionProgress?.status === "partially_completed"
+        ? "Live Editorial Board incomplete"
+        : "Live Editorial Board stopped";
+  };
+  const executionProgressNote = executionProgress?.kind === "companion_recovery"
+    && executionProgress.recoveryFailure === "pre_dispatch_rejection"
+    ? "This recovery was rejected before a provider attempt. No provider failure provenance was created."
+    : "These are persisted workflow events, not the models’ private reasoning.";
   const visibleStatus = showBoard && reviewIncomplete
     ? "Review incomplete"
     : showPublish && idea.status !== "published"
@@ -577,7 +724,56 @@ export function IdeaDetailView({
     : showPublish && idea.status !== "published"
       ? "final-check"
       : idea.status;
-  const isDualOutputPlan = idea.publicationPlan === "medium_linkedin" || idea.publicationPlan === "substack_linkedin";
+  const latestFinalDrafterFailure = idea.companionRecovery?.status === "failed"
+    ? idea.companionRecovery.error
+    : idea.grounding?.calls
+    .filter((call) => call.role === "final_drafter" && !call.success && call.errorCategory)
+    .at(-1)?.errorCategory;
+  const persistedRunStages = !executionProgress && idea.editorialBrief
+    ? [
+        { id: "context", label: "Prepare bounded idea and BOK context", status: "completed" as const },
+        ...(["strategist", "skeptic", "editor"] as const).map((role) => ({
+          id: role,
+          label: `${role[0]!.toUpperCase()}${role.slice(1)} review`,
+          status: boardRoleStageStatus({
+            role,
+            attemptedRoles: idea.editorialBrief!.attemptedRoles,
+            failedRoles: idea.editorialBrief!.runFailures.map((failure) => failure.role),
+          }),
+        })),
+        {
+          id: "synthesizer",
+          label: "Synthesize the editorial brief",
+          status: boardRoleStageStatus({
+            role: "synthesizer",
+            attemptedRoles: idea.editorialBrief!.attemptedRoles,
+            failedRoles: idea.editorialBrief!.runFailures.map((failure) => failure.role),
+          }),
+        },
+        {
+          id: "draft",
+          label: "Create the voice-aligned working draft",
+          status: primaryDraftCreationStageStatus({
+            generatedDraftVersionId: idea.editorialBrief.generatedDraftVersionId,
+            synthesizerFailed,
+            initialDrafterFailed,
+          }),
+        },
+        ...(isDualOutputPlan ? [{
+          id: "linkedin_companion",
+          label: idea.linkedinCompanion?.stale
+            ? "Create standalone LinkedIn post (created; now stale after article revision)"
+            : "Create standalone LinkedIn post",
+          status: companionCreationStageStatus({
+            isDualOutputPlan,
+            generatedDraftVersionId: idea.editorialBrief.generatedDraftVersionId,
+            generatedLinkedinCompanionDraftVersionId: idea.editorialBrief.generatedLinkedinCompanionDraftVersionId,
+            finalDrafterFailed,
+          })!,
+        }] : []),
+        { id: "provenance", label: "Save provenance, usage, latency, and cost", status: "completed" as const },
+      ]
+    : undefined;
   const primaryFormat: "linkedin" | "canonical" =
     idea.publicationPlan?.startsWith("medium") || idea.publicationPlan?.startsWith("substack")
       ? "canonical"
@@ -596,6 +792,17 @@ export function IdeaDetailView({
   const outputsReadyForFinalize = idea.draft && !draftDirty && (
     !isDualOutputPlan || Boolean(idea.linkedinCompanion && !idea.linkedinCompanion.stale && !companionDirty)
   );
+  const finalizeBlockedMessage = draftDirty && isDualOutputPlan && companionDirty
+    ? "Save the article and LinkedIn edits before finalizing."
+    : draftDirty
+      ? "Save the article edit before finalizing."
+      : companionDirty
+        ? "Save the LinkedIn edit before finalizing."
+          : isDualOutputPlan && !idea.linkedinCompanion
+          ? "The LinkedIn companion is missing. Refresh only LinkedIn from the saved article before finalizing."
+          : isDualOutputPlan && idea.linkedinCompanion?.stale
+            ? "The LinkedIn companion belongs to an earlier article version. Refresh only LinkedIn from the saved article before finalizing."
+            : "Save the current output before finalizing.";
   const renderFinalizeOutput = (
     label: string,
     format: "linkedin" | "canonical" | "linkedin_companion",
@@ -610,6 +817,15 @@ export function IdeaDetailView({
       !idea.linkedinCompanion || idea.linkedinCompanion.stale
     );
     const requiresCanonicalPublication = format === "linkedin_companion" && isDualOutputPlan && !canonicalArticlePublished;
+    const review = format === "linkedin_companion" ? idea.linkedinCompanionFinalReview : idea.finalReview;
+    const unresolvedMaterial = review?.proofreadFindings.some((finding) => finding.severity === "material" && !["accepted", "dismissed", "revised"].includes(finding.disposition ?? ""));
+    const proofreadStatus = review?.proofreadStatus ?? (review?.proofreadCompleted ? "completed" : "not_run");
+    const needsReview = !review || proofreadStatus !== "completed";
+    const proofreadBlocker = !review
+      ? "Run the combined editorial assessment and proofread for this exact saved output in Write before publishing."
+      : proofreadStatus === "failed"
+        ? "The low-cost proofread failed for this exact saved output. Retry the combined review in Write before publishing."
+        : "The live-required proofread has not produced a validated result for this exact saved output. Retry the combined review in Write before publishing.";
     return (
       <article className="finalize-output" key={output.id}>
         <div className="finalize-output-heading">
@@ -652,9 +868,11 @@ export function IdeaDetailView({
               <p className="publication-platform">Platform: {platform === "linkedin" ? "LinkedIn" : platform === "medium" ? "Medium" : "Substack"}</p>
               {requiresCurrentCompanion && <p className="stale-output">Create a current LinkedIn companion in Write before recording this article publication.</p>}
               {requiresCanonicalPublication && <p className="stale-output">Record the exact {idea.publicationPlan?.startsWith("substack") ? "Substack" : "Medium"} article publication first. The LinkedIn companion remains editable and can be published after that record is saved.</p>}
+              {needsReview && <p className="stale-output">{proofreadBlocker}</p>}
+              {unresolvedMaterial && <p className="stale-output">Resolve or explicitly dismiss every material Proofread and clarity finding before publishing.</p>}
               <label>Publication URL <input name="url" type="url" placeholder="https://… (optional)" /></label>
               <label>Published date <input name="publishedAt" type="datetime-local" /></label>
-              <button disabled={busy || !currentVoiceCheck || requiresCurrentCompanion || requiresCanonicalPublication} type="submit">Mark this version as published</button>
+              <button disabled={busy || !currentVoiceCheck || requiresCurrentCompanion || requiresCanonicalPublication || needsReview || unresolvedMaterial} type="submit">Mark this version as published</button>
             </form>
           </div>
         )}
@@ -777,11 +995,41 @@ export function IdeaDetailView({
           <form className="development" onSubmit={saveDetails}>
             <p className="eyebrow">DEVELOPMENT</p>
             <label>
+              Primary audience
+              <select value={idea.audienceProfileKey ?? "professional"} onChange={(event) => setSelected({ ...idea, audienceProfileKey: event.target.value as Idea["audienceProfileKey"] })}>
+                <option value="professional">Professionals across AI, data, technology, business, and leadership</option>
+                <option value="executive">Executives and organizational leaders</option>
+                <option value="practitioner">Practitioners building or operating AI</option>
+                <option value="general">Curious general readers</option>
+              </select>
+            </label>
+            <label>
+              Audience note <small>Optional</small>
+              <input value={idea.audienceNotes ?? ""} maxLength={1_000} onChange={(event) => setSelected({ ...idea, audienceNotes: event.target.value })} placeholder="What should this reader already understand?" />
+            </label>
+            <fieldset>
+              <legend>Output shape</legend>
+              {(() => {
+                const preference = idea.outputPreferences ?? { longFormEnabled: false, longFormMinWords: 800, longFormMaxWords: 1100, shortFormEnabled: true, shortFormMinWords: 180, shortFormMaxWords: 300, shortFormSource: "standalone" as const };
+                const setPreference = (next: typeof preference) => {
+                  const platform = idea.publicationPlan?.startsWith("substack") ? "substack" : "medium";
+                  setSelected({ ...idea, outputPreferences: next, publicationPlan: next.longFormEnabled ? next.shortFormEnabled ? `${platform}_linkedin` : platform : "linkedin" });
+                };
+                return <>
+                  <label><input type="checkbox" checked={preference.shortFormEnabled} onChange={(event) => setPreference({ ...preference, shortFormEnabled: event.target.checked, shortFormSource: preference.longFormEnabled && event.target.checked ? "derived_from_long" : "standalone" })} /> Short form</label>
+                  <label><input type="checkbox" checked={preference.longFormEnabled} onChange={(event) => setPreference({ ...preference, longFormEnabled: event.target.checked, shortFormSource: event.target.checked && preference.shortFormEnabled ? "derived_from_long" : "standalone" })} /> Long form</label>
+                  <label>Short target range <span><input aria-label="Short minimum words" type="number" min="40" max="5000" value={preference.shortFormMinWords} onChange={(event) => setPreference({ ...preference, shortFormMinWords: Number(event.target.value) })} /> to <input aria-label="Short maximum words" type="number" min="40" max="5000" value={preference.shortFormMaxWords} onChange={(event) => setPreference({ ...preference, shortFormMaxWords: Number(event.target.value) })} /> words</span></label>
+                  <label>Long target range <span><input aria-label="Long minimum words" type="number" min="100" max="10000" value={preference.longFormMinWords} onChange={(event) => setPreference({ ...preference, longFormMinWords: Number(event.target.value) })} /> to <input aria-label="Long maximum words" type="number" min="100" max="10000" value={preference.longFormMaxWords} onChange={(event) => setPreference({ ...preference, longFormMaxWords: Number(event.target.value) })} /> words</span></label>
+                  <p>When both are selected, the short output is derived from the exact long-form version.</p>
+                </>;
+              })()}
+            </fieldset>
+            <label>
               Publication plan
               <select
                 value={idea.publicationPlan ?? "linkedin"}
                 onChange={(event) =>
-                  setSelected({ ...idea, publicationPlan: event.target.value })
+                  setSelected({ ...idea, publicationPlan: event.target.value, outputPreferences: outputPreferencesForPlan(event.target.value) })
                 }
               >
                 {plans.map((plan) => (
@@ -829,6 +1077,71 @@ export function IdeaDetailView({
             </button>
           </form>
         )}
+      {showDevelopment && ["developing", "ready_to_review", "drafted"].includes(idea.status) && (
+        <details className="research-workspace">
+          <summary>Research and evidence <span>Optional</span></summary>
+          <p>Keep sources and your interpretation separate. Research informs your thinking; it does not write the post for you.</p>
+          <label>
+            Research path
+            <select value={researchMode} onChange={(event) => setResearchMode(event.target.value as "provided" | "application")}>
+              <option value="provided">I will add research I found</option>
+              <option value="application">Prepare a bounded research brief</option>
+            </select>
+          </label>
+          <label>
+            Research question
+            <textarea value={researchQuestion} onChange={(event) => setResearchQuestion(event.target.value)} placeholder="What do you want to understand or cross-check?" maxLength={2_000} />
+          </label>
+          <label>
+            Time window
+            <input value={researchWindow} onChange={(event) => setResearchWindow(event.target.value)} placeholder="For example: Last 30 days" maxLength={200} />
+          </label>
+          {researchMode === "provided" ? (
+            <>
+              <label>
+                What the sources say
+                <textarea value={researchEvidence} onChange={(event) => setResearchEvidence(event.target.value)} placeholder="Capture facts, quotations, findings, or uncertainty. Do not add your conclusion here." maxLength={12_000} />
+              </label>
+              <label>
+                Your interpretation <span>Optional</span>
+                <textarea value={researchInterpretation} onChange={(event) => setResearchInterpretation(event.target.value)} placeholder="What this may mean for your point of view. Keep it separate from evidence." maxLength={8_000} />
+              </label>
+              <label>
+                Sources <span>Optional</span>
+                <textarea value={researchSources} onChange={(event) => setResearchSources(event.target.value)} placeholder="One per line: Title | https://source.example | date | short excerpt" maxLength={20_000} />
+              </label>
+              <button disabled={busy || !researchQuestion.trim() || !researchEvidence.trim()} onClick={() => void saveProvidedResearch?.({
+                question: researchQuestion,
+                timeWindow: researchWindow || undefined,
+                evidenceSummary: researchEvidence,
+                interpretation: researchInterpretation || undefined,
+                sources: researchSources.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
+                  const [title, sourceUrl, publishedAt, excerpt] = line.split("|").map((part) => part.trim());
+                  return { title, sourceUrl: sourceUrl || undefined, publishedAt: publishedAt || undefined, excerpt: excerpt || undefined, label: "evidence" as const };
+                }).filter((source) => source.title),
+              })}>Save research and evidence</button>
+            </>
+          ) : (
+            <>
+              <p className="research-disclosure">This creates a zero-cost local research brief. It does not browse the web, claim comprehensive awareness, or add sources automatically.</p>
+              <button disabled={busy || !researchQuestion.trim() || !researchWindow.trim()} onClick={() => void createApplicationResearchBrief?.({ question: researchQuestion, timeWindow: researchWindow })}>Prepare research brief</button>
+            </>
+          )}
+          {idea.research.length > 0 && (
+            <div className="research-history">
+              <p className="eyebrow">SAVED RESEARCH</p>
+              {idea.research.map((entry) => <article key={entry.id}>
+                <b>{entry.mode === "provided" ? "Author-provided evidence" : "Application research brief"}</b>
+                <p>{entry.question}{entry.timeWindow ? ` · ${entry.timeWindow}` : ""}</p>
+                {entry.evidenceSummary && <p>{entry.evidenceSummary}</p>}
+                {entry.interpretation && <p><strong>Interpretation:</strong> {entry.interpretation}</p>}
+                {entry.sources.map((source) => <p key={`${entry.id}-${source.title}`}><strong>{source.label}:</strong> {source.title}{source.sourceUrl ? ` · ${source.sourceUrl}` : ""}{source.excerpt ? ` — ${source.excerpt}` : ""}</p>)}
+                <small>{entry.toolName ?? "author-provided"} · ${entry.actualCost.toFixed(2)} · {entry.injectionSignals.length ? "instruction-like content flagged" : "no instruction-like content detected"}</small>
+              </article>)}
+            </div>
+          )}
+        </details>
+      )}
       {showDevelopment && idea.status === "developing" && (
         <section className="fast-draft-path">
           <div>
@@ -934,10 +1247,10 @@ export function IdeaDetailView({
             {liveRunDisabledReason && (
               <p className="run-disabled-reason"><strong>Live provider run only:</strong> {liveRunDisabledReason}</p>
             )}
-            {executionStatus && (
-              <details className="editorial-progress" open>
-                <summary>{executionStatus}</summary>
-                <p>These are persisted workflow events, not the models’ private reasoning.</p>
+            {(executionStatus || (executionProgress && executionProgress.status !== "waiting")) && (
+              <details className="editorial-progress" open={Boolean(executionStatus)}>
+                <summary>{executionSummary()}</summary>
+                <p>{executionProgressNote}</p>
                 <ol className="run-stage-list">
                   {(executionProgress?.stages ?? [
                     { id: "context", label: "Prepare bounded idea and BOK context", status: "running" },
@@ -946,11 +1259,12 @@ export function IdeaDetailView({
                     { id: "editor", label: "Editor review", status: "waiting" },
                     { id: "synthesizer", label: "Synthesize the editorial brief", status: "waiting" },
                     { id: "draft", label: "Create the voice-aligned working draft", status: "waiting" },
+                    ...(isDualOutputPlan ? [{ id: "linkedin_companion", label: "Create standalone LinkedIn post", status: "waiting" as const }] : []),
                     { id: "provenance", label: "Save provenance, usage, latency, and cost", status: "waiting" },
                   ]).map((stage) => (
                     <li key={stage.id} className={stage.status}>
                       <span aria-hidden="true">
-                        {stage.status === "completed" ? "✓" : stage.status === "failed" ? "!" : stage.status === "running" ? "●" : "○"}
+                        {stage.status === "completed" ? "✓" : stage.status === "failed" ? "!" : stage.status === "not_run" ? "–" : stage.status === "running" ? "●" : "○"}
                       </span>
                       <strong>{stage.label}</strong>
                       <small>{stage.status}</small>
@@ -977,8 +1291,80 @@ export function IdeaDetailView({
           </div>
         </details>
       )}
+      {!showBoard && executionProgress?.kind === "companion_recovery" && executionProgress.status !== "waiting" && (
+        <details className="editorial-progress" open>
+          <summary>{executionSummary()}</summary>
+          <p>{executionProgressNote}</p>
+          <ol className="run-stage-list">
+            {executionProgress.stages.map((stage) => (
+              <li key={stage.id} className={stage.status}>
+                <span aria-hidden="true">
+                  {stage.status === "completed" ? "✓" : stage.status === "failed" ? "!" : stage.status === "not_run" ? "–" : stage.status === "running" ? "●" : "○"}
+                </span>
+                <strong>{stage.label}</strong>
+                <small>{stage.status}</small>
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
       {showBoard && idea.editorialBrief && (
-        <section className="brief">
+        <>
+          {persistedRunStages && (
+            <details className="editorial-progress">
+              <summary>Saved run status · {reviewIncomplete ? "incomplete" : "complete"}</summary>
+              <p>Saved workflow results, not the model’s private reasoning.</p>
+              {linkedinFailureRecovered && (
+                <p>A later LinkedIn-only recovery completed successfully. The original Board history remains unchanged; this recovery is recorded separately.</p>
+              )}
+              <ol className="run-stage-list">
+                {persistedRunStages.map((stage) => (
+                  <li key={stage.id} className={stage.status}>
+                      <span aria-hidden="true">{stage.status === "completed" ? "✓" : stage.status === "not_run" ? "–" : "!"}</span>
+                    <strong>{stage.label}</strong>
+                    <small>{stage.status}</small>
+                  </li>
+                ))}
+              </ol>
+              {idea.companionRecovery && (
+                <p className="grounded-note">
+                  Latest LinkedIn {idea.companionRecovery.kind} · {idea.companionRecovery.status} · {idea.companionRecovery.provider}/{idea.companionRecovery.model}
+                  {idea.companionRecovery.tier ? ` · ${idea.companionRecovery.tier}` : ""} · est. ${idea.companionRecovery.estimatedCost.toFixed(4)}
+                  {idea.companionRecovery.escalationReason ? ` · reason: ${idea.companionRecovery.escalationReason}` : ""}
+                </p>
+              )}
+            </details>
+          )}
+          {reviewIncomplete && (
+            <section className="review-recovery-note" aria-label="Run status">
+              <p className="eyebrow">RUN STATUS · INCOMPLETE</p>
+              <p>This run completed incompletely. Completed outputs are preserved; retry only the failed stage when available.</p>
+              <b>Failed or incomplete calls</b>
+              {failedBoardRoles.length > 0 ? (
+                <ul>
+                  {failedBoardRoles.map((failure) => (
+                    <li key={failure.role}><strong>{failure.role}:</strong> {failure.role === "final_drafter" && latestFinalDrafterFailure ? latestFinalDrafterFailure : failure.summary}</li>
+                  ))}
+                </ul>
+              ) : <p>The Board review completed, but a later drafting output did not.</p>}
+              {finalDrafterFailed && !linkedinFailureRecovered && retryLinkedinCompanion && livePreview?.linkedinRefresh && (
+                <>
+                  <button className="reviewer-rerun" disabled={busy || !livePreview.linkedinRefresh.available || liveBudget < livePreview.linkedinRefresh.estimatedCost} onClick={() => void retryLinkedinCompanion(liveBudget, "retry")}>
+                    Retry LinkedIn post with the configured low-cost route · {livePreview.linkedinRefresh.model} · conservative est. ${livePreview.linkedinRefresh.estimatedCost.toFixed(4)}
+                  </button>
+                  {livePreview.linkedinEscalation.available && (
+                    <button className="quiet-button" disabled={busy || liveBudget < livePreview.linkedinEscalation.estimatedCost} onClick={() => {
+                      if (window.confirm(`Escalate only the LinkedIn drafter to ${livePreview.linkedinEscalation.model}? This is a separate, explicitly recorded higher-cost retry.`))
+                        void retryLinkedinCompanion(liveBudget, "escalation");
+                    }}>
+                      Escalate LinkedIn drafter · {livePreview.linkedinEscalation.model} · conservative est. ${livePreview.linkedinEscalation.estimatedCost.toFixed(4)}
+                    </button>
+                  )}
+                </>
+              )}
+            </section>
+          )}
+          <section className="brief">
           <div className="brief-heading">
             <div>
               <p className="eyebrow">EDITORIAL BRIEF</p>
@@ -990,11 +1376,6 @@ export function IdeaDetailView({
               {reviewIncomplete ? "Review incomplete" : "Review complete"}
             </span>
           </div>
-          {reviewIncomplete && (
-            <p className="review-recovery-note">
-              This historical run did not produce a complete Board review. Retry the complete Board above before relying on its draft.
-            </p>
-          )}
           <h3>{idea.editorialBrief.thesis}</h3>
           <p className="brief-intro">
             This is a short edit guide, not a second assignment. Use it to decide what to preserve, qualify, or improve in the working draft.
@@ -1117,6 +1498,21 @@ export function IdeaDetailView({
               ))}
             </details>
           )}
+          </section>
+        </>
+      )}
+      {showDraft && idea.editorialBrief && (
+        <section className="reader-contract" aria-label="Reader contract">
+          <p className="eyebrow">READER CONTRACT</p>
+          {idea.grounding?.readerContract && <div className="saved-reader-contract"><b>Saved Board-run contract</b><p>{idea.grounding.readerContract.audienceProfile === "executive" ? "Executives and organizational leaders" : idea.grounding.readerContract.audienceProfile === "practitioner" ? "Practitioners building or operating AI" : idea.grounding.readerContract.audienceProfile === "general" ? "Curious general readers" : "Professionals across AI, data, technology, business, and leadership"}{idea.grounding.readerContract.audienceNotes ? ` · ${idea.grounding.readerContract.audienceNotes}` : ""} · {idea.grounding.readerContract.longForm && `Long ${idea.grounding.readerContract.longForm.min}–${idea.grounding.readerContract.longForm.max} words. `}{idea.grounding.readerContract.shortForm && `Short ${idea.grounding.readerContract.shortForm.min}–${idea.grounding.readerContract.shortForm.max} words.`}</p></div>}
+          <b>Current Develop preferences</b>
+          <h3>{idea.audienceProfileKey === "executive" ? "Executives and organizational leaders" : idea.audienceProfileKey === "practitioner" ? "Practitioners building or operating AI" : idea.audienceProfileKey === "general" ? "Curious general readers" : "Professionals across AI, data, technology, business, and leadership"}</h3>
+          {idea.audienceNotes && <p>{idea.audienceNotes}</p>}
+          <p>
+            {idea.outputPreferences?.longFormEnabled && `Long form: ${idea.outputPreferences.longFormMinWords}–${idea.outputPreferences.longFormMaxWords} words.`}
+            {idea.outputPreferences?.longFormEnabled && idea.outputPreferences?.shortFormEnabled && " "}
+            {idea.outputPreferences?.shortFormEnabled && `Short form: ${idea.outputPreferences.shortFormMinWords}–${idea.outputPreferences.shortFormMaxWords} words${idea.outputPreferences.shortFormSource === "derived_from_long" ? ", derived from this exact article." : "."}`}
+          </p>
         </section>
       )}
       {showDraft && idea.editorialBrief && (
@@ -1188,13 +1584,28 @@ export function IdeaDetailView({
         <section className="publication-outputs">
           <p className="eyebrow">PUBLICATION OUTPUTS</p>
           <h3>Article first, then its LinkedIn companion.</h3>
-          <p className="publication-output-intro">The {idea.publicationPlan.startsWith("medium") ? "Medium" : "Substack"} article is version {idea.canonicalDraft.version}. Create the LinkedIn version when this saved article is ready to be its source.</p>
+          <p className="publication-output-intro">The {idea.publicationPlan.startsWith("medium") ? "Medium" : "Substack"} article is version {idea.canonicalDraft.version}. The Editorial Board generates its LinkedIn version in the same run.</p>
           {!idea.linkedinCompanion || idea.linkedinCompanion.stale ? (
-            <button disabled={busy || draftDirty || primaryPublished} onClick={() => void createLinkedinCompanion?.()}>
-              {idea.linkedinCompanion
-                ? `Create a replacement LinkedIn version from Article v${idea.canonicalDraft.version}`
-                : `Create LinkedIn version from Article v${idea.canonicalDraft.version}`}
-            </button>
+            <div className="stale-output">
+              <p>
+                {idea.linkedinCompanion
+                  ? "The LinkedIn version belongs to an earlier article version. Refresh only the LinkedIn post from this saved article; the Board brief and article will remain unchanged."
+                  : "This older Board run did not create a LinkedIn version. Generate only the LinkedIn post from this saved article; the Board brief and article will remain unchanged."}
+              </p>
+              {retryLinkedinCompanion && livePreview?.linkedinRefresh && (
+                <button
+                  className="reviewer-rerun"
+                  disabled={busy || companionDirty || !livePreview.linkedinRefresh.available || liveBudget < livePreview.linkedinRefresh.estimatedCost}
+                  onClick={() => void retryLinkedinCompanion(liveBudget, "refresh")}
+                >
+                  Refresh LinkedIn from Article v{idea.canonicalDraft.version} · {livePreview.linkedinRefresh.model} · conservative est. ${livePreview.linkedinRefresh.estimatedCost.toFixed(4)}
+                </button>
+              )}
+              {companionDirty && <p>Save or discard the unsaved LinkedIn edits before replacing this stale version.</p>}
+              {livePreview?.linkedinRefresh && liveBudget < livePreview.linkedinRefresh.estimatedCost && (
+                <p>Increase the run cap to at least the conservative reservation of ${livePreview.linkedinRefresh.estimatedCost.toFixed(4)} to refresh only this LinkedIn post.</p>
+              )}
+            </div>
           ) : (
             <article className="companion-ready">
               <div className="companion-heading">
@@ -1221,7 +1632,6 @@ export function IdeaDetailView({
               </div>
             </article>
           )}
-          {idea.linkedinCompanion?.stale && <p className="stale-output">The LinkedIn companion is stale because article version {idea.canonicalDraft.version} changed. Create a replacement when you are ready.</p>}
         </section>
       )}
       {showDraft && idea.draft && (
@@ -1235,7 +1645,7 @@ export function IdeaDetailView({
               </p>
             </div>
             <button disabled={busy || draftDirty || primaryPublished} onClick={() => void finalReview(primaryFormat)}>
-              Run draft review
+              Run draft review{proofreaderDisclosure(primaryFormat)}
             </button>
           </div>
           {draftDirty && (
@@ -1253,9 +1663,23 @@ export function IdeaDetailView({
                     : "Revise before publishing"}
               </summary>
               <p>{idea.finalReview.summary}</p>
+              <section className="proofread-findings" aria-label="Proofread and clarity findings">
+                <b>Proofread and clarity</b>
+                {!idea.finalReview.proofreadCompleted ? <p>Proofread and clarity has not produced a validated result for this exact version yet.</p> : idea.finalReview.proofreadFindings.length ? idea.finalReview.proofreadFindings.map((finding) => (
+                  <article key={finding.id}>
+                    <p><strong>{finding.severity === "material" ? "Material correction" : "Optional suggestion"}</strong> · {finding.category}</p>
+                    <p>Current: {finding.current}</p><p>Suggested: {finding.suggestion}</p><small>{finding.rationale}</small>
+                    {finding.severity === "material" && setReviewFindingDisposition && <label>Decision
+                      <select value={finding.disposition ?? ""} disabled={busy || primaryPublished} onChange={(event) => { if (event.target.value) void setReviewFindingDisposition(idea.finalReview!.runId, finding.id, event.target.value as "accepted" | "dismissed" | "revised" | "still_open"); }}>
+                        <option value="">Resolve or dismiss before Finalize</option><option value="revised">Revised</option><option value="accepted">Accepted</option><option value="dismissed">Dismissed as not applicable</option><option value="still_open">Still open</option>
+                      </select>
+                    </label>}
+                  </article>
+                )) : <p>No proofread or clarity findings for this exact version.</p>}
+              </section>
               <div className="review-columns">
                 <div>
-                  <b>Original recommendations</b>
+                  <b>Editorial assessment · original recommendations</b>
                   <ul>
                     {idea.finalReview.recommendationStatuses.map((item) => (
                       <li key={item.recommendation}>
@@ -1349,7 +1773,7 @@ export function IdeaDetailView({
                 {idea.finalReview.reviews.map((review) => (
                   <article key={review.role}>
                     <b>
-                      {review.role} · {review.status === "failed" ? "failed" : draftReviewLabel(review.checkStatus, review.details)}
+                      {review.role} · {review.status === "failed" ? "failed" : reviewStatusBadge(review.checkStatus, review.details)}
                     </b>
                     <p>{review.summary}</p>
                     {review.details.map((item) => (
@@ -1371,7 +1795,7 @@ export function IdeaDetailView({
               <p>Its review stays attached to this exact LinkedIn version.</p>
             </div>
             <button disabled={busy || companionDirty || companionPublished} onClick={() => void finalReview("linkedin_companion")}>
-              Run LinkedIn review
+              Run LinkedIn review{proofreaderDisclosure("linkedin_companion")}
             </button>
           </div>
           {companionDirty && (
@@ -1389,28 +1813,53 @@ export function IdeaDetailView({
                     : "Revise LinkedIn version before finalizing"}
               </summary>
               <p>{idea.linkedinCompanionFinalReview.summary}</p>
+              <section className="proofread-findings" aria-label="LinkedIn proofread and clarity findings">
+                <b>Proofread and clarity</b>
+                {!idea.linkedinCompanionFinalReview.proofreadCompleted ? <p>Proofread and clarity has not produced a validated result for this exact version yet.</p> : idea.linkedinCompanionFinalReview.proofreadFindings.length ? idea.linkedinCompanionFinalReview.proofreadFindings.map((finding) => (
+                  <article key={finding.id}><p><strong>{finding.severity === "material" ? "Material correction" : "Optional suggestion"}</strong> · {finding.category}</p><p>Current: {finding.current}</p><p>Suggested: {finding.suggestion}</p><small>{finding.rationale}</small>
+                    {finding.severity === "material" && setReviewFindingDisposition && <label>Decision <select value={finding.disposition ?? ""} disabled={busy || companionPublished} onChange={(event) => { if (event.target.value) void setReviewFindingDisposition(idea.linkedinCompanionFinalReview!.runId, finding.id, event.target.value as "accepted" | "dismissed" | "revised" | "still_open"); }}><option value="">Resolve or dismiss before Finalize</option><option value="revised">Revised</option><option value="accepted">Accepted</option><option value="dismissed">Dismissed as not applicable</option><option value="still_open">Still open</option></select></label>}
+                  </article>
+                )) : <p>No proofread or clarity findings for this exact version.</p>}
+              </section>
               {idea.linkedinCompanionFinalReview.remaining.length > 0 && (
-                <div>
+                <div className="companion-next-edits">
                   <b>Still open</b>
                   <ul>{idea.linkedinCompanionFinalReview.remaining.map((item) => <li key={item}>{item}</li>)}</ul>
+                  <div>
+                    <b>Suggested next edit</b>
+                    {idea.linkedinCompanionFinalReview.remaining.map((item) => <p key={`next-${item}`}>{companionNextEdit(item)}</p>)}
+                  </div>
                 </div>
               )}
               {idea.linkedinCompanionFinalReview.polishSuggestions?.length ? (
-                <details>
-                  <summary>Optional final polish</summary>
+                <div className="polish-suggestions companion-polish-suggestions">
+                  <div>
+                    <b>Optional final polish</b>
+                    <p>These are not blockers. Apply only what still sounds like you.</p>
+                  </div>
                   {idea.linkedinCompanionFinalReview.polishSuggestions.map((suggestion) => (
                     <article key={suggestion.id}>
-                      <p><b>Consider:</b> {suggestion.suggested}</p>
-                      <p>{suggestion.reason}</p>
+                      <div className="polish-comparison">
+                        <p><span>Current</span>{suggestion.current}</p>
+                        <p><span>Suggested</span>{suggestion.suggested}</p>
+                      </div>
+                      <p className="polish-reason">{suggestion.reason}</p>
+                      <button
+                        type="button"
+                        disabled={busy || companionPublished || !(companionDraft ?? idea.linkedinCompanion?.body ?? "").includes(suggestion.current)}
+                        onClick={() => applyCompanionPolishSuggestion(suggestion.current, suggestion.suggested)}
+                      >
+                        Apply this edit
+                      </button>
                     </article>
                   ))}
-                </details>
+                </div>
               ) : null}
               <details>
                 <summary>View this review’s checklist details</summary>
                 {idea.linkedinCompanionFinalReview.reviews.map((review) => (
                   <article key={review.role}>
-                    <b>{review.role} · {draftReviewLabel(review.checkStatus, review.details)}</b>
+                    <b>{review.role} · {reviewStatusBadge(review.checkStatus, review.details)}</b>
                     <p>{review.summary}</p>
                     {review.details.map((item) => <p key={item}>• {item}</p>)}
                   </article>
@@ -1424,21 +1873,28 @@ export function IdeaDetailView({
         <details className="visual-companion" open={Boolean(idea.visualCompanion)}>
           <summary>
             <span>Visual companion</span>
-            <small>Optional framework graphic</small>
+            <small>Optional mutable draft asset</small>
           </summary>
           <div className="visual-companion-content">
+            <fieldset className="visual-template-picker" disabled={busy || draftDirty || primaryPublished}>
+              <legend>Choose the explanatory shape</legend>
+              <label><input type="radio" name="visual-template" checked={visualTemplate === "decision_fork"} onChange={() => setVisualTemplate("decision_fork")} /><span><b>Decision fork</b><small>One starting point, then unmanaged activity or disciplined capability.</small></span></label>
+              <label><input type="radio" name="visual-template" checked={visualTemplate === "contrast"} onChange={() => setVisualTemplate("contrast")} /><span><b>Iceberg contrast</b><small>Visible activity above the surface; operating maturity beneath it.</small></span></label>
+              <label><input type="radio" name="visual-template" checked={visualTemplate === "vertical_path"} onChange={() => setVisualTemplate("vertical_path")} /><span><b>Vertical path</b><small>A compact upward progression through three stages.</small></span></label>
+              <label><input type="radio" name="visual-template" checked={visualTemplate === "flow"} onChange={() => setVisualTemplate("flow")} /><span><b>Three-step flow</b><small>Three connected cards; use only when sequence is the actual point.</small></span></label>
+            </fieldset>
             {!idea.visualCompanion ? (
               <>
-                <p>Create a calm, memorable framework visual for this exact saved article. It does not change the post text.</p>
-                <button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual()}>
+                <p>Create a mutable local SVG for this exact saved article. It does not change the post text; choose only a structure that the post supports. Visual revision history and publication-artifact selection are planned follow-on work.</p>
+                <button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual(visualTemplate)}>
                   Create visual companion
                 </button>
               </>
             ) : (
               <>
                 <VisualFlow visual={idea.visualCompanion} />
-                <button className="refresh-visual" disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual()}>
-                  Refresh saved SVG
+                <button className="refresh-visual" disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual(visualTemplate)}>
+                  Refresh this visual
                 </button>
               </>
             )}
@@ -1495,7 +1951,7 @@ export function IdeaDetailView({
           </Link>
         ) : (
           <p className="stale-review-notice">
-            Save the current output{isDualOutputPlan ? "s and refresh any stale LinkedIn companion" : ""} before finalizing.
+            {finalizeBlockedMessage}
           </p>
         )
       )}
@@ -1528,11 +1984,11 @@ export function IdeaDetailView({
             `Derived from article version ${idea.linkedinCompanion.sourceCanonicalVersion}.`,
           )}
           {isDualOutputPlan && (!idea.linkedinCompanion || idea.linkedinCompanion.stale) && (
-            <p className="stale-output">The LinkedIn companion is not current. Return to Write to create a version from the current article.</p>
+            <p className="stale-output">The LinkedIn companion is not current. Return to Editorial Board to generate a new matched pair.</p>
           )}
           {idea.visualCompanion && (
             <details className="visual-companion" open>
-              <summary><span>Visual companion</span><small>Saved with this article version</small></summary>
+              <summary><span>Visual companion</span><small>Draft asset for this article version</small></summary>
               <div className="visual-companion-content"><VisualFlow visual={idea.visualCompanion} /></div>
             </details>
           )}
@@ -1546,6 +2002,7 @@ export function IdeaDetailView({
           <p className="grounded-note">
             BOK version {idea.grounding.bok.version} · voice skill version {idea.grounding.voice.version} · {idea.grounding.executionMode === "live" ? "live provider run; per-call usage and pricing assumptions are recorded" : "local deterministic provider · $0.00"}
           </p>
+          {idea.grounding.readerContract && <p className="grounded-note">Reader contract used: {idea.grounding.readerContract.audienceProfile}{idea.grounding.readerContract.audienceNotes ? ` · ${idea.grounding.readerContract.audienceNotes}` : ""} · {idea.grounding.readerContract.longForm && `long ${idea.grounding.readerContract.longForm.min}–${idea.grounding.readerContract.longForm.max} words`} {idea.grounding.readerContract.shortForm && `short ${idea.grounding.readerContract.shortForm.min}–${idea.grounding.readerContract.shortForm.max} words`}</p>}
           <p className="provenance-label">Selected BOK passages</p>
           {idea.grounding.sections.map((section) => (
             <article key={`${section.headingPath}-${section.sourceLocation}`}>

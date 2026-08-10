@@ -49,4 +49,18 @@ describe("local mutation request boundary", () => {
       "The local request could not be completed safely.",
     );
   });
+
+  it("keeps detailed, application-authored LinkedIn drafting recovery guidance", () => {
+    const message = "The LinkedIn drafter failed before a validated response was available. The canonical article and completed Board review were saved; raw provider details are intentionally withheld.";
+    expect(safeRouteError(new Error(message))).toBe(message);
+  });
+
+  it("keeps actionable proofreader and Finalize guidance while sanitizing arbitrary errors", () => {
+    for (const message of [
+      "The live proofread did not produce a validated result. No proofread finding is eligible until you retry this exact saved output.",
+      "Live proofreader execution must use the configured low-tier proofreader route.",
+      "Run the proofread and clarity check for this exact saved output before publishing.",
+      "Resolve or explicitly dismiss every material proofread finding before publishing.",
+    ]) expect(safeRouteError(new Error(message))).toBe(message);
+  });
 });

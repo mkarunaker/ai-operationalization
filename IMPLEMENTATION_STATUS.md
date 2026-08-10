@@ -1,8 +1,33 @@
 # Implementation Status — Lean Refactor
 
+## Milestone 5.1 handoff — 2026-08-09
+
+Status: **approved by independent Sol read-only audit on 2026-08-09.**
+
+## Audit interruption checkpoint — 2026-08-09
+
+**The three additional narrow audit gaps were remediated, the complete local gate passed, and Sol independently approved Milestone 5.1.**
+
+- The worktree is intentionally uncommitted and unstaged. At this checkpoint, `git diff --stat` reports 28 changed tracked files; this is a shared dirty tree, so do not reset, clean, stage, commit, or discard unrelated changes.
+- The latest completed local gate is command-derived: typecheck, lint, 24 test files / 130 tests, 17 validate-only migrations, production build, nine deterministic production-mode Playwright flows, 132-file secret scan, zero-vulnerability dependency audit, and both unstaged and cached diff checks all passed. No migration was applied and no provider was called.
+- Re-entry procedure after interruption or an audit verdict: read this handoff and `docs/MILESTONE_5_1_SOL_BLOCKER_MATRIX.md`; map only a concrete finding to its invariant; first add a direct adversarial regression that fails against the current behavior; then make the narrowest implementation change and rerun the full local gate before another audit. Do not treat a green aggregate count as evidence.
+- Continue to avoid `.env` files, credentials, meaningful local data, backups, BOK, voice, Notebook, or provider request bodies. Do not call providers, stage, commit, or push.
+
+- Sol did not approve the earlier Milestone 5.1 implementation. The active remediation now additionally covers untrusted audience-note containment, immutable reader-contract provenance, scoped-recovery ranges, proofreader repair schema, and direct browser/service boundary coverage.
+- Before a repeat audit, follow the new audit-remediation validation protocol in `docs/AGENT_SECURITY_GUARDRAILS.md`: direct boundary-to-browser regressions for each finding, injected no-network live-path outcomes, explicit compatibility branches, command-derived evidence, and a current-diff requirement-to-test review.
+- Added, but did **not** apply, `migrations/017_reader_first_output_contract.sql`. It is additive and introduces optional audience fields, reader-first output preferences, legacy-plan compatibility backfill, and exact-review finding dispositions.
+- No local database migration, provider call, environment-file access, BOK/voice modification, staging, commit, or push occurred for this start.
+- Reader-first preferences now persist an optional audience profile/note and short, long, or paired output selection with editable bounded ranges. The legacy publication plan remains intact as compatibility data; current selections map to the existing exact-version formats and relationship rules.
+- The existing per-output review action now records a separate exact-version proofread/clarity role. With a configured live route it uses the explicit low-tier provider route, reserves its cap before dispatch, persists a distinct provider attempt, and keeps the deterministic fixture for no-network tests. Material findings remain plain-text suggestions, require an explicit author decision, and are enforced again in `publishIdea()`; optional findings never block Finalize. New saved output versions naturally require a new review because every review is keyed to one immutable draft version.
+- Current command-derived evidence: `npm run typecheck`, `npm run lint`, `npm test` (24 files / 130 tests), `npm run db:validate` (17 validate-only migrations), `npm run build`, `npm run test:e2e` (9 deterministic production-mode flows), `npm run security:secrets` (132 files), `npm run security:audit` (0 vulnerabilities), and both `git diff --check` and `git diff --cached --check` all passed.
+- The no-network live-proofread matrix covers success, cap rejection before dispatch, provider failure, refusal, truncation, malformed-output repair, repair exhaustion, persisted per-attempt telemetry, terminal failed state, and reload eligibility. The server and Finalize independently require a completed exact-version proofread and resolved material findings.
+- This final pass adds one shared scoped-LinkedIn request constructor for estimation and recovery; explicit persisted proofread status (`completed`, `failed`, or `not_run`) for truthful Finalize feedback; server rejection of caller-supplied proofreader route/pricing fields; and a shared two-attempt byte-based proofreader reservation estimate. The audit matrix names the adversarial fixtures and exact direct regressions.
+- Latest remediation makes `readerContract` a strict minimal manifest object and rejects malformed persisted contracts; computes and renders proofreader reservation by exact output; suppresses live-model/cost disclosure when the route is unavailable; resolves the proofreader adapter, route, pricing, and cap entirely inside the production boundary while retaining a test-only injection seam; and persists attempted provider/model identity separately from response-reported identity. Direct no-network regressions prove a matching-metadata malicious adapter is ignored, cap rejection is independent, incoherent/no-output manifests are rejected, and a mismatched response model remains response-only telemetry.
+- Do not apply migration 017 to meaningful local data without the existing owner-only backup and restore verification. Do not begin a later milestone before the Milestone 5.1 independent audit passes.
+
 ## Current checkpoint
 
-**The required publication UX audit-gap checkpoint and its 2026-08-08 follow-up data-integrity remediation are complete. Milestones 0–5 are complete. The next active work is the Capture-to-Develop UX checkpoint; Milestone 6 has not begun. The Git staging/commit checkpoint remains deliberately open. `BUILD_ROADMAP.md` is the active plan and contains the proposed milestone target dates.**
+**Milestones 0–5, the publication UX closure work, Capture-to-Develop, and the historical manual-first research capability are complete. Milestone 5.1 reader-first output-contract remediation is independently approved. `BUILD_ROADMAP.md` is the active plan. No Git staging, commit, or push has occurred.**
 
 ### Current delivery snapshot — 2026-08-08
 
@@ -13,9 +38,103 @@
 | Live routing and revision loop | Complete | Milestones 3–4 retain explicit cost caps, bounded repair, escalation records, versioned review, and advisory voice checks. |
 | Publication formats and lifecycle | Complete | Milestone 5 plus this audit-gap checkpoint now cover LinkedIn-only and long-form-plus-LinkedIn exact-version workflows. |
 | Publication UX audit-gap checkpoint | Complete | Details and validation evidence are recorded immediately below; an independent read-only audit or user acceptance is the next gate. |
-| Capture-to-Develop UX checkpoint | Planned | Before Milestone 6: optional capture title, concise suggested title on Develop, and automatic navigation into the new idea. |
-| Milestone 6 — research and evidence | Not started | Do not begin until the Capture-to-Develop UX checkpoint is complete and accepted. The proposed target completion is 2026-08-12 in `BUILD_ROADMAP.md`. |
+| Capture-to-Develop UX checkpoint | Complete | Optional title, generated fallback title, direct transition to Develop, and regression coverage are complete. |
+| Milestone 6 — research and evidence | Complete | Manual evidence, separate interpretation, source records, epistemic labels, injection signals, and explicit zero-cost local research briefs are test-ready. |
+| Board and companion truthfulness closure | Complete | Run-status truth, exact companion-stage identity, scoped recovery route/cost, run-scoped provenance, editor refresh, visual disclosure, and provider-disabled Playwright are implemented. |
+| Milestone 5.1 — reader-first output contract | Approved | Audience and long/short format contract; integrated exact-version proofread, conservative reservation, and direct boundary/browser regressions passed independent Sol read-only audit. |
+| Milestone 6 visual-brief follow-on | Deferred | An approved, claim-bound visual recommendation step will precede rendering; it does not require image generation. |
 | Git release preparation | Intentionally open | No files were staged, committed, or pushed during this checkpoint. |
+
+### Board and companion truthfulness closure — implementation complete, audit pending
+
+- Board review completeness is now distinct from output-pair completeness. A successful LinkedIn recovery resolves only the Final Drafter output; any failed Strategist, Skeptic, Editor, or Synthesizer remains visible and keeps the Board incomplete.
+- A stale LinkedIn companion refresh uses the configured low-cost Final Drafter route. A medium-tier action is visibly an author-selected escalation, records its reason, and is not used by an ordinary refresh. Both estimates use the saved canonical article, indexed voice reference, Final Drafter instruction, and 1,200-token output allowance rather than reviewer defaults.
+- Displayed grounding provenance is now scoped by immutable `reviewRunId`; a later targeted companion recovery is recorded separately. Saved Board selection now uses the most recently completed eligible full run regardless of live versus deterministic mode.
+- Workspace state resets the controlled companion editor after a scoped recovery only when it has no unsaved author edits. The Write screen labels the current SVG as a mutable draft asset; immutable visual revision history and publication linkage remain future visual work.
+- Deterministic Playwright startup uses a temporary database and synthetic sources and explicitly blanks OpenAI, Anthropic, and ZenMux credentials.
+- A failed full Board run is now selected and displayed after reload rather than falling back to an older completed run. Synthesizer failure is an explicit saved run failure and prevents a LinkedIn recovery from presenting the Board as complete.
+- Retry and stale-refresh actions are locked to the configured low-cost Final Drafter route in both the route handler and service. Medium is available only through the explicit escalation action with a required, persisted reason.
+- Failed scoped recovery is retained as separate history against the canonical source, even before a companion draft exists. The status surface reports that later failed attempt rather than only the original Board failure.
+- New deterministic regressions cover Synthesizer failure persistence, mixed Board/companion truthfulness, failed-recovery reload history, low-versus-medium route enforcement, the actual 1,200-token LinkedIn estimate contract, and controlled companion-editor reset behavior.
+- The roadmap now records this closure checkpoint ahead of **Milestone 5.1 — Reader-first output contract and integrated quality gate**. The lean scope retains the historical two-draft concern and documents the approved same-run dual-output decision as superseding timing.
+
+### Closure follow-up remediation — 2026-08-09
+
+- A persisted LinkedIn stage now represents only the exact child companion related to the displayed Board run’s generated canonical draft. If synthesis stops before drafting, the article and LinkedIn stages are explicitly `not_run`; an older companion cannot make that run look complete after reload.
+- The exported scoped-recovery execution boundary enforces the same policy as the route: refresh and retry are low tier only; medium is valid only for an explicit escalation with a non-empty author reason. Successful escalation persists its recovery kind, tier, and reason for reload-safe provenance.
+- The LinkedIn estimate regression now proves the saved canonical article, synthetic indexed voice reference, trusted Final Drafter instruction, 1,200-token output allowance, and bounded two-attempt reservation each contribute to the result.
+- A deterministic browser regression exercises the actual controlled editor: a clean recovery response appears immediately, while a delayed action response received after the author begins typing leaves that wording untouched.
+- Deterministic Playwright both blanks configured provider credentials and sets `EDITORIAL_TEST_DISABLE_PROVIDER_CALLS=1`; provider adapters reject any accidental live execution path during the browser suite.
+
+Validation after the 2026-08-09 final remediation: TypeScript, ESLint, 24 test files / 111 tests, 16 validate-only migrations, production build, five isolated deterministic Playwright workflows, a 131-file secret scan, dependency audit with 0 vulnerabilities, and both Git diff checks passed. Tests used temporary databases and synthetic BOK/voice fixtures. No provider was called; no environment file, meaningful local database, backup, BOK, or voice skill was manually inspected, modified, or staged. The sandbox blocked `tsx` temporary IPC sockets, so validate-only migrations, production build, security scan, dependency audit, and browser E2E were rerun through approved local execution. Next action: one narrow independent Sol audit of this closure diff before starting Milestone 5.1.
+
+### Final closure remediation — 2026-08-09
+
+- In-flight action responses reconcile against ref-backed current companion state, so wording typed after a request starts is retained.
+- The saved Board summary now marks both article and LinkedIn drafting `not_run` if Synthesizer failed before drafting; deterministic and live request failures terminalize their in-page progress from the persisted failure where available.
+- The production recovery execution boundary validates the configured Final Drafter provider, model, pricing assumption, and maximum cap. Arbitrary injected routes exist only in a test-runtime seam. Medium work requires an explicit `escalation` kind and a non-empty reason.
+- LinkedIn estimates are labeled conservative reservations because their input sizing uses character-derived token bounds.
+
+This remains an implementation disposition pending one fresh independent audit before Milestone 5.1.
+
+### Run-truthfulness remediation — 2026-08-09
+
+- Terminal Board stages now use exact persisted role attempts. If every reviewer fails, Synthesizer, article drafting, and LinkedIn drafting are all rendered as `not_run`, rather than waiting or completed.
+- The historical Board companion identity is scoped to the exact Board run through its persisted model-call metadata. A later scoped recovery or author edit cannot replace the companion identity recorded for the original run.
+- Scoped recovery has a distinct progress identity. A successful recovery is labeled as a LinkedIn recovery rather than a completed Board; a persisted provider failure is distinct from a route, policy, configuration, or cap rejection before provider dispatch. Only the former records failure provenance.
+- The scoped LinkedIn estimate now includes the same fixed request framing/schema allowance as its execution reservation.
+- New integration and deterministic browser coverage exercise all-reviewer failure, run-scoped companion identity after author editing, actual scoped recovery progress, and pre-dispatch rejection without fabricated provenance.
+
+Validation after this run-truthfulness remediation: TypeScript, ESLint, 24 test files / 112 tests, 16 validate-only migrations, production build, seven isolated deterministic Playwright workflows, a 131-file secret scan, dependency audit with 0 vulnerabilities, and both Git diff checks passed. Tests used temporary databases and synthetic BOK/voice fixtures. No provider was called; no environment file, meaningful local database, backup, BOK, or voice skill was manually inspected, modified, or staged.
+
+This remains an implementation disposition pending one fresh independent audit before Milestone 5.1.
+
+### Capture-to-Develop and Milestone 6 checkpoint — completed 2026-08-08
+
+- Inbox capture now accepts an optional author title. If blank, the existing concise local title suggestion remains the saved title. Saving opens the new idea directly in Develop, where the title remains easy to edit and persists across reload.
+- Develop now includes optional **Research and evidence**. Author-provided evidence is stored separately from interpretation, with bounded source title, HTTP(S) URL, publication date, excerpt, and epistemic label fields.
+- The explicit **Prepare research brief** action records a zero-cost local planning brief, question, time window, tool identity, and injection signals. It clearly states that it does not browse the web, assert market awareness, or add sources automatically.
+- Source excerpts and evidence summaries cross the existing untrusted-content boundary. Instruction-like source material is recorded as a signal; it is displayed as text, never executed or treated as a command. `javascript:` URLs are rejected.
+- Migration 014 was applied only after owner-only backup and restore verification: `data/backups/ai-editorial-board-remediation-20260808T232103608Z.sqlite`.
+
+Validation: TypeScript and ESLint passed; 22 test files / 86 tests passed; 14 migrations validated; production build passed; two deterministic Playwright flows passed; secret scan and dependency audit passed with no findings; `git diff --check` passed. No live model provider was called.
+
+Remaining limitation: this milestone intentionally provides manual research and a bounded local research-planning action. It does not fetch the web or claim to cross-check current market information until the owner selects and configures an explicit external research connector.
+
+### Planned Milestone 6 follow-on — approved visual brief
+
+- The next bounded addition is a visual-brief selection step: recommend no visual or one appropriate explanatory grammar, let the author edit the message, claims, labels, caption, and alt text, then require explicit approval before rendering.
+- Initial selection will be transparent and local-first. A low-cost model may later offer an explicitly requested, advisory visual brief bounded to the saved draft and approved BOK/research claims. No image-generation tool is required for this step.
+- Deterministic diagrams remain the default for factual frameworks. Character illustrations and other generative imagery are deferred to optional Milestone 8 work.
+
+### Post-checkpoint writing polish — 2026-08-08
+
+- **Complete — dual-output model drafting:** a selected Medium/Substack plus LinkedIn plan now creates both outputs in the same Editorial Board run. The Initial Drafting Agent produces the 3–4 minute canonical article; the low-cost Final Drafting Agent produces a source-linked standalone 160–240-word LinkedIn post. Its separate model call, version relationship, and provenance are recorded, and the live upper-bound estimate includes all six planned calls. The old local-template creation control and API action are unavailable in the normal flow; historic incomplete pairs direct the author to rerun the Board.
+
+Validation: TypeScript, ESLint, 23 test files / 94 tests, 16 migrations validated without applying them, production build, and two deterministic Playwright flows passed. Secret scan covered 126 source/documentation files; dependency audit found 0 vulnerabilities; `git diff --check` passed. No external model provider was called.
+
+- **Final-drafter reliability repair:** generated publication text is now deterministically normalized for the explicitly prohibited em dash before the final voice check and exact-version persistence. The UI and provenance now preserve safe, actionable execution categories for provider request rejection, refusal, output limits, missing output, invalid structured output after the bounded repair, publication-format or voice-rule failure, safe-save failure, and unknown local execution failure. Every category states the preserved work and next action; raw provider bodies, prompts, credentials, and filesystem details remain withheld. The normalizer is deliberately limited to punctuation; it does not add claims, generate content, or call a model. Regression coverage proves a dual-output run completes and persists an em-dash-free LinkedIn companion when the synthetic final drafter returns an otherwise valid response with that punctuation, and that a safe detailed final-drafter failure reaches the route boundary.
+
+Local validation after this repair: TypeScript, ESLint, 23 test files / 97 tests, production build, and `git diff --check` passed. No external provider was called.
+
+- **Scoped recovery:** an incomplete dual-output Board run now presents its final-drafter failure directly under the Editorial Board run status, above the brief. The recovery action retries only the missing LinkedIn post from the exact saved canonical article. It has a separate low-tier route, displayed estimate, per-run cap, exact model-call provenance, and one immediate transaction for draft, approval, and relationship persistence. It cannot rerun completed reviewers, synthesis, or the canonical drafter, and it cannot overwrite a current companion.
+- **Execution diagnostics and retained status:** `src/editorial/grounded-run.ts` now writes a redacted, structured `failureDiagnostic` into failed model-call provenance: failure code, provider/model route, safe HTTP/provider category where available, raw-error-storage flag, and a correlation fingerprint. `app/queue-client.tsx` renders the most recent persisted final-drafter failure rather than an older Board memo and reconstructs the saved stage summary after a reload. No raw provider response, prompt, credential, private source text, or filesystem detail is stored or displayed.
+- **Final-drafter output limit correction:** the low-cost final drafter’s bounded output allowance is 1,200 tokens, up from 700. This still targets a 160–240-word LinkedIn post, but reserves enough room for the provider’s structured response and managed reasoning budget. The existing cumulative cap and displayed estimate apply to the larger bounded request; no other Board role changed.
+- **Final-drafter request correction:** both the normal dual-output path and its scoped retry explicitly request `low` reasoning effort for the final drafter. This is recorded in the request contract and covered by the grounded run test. It prevents a short, structured adaptation from spending its bounded output budget on unnecessary deep reasoning.
+- **Final-drafter repair-schema correction:** the bounded structured-output repair now treats `final_drafter` as publication output (`role`, `body`, `factual_gaps`, and `voice_rules_applied`), not reviewer output. A regression simulates a malformed first LinkedIn response, verifies the one bounded repair receives the correct shape, and persists the repaired companion. This fixes a deterministic repair-path defect discovered during live validation.
+
+Audit traceability for this stabilization work: `tests/integration/grounded-editorial-run.test.ts` covers punctuation normalization, lowercase-provider safe failure handling, and one-call companion recovery; `tests/unit/local-request.test.ts` covers preservation of safe recovery guidance at the route boundary. The final full audit must verify the displayed retry estimate, exact canonical-source identity, durable failure diagnostics, reload behavior, and no raw-error leakage.
+
+Approved follow-on — governed recovery: allow one automatic technical retry inside the already approved cap, then require an explicit human decision based on the safe diagnostic. The author can choose a bounded token increase or one-role next-tier escalation; no successful stage reruns and no frontier escalation occur automatically. This is planned after the current final-drafter stabilization test and must receive route/service/browser regressions before being enabled.
+
+Approved routing follow-on — model independence: configure the Synthesizer independently from the reviewer majority and Final Drafter independently from Synthesizer where provider/model availability and the run cap permit. This supplements, rather than replaces, source-grounding and evidence-boundary checks. The live run plan will disclose any same-provider fallback.
+
+- LinkedIn companion reviews now pair each open item with a plain-language **Suggested next edit**. Optional companion polish uses the same current-versus-suggested comparison and explicit apply control as the primary draft.
+- Companion typography now uses the same body scale and supporting-text scale as the primary Write surface.
+- The local Skeptic checklist now distinguishes an actual missing safeguard from an optional improvement: no boundary and no illustrative support is **Needs revision**; either one alone is **Review**; both are **Pass**. Its text now says exactly which signal is missing.
+- Draft and LinkedIn review surfaces now use a neutral reading background. Individual outcomes use compact colored text labels: green **Pass**, amber advisory **Review**, and a restrained attention color for **Needs revision**. A ready overall review no longer looks like every individual check passed.
+- Visual companion selection is local and author-controlled: **Decision fork**, **Contrast**, or **Simple flow**. The app does not make a model call or invent claims. For activity-versus-maturity content, contrast is the automatic fallback; an author can explicitly choose the decision fork when the post itself supports the managed-versus-unmanaged argument. Migration 016 adds these saved template identities while preserving existing visual records and paths; it requires the normal owner-only backup then explicit `db:migrate` step before use with the local database.
+- Validation passed: TypeScript, ESLint, focused unit/integration tests (24 tests), deterministic Playwright (2 flows), and `git diff --check`. No provider was called.
 
 ### Follow-up exact-version remediation — completed 2026-08-08
 
@@ -130,7 +249,7 @@ Remaining limitations / technical debt:
 ### Remaining release-gate work
 
 - Do not treat this as a complete release gate: additional hostile-content coverage, permission/history scanning, backup rollback exercise, production-mode browser verification on port 3100, and exact staging-set review remain Milestone 9 work.
-- Milestone 5 was completed immediately after this checkpoint; Milestone 6 is now the next feature milestone.
+- Historical note (2026-08-07): Milestone 5 was completed immediately after this checkpoint; at that time, Milestone 6 was the next feature milestone. This statement is superseded by the current Milestone 5.1 gate at the top of this document and in `BUILD_ROADMAP.md`.
 
 ### Milestone 5 — Publication formats and LinkedIn companions — 2026-08-07
 
@@ -141,7 +260,7 @@ Remaining limitations / technical debt:
 - Migration 011 was applied after owner-only backup `data/backups/ai-editorial-board-remediation-20260808T041756142Z.sqlite` passed integrity and temporary restore-copy validation. Eleven migration files validate.
 - Validation without provider calls: TypeScript, ESLint, 21 test files / 66 tests, production build, deterministic Playwright LinkedIn and long-form companion flows, secret-pattern scan, dependency audit (0 vulnerabilities), and diff checks all passed.
 
-Milestone 5 is complete. Milestone 6 (research and evidence handling) is next and has not started.
+Historical note (2026-08-07): Milestone 5 was complete and Milestone 6 (research and evidence handling) had not started. This statement is retained as evidence and is superseded by the current Milestone 5.1 gate.
 
 `AI_Editorial_Board_Spec.md` remains unchanged. The accepted lean direction is in `LEAN_PRODUCT_SCOPE.md`, and `BUILD_ROADMAP.md` is the active milestone sequence. Queue capture, themes, drafts, draft versions, review-history persistence, a final explainable AI-pattern check, and publication records are implemented. The visible grounded Board and drafting path receives selected BOK passages and the configured voice skill. It can run deterministically for local testing or, when the local server has `OPENAI_API_KEY` and configured model IDs, run through the explicit finance-first OpenAI route with a conservative pre-execution estimate and cumulative budget cap.
 
@@ -337,9 +456,9 @@ After the Milestone 0 checkpoint, the active local database was replaced with a 
 - Default presentation of raw agent output.
 - Enterprise-oriented configuration, analytics, and multi-user assumptions in the older scope.
 
-## Active roadmap
+## Historical roadmap snapshot — 2026-08-06 (superseded)
 
-Work only from `BUILD_ROADMAP.md`. The next implementation milestone is Milestone 5: publication formats and LinkedIn companions. The immediate next step is the agreed independent audit before beginning it.
+At the time this historical record was written, the planned next implementation milestone was Milestone 5: publication formats and LinkedIn companions. It is retained as implementation evidence only. The current active plan and gated next item are stated at the top of this document and in `BUILD_ROADMAP.md`.
 
 ### Milestone 3 evidence — 2026-08-06
 
@@ -444,6 +563,29 @@ Validation passed: `npm run typecheck`; `npm run lint`; `npm test` (21 files / 8
 Private source contents and secrets were not manually inspected, exposed, copied, or modified. Automated tests used synthetic BOK and voice fixtures; no external provider was called. No migration was applied to meaningful local data. This closure pass did not stage, commit, push, or reset files; pre-existing staged and unrelated working-tree changes remain preserved.
 
 Remaining technical debt: the new integrity migration requires the established owner-only backup and verification procedure before use against a meaningful existing local database; research, feedback, and full visual workflows remain future milestones.
+
+## Approved post–Milestone 6 enhancements
+
+1. **Queue-row deletion for unpublished ideas.** Add a compact trash control at the right edge of each queue row so an Inbox, Developing, Drafted, or Parked idea can be deleted without first opening its workspace. The action must require an explicit confirmation that identifies the idea, use the existing service/API deletion safeguards, remove all associated local workflow records atomically, and remain unavailable for published ideas. Published history is preserved.
+
+## Live LinkedIn companion reliability follow-on — 2026-08-08
+
+- Fixed the OpenAI structured-output routing defect that sent `final_drafter` calls the editorial-review schema. Final drafting now uses the narrow `final_draft` schema (`role`, `body`) in the OpenAI and shared provider-schema path; bounded repair expects the same shape.
+- A successful scoped LinkedIn retry is now treated as recovery of the original run’s historical final-drafter failure. The old failed call remains visible in provenance, but the current Board status reloads as complete when a current, non-stale companion exists for the canonical article.
+- Write-stage readiness now distinguishes unsaved article edits, unsaved LinkedIn edits, a missing companion, and a genuinely stale companion. A successful Board run or LinkedIn save resets the companion editor’s local dirty state, so a newly saved matched pair can proceed to Finalize without a misleading stale-output warning.
+- The dual-output resolver now prefers a companion explicitly linked to the current canonical article over an unrelated historical companion. This prevents an older stale record from hiding a newly generated matched pair; when no matching companion exists, the latest historical companion remains visibly stale rather than being silently rewritten.
+- When a canonical article is intentionally revised, Write now offers an explicit, separately costed **Refresh LinkedIn from Article vN** action. It calls only the final drafter against the saved article, preserves the Board brief and canonical output, and requires the user to initiate the paid call. Identical article saves are no-ops, preventing accidental version churn and avoidable companion staleness.
+- Editorial Board now retains a compact saved stage summary after reload for completed as well as incomplete runs. When a later canonical edit makes an originally completed LinkedIn output stale, the summary says so explicitly rather than implying the Board itself failed.
+- Approved next quality gate: integrate a low-cost, structured Proofread and clarity role into the existing **Run draft review** action in Write, rather than adding a second proofreading button. The combined review will be required for each exact saved output before Finalize; the author must resolve or explicitly dismiss material spelling, grammar, punctuation, and clarity findings. It will never modify text automatically or replace author judgment. This work is not yet implemented; Sol will audit the interaction design before it is built.
+- The same combined check will be included in **Run LinkedIn review** for the exact saved companion version. Article and LinkedIn review/proofread states remain independent.
+- Approved follow-on: platform delivery profiles for LinkedIn, Medium, and Substack. The current implementation distinguishes formats and length but does not yet provide a full platform-audience prompt/review contract. Profiles will adapt delivery while retaining a common, evidence-grounded thesis and the authoritative kk-spoken-voice style.
+
+## Approved cosmetic consistency backlog
+
+1. **Original capture typography.** `View original idea` and the auto-expanded Original Capture on Develop must use one shared body-text scale, line-height, spacing, and disclosure styling. They already read the same durable `ideas.raw_notes` record; this is a presentation consistency change only. Develop remains expanded by default, while Board, Write, and Finalize may keep the source collapsed.
+- `npm run start:detail` now logs one redacted operational record for every persisted model attempt, completed or failed: role, provider/model, task, retry count, output allowance, cost estimate, provider request/status metadata, latency, usage, local JSON-parse state, and safe failure classification. It excludes credentials, prompts, generated text, raw provider bodies, filesystem paths, BOK/voice contents, and untrusted inputs.
+- Bounded repair is now explicit in detail mode. A locally rejected structured response is logged as `execution attempt rejected`; a succeeding repair logs `bounded repair recovered` with `bounded_same_route_structured_output_repair` and assertions that provider, model, and tier did not change. This is a controlled same-route formatting repair, not automatic escalation. A Sol audit must validate the one-repair limit, cost accounting, persisted provenance, and explicit human approval before any later retry, token increase, or role escalation.
+- Evidence: `tests/unit/openai-provider.test.ts` and `tests/integration/grounded-editorial-run.test.ts` (27 tests), `npm run typecheck`, `npm run lint`, `npm run build`, and `git diff --check` passed. No external provider was called during implementation validation.
 
 ---
 

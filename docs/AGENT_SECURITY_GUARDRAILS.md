@@ -62,6 +62,21 @@ Before a milestone that introduces or changes agent execution can be marked comp
 - Credential-safety checks confirming no secret is present in tracked files, SQLite, browser-visible API data, logs, or test artifacts.
 - A manual staged-diff review confirming that no BOK, voice skill, notebook content, database, local backup, `.env`, Keychain data, or private reference asset is staged.
 
+## Audit-remediation validation protocol
+
+When an independent audit returns blocking findings, remediation cannot be resubmitted on the basis of nearby or indirect coverage. For **each finding**, maintain a traceable entry containing: the precise behavioral claim, implementation location, direct regression test location, expected failure before the fix, and observed passing result after the fix.
+
+Before requesting a repeat audit:
+
+1. Test the complete behavior at every affected boundary: persisted input, orchestration/prompt construction, provider request/reservation, every provider-attempt outcome, persistence, reload, browser rendering, and Finalize enforcement.
+2. For every new live-model path, use an injected no-network provider to prove success, cap rejection before dispatch, provider failure, refusal, truncation, malformed response, one same-route repair, repair exhaustion, terminal run state, and separate persisted telemetry for every attempt. A deterministic local substitute must not make a failed or unattempted live result look eligible.
+3. Test every compatibility branch explicitly. If new state maps to legacy data, cover each legacy value and the payload containing both old and new fields; prove no historical platform, format, relationship, or publication record is overwritten.
+4. Add browser coverage for the real author path and each material block: visible reader contract, truthful model/cost disclosure, current versus stale review state, author dispositions, disabled/allowed post-publication branches, and safe actionable Finalize feedback.
+5. Derive validation counts from the actual command output immediately before documenting them. Never state a test count from a prior run or infer it from file counts. Record failed or skipped tests explicitly; do not call a gate complete until they are resolved or explicitly accepted by the user.
+6. Perform a requirement-to-test review of the current diff, not just a green-suite review. A passing unrelated test does not close a missing acceptance criterion.
+
+The implementation owner must update the roadmap/status/audit disposition to say **audit remediation in progress** until every entry above is complete. Only then may an independent audit be requested again.
+
 ## Review ownership
 
 The application orchestrator enforces these controls. Agents are not trusted to self-police. A security exception requires an explicit user decision, a documented rationale, a bounded scope, and a new validation case.

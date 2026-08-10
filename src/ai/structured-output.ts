@@ -51,6 +51,25 @@ export const initialDraftOutputSchema = z.object({
 
 export type InitialDraftOutput = z.infer<typeof initialDraftOutputSchema>;
 
+export const finalDraftOutputSchema = z.object({
+  // The final drafter is a narrow adaptation task. Requiring only the two
+  // fields the application consumes keeps low-cost structured output reliable.
+  role: z.literal("final_drafter"),
+  body: z.string().min(1).max(80_000).refine(isPlainPublicationProse, "Draft body must be plain publication prose without Markdown formatting."),
+});
+
+export type FinalDraftOutput = z.infer<typeof finalDraftOutputSchema>;
+
+export const proofreadOutputSchema = z.object({
+  role: z.literal("proofreader"),
+  findings: z.array(z.object({
+    category: z.enum(["spelling", "grammar", "punctuation", "clarity"]),
+    severity: z.enum(["material", "optional"]),
+    current: z.string().min(1).max(500), suggestion: z.string().min(1).max(500), rationale: z.string().min(1).max(1_000),
+  })).max(6),
+});
+export type ProofreadOutput = z.infer<typeof proofreadOutputSchema>;
+
 /** Parse model JSON without interpreting it as markup or executing any content. */
 export function parseStructuredJson(text: string): unknown {
   const value = text.trim();

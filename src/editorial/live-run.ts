@@ -2,14 +2,21 @@ import { defaultRunBudgetUsd, estimateRouteCost, maximumRunBudgetUsd, modelEnvir
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
 import { ZenMuxChatCompletionsProvider } from "@/ai/zenmux-provider";
-import { estimateGroundedEditorialRun, estimateSingleReviewerRun, runGroundedEditorialRun, runSingleReviewer, type GroundedRunResult } from "@/editorial/grounded-run";
+import { assertLinkedinRecoveryPolicy, estimateGroundedEditorialRun, estimateLinkedinCompanionDraft, estimateSingleReviewerRun, plannedRolesForIdea, retryLinkedinCompanionDraft, runGroundedEditorialRun, runSingleReviewer, type GroundedRunResult } from "@/editorial/grounded-run";
 import type { ModelProvider, ModelRequest, ModelResponse, TokenUsage, CostEstimate } from "@/ai/provider";
 import type { AgentRole } from "@/domain/roles";
-import { assertPublishedWorkflowUnlocked } from "@/lean/service";
+import { assertPublishedWorkflowUnlocked, getIdea, proofreadRequestFor, runLiveProofreadForExactReview, type DraftFormat } from "@/lean/service";
+import { requestMaximumUsage } from "@/editorial/grounded-run";
 
 type ReviewerRole = "strategist" | "skeptic" | "editor";
 
+function assertExternalProviderCallsEnabled() {
+  if (process.env.EDITORIAL_TEST_DISABLE_PROVIDER_CALLS === "1")
+    throw new Error("External provider calls are disabled for deterministic test execution.");
+}
+
 function providerFor(provider: LiveProviderName): ModelProvider {
+  assertExternalProviderCallsEnabled();
   if (provider === "anthropic") return new AnthropicMessagesProvider();
   if (provider === "openai") return new OpenAIResponsesProvider();
   return new ZenMuxChatCompletionsProvider();
@@ -25,6 +32,12 @@ function providerLabel(provider: LiveProviderName) {
   return provider === "zenmux" ? "ZenMux" : provider === "anthropic" ? "Anthropic" : "OpenAI";
 }
 
+function routeForPlannedRole(role: AgentRole) {
+  // A LinkedIn companion is a bounded adaptation of the canonical article,
+  // not a second long-form drafting task. Keep that extra call low-cost.
+  return routeFor(role);
+}
+
 function requireConfiguredModel(route: ReturnType<typeof routeFor>, variable: string) {
   const model = route.model.trim();
   if (!model) throw new Error(`${providerLabel(route.provider)} model is not configured. Set ${variable} in the local server environment.`);
@@ -35,6 +48,7 @@ class RoutedLiveProvider implements ModelProvider {
   readonly name = "routed-live";
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
+    assertExternalProviderCallsEnabled();
     if (request.provider !== "anthropic" && request.provider !== "openai" && request.provider !== "zenmux")
       throw new Error("The requested live provider is not supported.");
     return providerFor(request.provider).generate(request);
@@ -54,6 +68,17 @@ class RoutedLiveProvider implements ModelProvider {
 
 const routedLiveProvider = new RoutedLiveProvider();
 
+/**
+ * One source of truth for the proofreader disclosure and the two-attempt
+ * reservation. The same exact bounded request is metered before each live
+ * dispatch; multiplying the maximum by two accounts for its sole permitted
+ * same-route structured-output repair.
+ */
+export function proofreaderReservationEstimate(body: string, route = routeFor("proofreader")) {
+  const request = proofreadRequestFor(body, route.provider, route.model).request;
+  return estimateRouteCost(route, requestMaximumUsage(request)).totalCost * 2;
+}
+
 export function liveRunPreview(ideaId: string) {
   const route = routeFor("strategist");
   const reviewerRerunRoutes = {
@@ -63,9 +88,9 @@ export function liveRunPreview(ideaId: string) {
   const estimatedCost = estimateGroundedEditorialRun(
     ideaId,
     routedLiveProvider,
-    (role) => routeFor(role).model,
-    (role) => routeFor(role).provider,
-    (role) => routeFor(role).tier,
+    (role) => routeForPlannedRole(role).model,
+    (role) => routeForPlannedRole(role).provider,
+    (role) => routeForPlannedRole(role).tier,
   );
   const reviewerRerunEstimatedCost = estimateSingleReviewerRun(
     ideaId,
@@ -81,7 +106,38 @@ export function liveRunPreview(ideaId: string) {
     reviewerRerunRoutes.high.provider,
     reviewerRerunRoutes.high.tier,
   );
-  const plannedRoutes = ["strategist", "skeptic", "editor", "synthesizer", "initial_drafter"] as const;
+  // A stale article needs the configured low-cost Final Drafter route. A
+  // higher tier is an explicit author-selected recovery escalation only.
+  const linkedinRefreshRoute = routeForPlannedRole("final_drafter");
+  const linkedinRefreshEstimatedCost = estimateLinkedinCompanionDraft(
+    ideaId,
+    routedLiveProvider,
+    linkedinRefreshRoute.model,
+    linkedinRefreshRoute.provider,
+    linkedinRefreshRoute.tier,
+  );
+  const linkedinEscalationRoute = routeFor("final_drafter", "medium");
+  const linkedinEscalationEstimatedCost = estimateLinkedinCompanionDraft(
+    ideaId,
+    routedLiveProvider,
+    linkedinEscalationRoute.model,
+    linkedinEscalationRoute.provider,
+    linkedinEscalationRoute.tier,
+  );
+  const plannedRoutes = plannedRolesForIdea(ideaId);
+  const proofreaderRoute = routeFor("proofreader");
+  const previewIdea = getIdea(ideaId);
+  const proofreaderEstimates = {
+    linkedin: previewIdea?.draft && !previewIdea.canonicalDraft
+      ? proofreaderReservationEstimate(previewIdea.draft.body, proofreaderRoute)
+      : 0,
+    canonical: previewIdea?.canonicalDraft
+      ? proofreaderReservationEstimate(previewIdea.canonicalDraft.body, proofreaderRoute)
+      : 0,
+    linkedin_companion: previewIdea?.linkedinCompanion
+      ? proofreaderReservationEstimate(previewIdea.linkedinCompanion.body, proofreaderRoute)
+      : 0,
+  };
   return {
     provider: route.provider,
     model: route.model || "Model configuration required",
@@ -90,14 +146,21 @@ export function liveRunPreview(ideaId: string) {
     maximumBudgetCap: maximumRunBudgetUsd(),
     pricingAssumption: route.pricingAssumption,
     available: plannedRoutes.every((role) => {
-      const planned = routeFor(role);
+      const planned = routeForPlannedRole(role);
       return providerAvailable(planned.provider) && Boolean(planned.model);
     }),
     estimatedCost,
     planned: plannedRoutes.map((role) => {
-      const planned = routeFor(role);
+      const planned = routeForPlannedRole(role);
       return { role, provider: planned.provider, model: planned.model || "Model configuration required", tier: planned.tier };
     }),
+    proofreader: {
+      provider: proofreaderRoute.provider,
+      model: proofreaderRoute.model || "Model configuration required",
+      tier: proofreaderRoute.tier,
+      estimates: proofreaderEstimates,
+      available: providerAvailable(proofreaderRoute.provider) && Boolean(proofreaderRoute.model),
+    },
     reviewerReruns: {
       medium: {
         provider: reviewerRerunRoutes.medium.provider,
@@ -114,6 +177,20 @@ export function liveRunPreview(ideaId: string) {
         available: providerAvailable(reviewerRerunRoutes.high.provider) && Boolean(reviewerRerunRoutes.high.model),
       },
     },
+    linkedinRefresh: {
+      provider: linkedinRefreshRoute.provider,
+      model: linkedinRefreshRoute.model || "Model configuration required",
+      tier: linkedinRefreshRoute.tier,
+      estimatedCost: linkedinRefreshEstimatedCost,
+      available: providerAvailable(linkedinRefreshRoute.provider) && Boolean(linkedinRefreshRoute.model),
+    },
+    linkedinEscalation: {
+      provider: linkedinEscalationRoute.provider,
+      model: linkedinEscalationRoute.model || "Model configuration required",
+      tier: linkedinEscalationRoute.tier,
+      estimatedCost: linkedinEscalationEstimatedCost,
+      available: providerAvailable(linkedinEscalationRoute.provider) && Boolean(linkedinEscalationRoute.model),
+    },
   };
 }
 
@@ -123,9 +200,9 @@ export async function runLiveEditorialRun(
 ): Promise<GroundedRunResult> {
   assertPublishedWorkflowUnlocked(ideaId);
   const strategistTierOverride = input.tier;
-  const allRoutes = ["strategist", "skeptic", "editor", "synthesizer", "initial_drafter"] as const;
+  const allRoutes = plannedRolesForIdea(ideaId);
   for (const role of allRoutes) {
-    const planned = routeFor(role, role === "strategist" ? strategistTierOverride : undefined);
+    const planned = role === "strategist" ? routeFor(role, strategistTierOverride) : routeForPlannedRole(role);
     requireConfiguredModel(planned, modelEnvironmentVariable(planned));
   }
   const budgetCap = input.budgetCap ?? defaultRunBudgetUsd();
@@ -136,11 +213,11 @@ export async function runLiveEditorialRun(
   return runGroundedEditorialRun(ideaId, routedLiveProvider, {
     executionMode: "live",
     budgetCap,
-    modelForRole: (role: AgentRole) => routeFor(role, role === "strategist" ? strategistTierOverride : undefined).model,
-    providerForRole: (role: AgentRole) => routeFor(role, role === "strategist" ? strategistTierOverride : undefined).provider,
-    tierForRole: (role: AgentRole) => routeFor(role, role === "strategist" ? strategistTierOverride : undefined).tier,
+    modelForRole: (role: AgentRole) => (role === "strategist" ? routeFor(role, strategistTierOverride) : routeForPlannedRole(role)).model,
+    providerForRole: (role: AgentRole) => (role === "strategist" ? routeFor(role, strategistTierOverride) : routeForPlannedRole(role)).provider,
+    tierForRole: (role: AgentRole) => (role === "strategist" ? routeFor(role, strategistTierOverride) : routeForPlannedRole(role)).tier,
     pricingAssumption: "Per-role provider and model pricing assumptions are recorded in the run provenance and each model call.",
-    pricingAssumptionForRole: (role: AgentRole) => routeFor(role, role === "strategist" ? strategistTierOverride : undefined).pricingAssumption,
+    pricingAssumptionForRole: (role: AgentRole) => (role === "strategist" ? routeFor(role, strategistTierOverride) : routeForPlannedRole(role)).pricingAssumption,
   });
 }
 
@@ -166,4 +243,37 @@ export async function rerunLiveReviewer(
     escalationReason:
       input.escalationReason ?? `User explicitly selected a ${tier}-tier rerun for the ${role} review.`,
   });
+}
+
+export async function retryLiveLinkedinCompanion(
+  ideaId: string,
+  input: { budgetCap?: number; tier?: "low" | "medium"; escalationReason?: string; recoveryKind?: "refresh" | "retry" | "escalation" } = {},
+) {
+  const tier = input.tier ?? "low";
+  // A medium model is never an implied escalation. Callers must name that
+  // governed action and provide its reason explicitly.
+  const recoveryKind = input.recoveryKind ?? "retry";
+  const recovery = assertLinkedinRecoveryPolicy({ tier, recoveryKind, escalationReason: input.escalationReason });
+  const route = routeFor("final_drafter", tier);
+  const model = requireConfiguredModel(route, modelEnvironmentVariable(route));
+  const budgetCap = input.budgetCap ?? defaultRunBudgetUsd();
+  if (!Number.isFinite(budgetCap) || budgetCap <= 0) throw new Error("A positive per-run budget cap is required for the LinkedIn retry.");
+  if (budgetCap > maximumRunBudgetUsd()) throw new Error(`The LinkedIn retry cap cannot exceed $${maximumRunBudgetUsd().toFixed(2)}.`);
+  return retryLinkedinCompanionDraft(ideaId, routedLiveProvider, {
+    model,
+    providerName: route.provider,
+    tier: route.tier,
+    budgetCap,
+    pricingAssumption: route.pricingAssumption,
+    recoveryKind: recovery.recoveryKind,
+    escalationReason: recovery.escalationReason,
+  });
+}
+
+export async function runLiveProofreadReview(ideaId: string, input: { draftVersionId: string; format: DraftFormat; budgetCap?: number }) {
+  const route = routeFor("proofreader");
+  requireConfiguredModel(route, modelEnvironmentVariable(route));
+  const budgetCap = input.budgetCap ?? defaultRunBudgetUsd();
+  if (!Number.isFinite(budgetCap) || budgetCap <= 0 || budgetCap > maximumRunBudgetUsd()) throw new Error("A valid proofread budget cap is required.");
+  return runLiveProofreadForExactReview(ideaId, { ...input, budgetCap });
 }

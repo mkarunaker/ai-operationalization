@@ -7,6 +7,7 @@ export const AGENT_ROLES = [
   "synthesizer",
   "originality_landscape",
   "final_drafter",
+  "proofreader",
 ] as const;
 
 export type AgentRole = (typeof AGENT_ROLES)[number];
@@ -23,4 +24,5 @@ export const AGENT_ROLE_METADATA: Record<AgentRole, { displayName: string; optio
   synthesizer: { displayName: "Synthesizer", optional: false },
   originality_landscape: { displayName: "Originality and Landscape Reviewer", optional: true },
   final_drafter: { displayName: "Final Drafting Agent", optional: false },
+  proofreader: { displayName: "Proofread and Clarity Reviewer", optional: false },
 };

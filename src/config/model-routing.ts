@@ -22,5 +22,6 @@ export const defaultTierForRole: Record<AgentRole, ModelTier> = {
   editor: "medium",
   synthesizer: "medium",
   originality_landscape: "low",
-  final_drafter: "medium",
+  final_drafter: "low",
+  proofreader: "low",
 };

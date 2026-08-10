@@ -8,6 +8,7 @@ import type {
 } from "@/ai/provider";
 
 type GroundedMetadata = {
+  agentRole?: string;
   task?: "review" | "synthesis" | "draft" | "repair";
   draftSeed?: string;
   bokHeading?: string;
@@ -96,7 +97,7 @@ function draftOutput(metadata: GroundedMetadata) {
     ? `${shortBody}\n\nFor a longer article, it helps to distinguish a successful technical demonstration from a dependable workflow. The latter has an accountable owner, a clear place in the process, appropriate controls, and a way to see whether the outcome improved. Those conditions do not make every pilot worth scaling. They make the next decision more honest.\n\nThat is also why the first question should not be which platform or agent framework to adopt. It should be what problem is frequent enough, consequential enough, and observable enough to justify changing how people work. Sometimes the answer will be AI. Sometimes a simpler redesign, automation, or decision rule will do more good.\n\nA useful operating discipline is to state the baseline, decide what evidence would justify continuation, and name the conditions that would cause the work to be redesigned or stopped. This keeps curiosity intact without confusing activity with progress.\n\nWhat would make an AI initiative valuable enough to keep operating?`
     : shortBody;
   return {
-    role: "initial_drafter",
+    role: metadata.agentRole === "final_drafter" ? "final_drafter" : "initial_drafter",
     body,
     factual_gaps: metadata.factualGaps ?? ["Add a concrete example or label the point as an observation before publishing."],
     voice_rules_applied: ["no em dashes", "direct language", "uncertainty retained"],

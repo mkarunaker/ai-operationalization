@@ -83,10 +83,27 @@ const draftSchema: JsonSchema = {
   },
 };
 
+const finalDraftSchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["role", "body"],
+  properties: {
+    role: { type: "string", enum: ["final_drafter"] },
+    body: stringField,
+  },
+};
+
+const proofreadSchema: JsonSchema = {
+  type: "object", additionalProperties: false, required: ["role", "findings"],
+  properties: { role: { type: "string", enum: ["proofreader"] }, findings: { type: "array", maxItems: 6, items: { type: "object", additionalProperties: false, required: ["category", "severity", "current", "suggestion", "rationale"], properties: { category: { type: "string", enum: ["spelling", "grammar", "punctuation", "clarity"] }, severity: { type: "string", enum: ["material", "optional"] }, current: stringField, suggestion: stringField, rationale: stringField } } } },
+};
+
 function structuredFormat(request: ModelRequest) {
   const role = request.metadata?.agentRole;
   if (role === "synthesizer") return { type: "json_schema", name: "editorial_synthesis", strict: true, schema: synthesisSchema };
   if (role === "initial_drafter") return { type: "json_schema", name: "initial_draft", strict: true, schema: draftSchema };
+  if (role === "final_drafter") return { type: "json_schema", name: "final_draft", strict: true, schema: finalDraftSchema };
+  if (role === "proofreader") return { type: "json_schema", name: "proofread", strict: true, schema: proofreadSchema };
   return { type: "json_schema", name: "editorial_review", strict: true, schema: reviewSchema };
 }
 

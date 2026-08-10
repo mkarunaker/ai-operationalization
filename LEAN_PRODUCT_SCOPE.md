@@ -27,6 +27,10 @@ The visible experience must be lightweight. The retrieval, independent review, e
 - Low-cost model tiers are the default. Vendor and model assignments stay configurable and model-agnostic. Every call records usage, pricing assumptions, latency, cost, and escalation reason.
 - The BOK and voice skill remain read-only external filesystem sources. Do not copy, upload, or modify either source.
 
+### Superseding delivery decision — 2026-08-08
+
+The earlier companion language above captured the valid concern about a two-draft tax. The approved implementation decision now supersedes its timing: **only when the author explicitly selected a Medium/Substack-plus-LinkedIn plan**, the same user-triggered Editorial Board run produces a canonical article and a separately metered, exact-source-linked LinkedIn adaptation. It is never generated for LinkedIn-only or long-form-only plans, never published automatically, and remains independently editable, reviewed, and finalized. This avoids a separate generation action without silently adding a second output to an unselected plan.
+
 ## Proposed end-to-end workflow
 
 ```text
@@ -41,7 +45,7 @@ Quick capture on idea queue
 → Synthesizer produces concise editorial brief
 → inspect or act on recommendations; expand raw reviews only if wanted
 → generate a canonical working draft in kk-spoken-voice
-→ optionally request a LinkedIn companion derived from the approved canonical draft
+→ when the selected plan includes LinkedIn, generate a separately metered LinkedIn adaptation from that exact canonical draft in the same Board run
 → edit, approve, and record publication
 → later add simple engagement and qualitative feedback
 ```

@@ -76,4 +76,17 @@ describe("OpenAIResponsesProvider", () => {
       provider.generate({ provider: "openai", model: "gpt-5.6-luna", messages: [{ role: "user", content: "test" }] }),
     ).rejects.toThrow("OpenAI request failed (400; invalid_api_key).");
   });
+
+  it("uses the narrow final-draft schema for a LinkedIn adaptation", async () => {
+    let request: Request | undefined;
+    const provider = new OpenAIResponsesProvider({
+      apiKey: "test-key-not-a-real-secret",
+      fetch: async (input, init) => {
+        request = new Request(input, init);
+        return new Response(JSON.stringify({ id: "resp_final", model: "gpt-5.6-luna", status: "completed", output_text: '{"role":"final_drafter","body":"A clear post."}', usage: {} }), { status: 200 });
+      },
+    });
+    await provider.generate({ provider: "openai", model: "gpt-5.6-luna", messages: [{ role: "user", content: "source" }], responseFormat: { type: "json_schema" }, metadata: { agentRole: "final_drafter" } });
+    expect(await request?.json()).toMatchObject({ text: { format: { name: "final_draft", schema: { required: ["role", "body"] } } } });
+  });
 });

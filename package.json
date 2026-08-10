@@ -10,6 +10,7 @@
     "dev": "next dev --hostname 127.0.0.1 --port 3100",
     "build": "next build",
     "start": "next start --hostname 127.0.0.1 --port 3100",
+    "start:detail": "AEB_LOG_DETAIL=1 next start --hostname 127.0.0.1 --port 3100",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

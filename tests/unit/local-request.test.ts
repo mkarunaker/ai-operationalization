@@ -50,8 +50,8 @@ describe("local mutation request boundary", () => {
     );
   });
 
-  it("keeps detailed, application-authored LinkedIn drafting recovery guidance", () => {
-    const message = "The LinkedIn drafter failed before a validated response was available. The canonical article and completed Board review were saved; raw provider details are intentionally withheld.";
+  it("keeps detailed, application-authored derived-short recovery guidance", () => {
+    const message = "The derived-short drafter failed before a validated response was available. The article and completed Board review were saved; raw provider details are intentionally withheld.";
     expect(safeRouteError(new Error(message))).toBe(message);
   });
 
@@ -61,6 +61,12 @@ describe("local mutation request boundary", () => {
       "Live proofreader execution must use the configured low-tier proofreader route.",
       "Run the proofread and clarity check for this exact saved output before publishing.",
       "Resolve or explicitly dismiss every material proofread finding before publishing.",
+      "A valid proofread budget cap is required.",
+      "A saved Editorial Board reader contract is required for a live proofread.",
+      "The saved Editorial Board reader contract is invalid. Run the Editorial Board again before a live proofread.",
+      "The selected output does not match this idea's reader-output shape.",
+      "Create a current derived short post from an approved article before editing it.",
+      "Published workflow is locked. Published history remains read-only; create a new idea to develop fresh content.",
     ]) expect(safeRouteError(new Error(message))).toBe(message);
   });
 });

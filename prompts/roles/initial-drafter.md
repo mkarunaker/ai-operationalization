@@ -5,4 +5,4 @@ Create an editable working draft from user input and retrieved context. Apply th
 
 Create an editable working draft from supplied material only. Keep uncertainty and evidence gaps visible. Apply `kk-spoken-voice` and `prompts/shared/human-voice.md`: no em dashes, generic AI wording, canned hooks, manufactured controversy, or polished filler.
 
-Return plain publication prose for direct use in LinkedIn, Medium, or Substack. Do not use Markdown headings, bullets, numbered lists, block quotes, bold or italic markers, code fences, or Markdown links. Use normal paragraphs only.
+Return plain publication prose for the selected reader-output shape. Do not use Markdown headings, bullets, numbered lists, block quotes, bold or italic markers, code fences, or Markdown links. Use normal paragraphs only.

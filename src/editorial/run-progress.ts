@@ -5,11 +5,11 @@ import { boardRoleStageStatus } from "@/editorial/board-status";
 export type EditorialStageStatus = "waiting" | "running" | "completed" | "failed" | "not_run";
 export type EditorialRunProgress = {
   runId?: string;
-  kind?: "board" | "companion_recovery";
+  kind?: "board" | "derived_short_recovery";
   recoveryFailure?: "persisted_provider_failure" | "pre_dispatch_rejection";
   status: "waiting" | "running" | "completed" | "partially_completed" | "failed";
   stages: Array<{
-    id: "context" | "strategist" | "skeptic" | "editor" | "synthesizer" | "draft" | "linkedin_companion" | "provenance";
+    id: "context" | "strategist" | "skeptic" | "editor" | "synthesizer" | "draft" | "derived_short" | "provenance";
     label: string;
     status: EditorialStageStatus;
   }>;
@@ -28,22 +28,22 @@ const baseStageDefinitions: readonly StageDefinition[] = [
   ["provenance", "Save provenance, usage, latency, and cost"],
 ] as const;
 
-function stageDefinitions(includeLinkedinCompanion: boolean) {
+function stageDefinitions(includesDerivedShort: boolean) {
   const stages: StageDefinition[] = [...baseStageDefinitions];
-  if (includeLinkedinCompanion)
-    stages.splice(6, 0, ["linkedin_companion", "Create standalone LinkedIn post"]);
+  if (includesDerivedShort)
+    stages.splice(6, 0, ["derived_short", "Create derived short post"]);
   return stages;
 }
 
-function isDualOutputPlan(value: string | null | undefined) {
-  return value === "medium_linkedin" || value === "substack_linkedin";
+function includesDerivedShort(value: string | null | undefined) {
+  return value === "long_with_derived_short";
 }
 
 export function getLiveEditorialProgress(ideaId: string, since?: string): EditorialRunProgress {
   const database = openReadOnlyDatabase(getAppConfig().databasePath);
   try {
     const run = database.prepare(
-      `SELECT run.id, run.status, snapshot.generated_draft_version_id, snapshot.publication_plan
+      `SELECT run.id, run.status, snapshot.generated_draft_version_id, snapshot.output_shape
        FROM review_runs run
        JOIN editorial_run_snapshots snapshot ON snapshot.review_run_id = run.id
        WHERE snapshot.idea_id = ? AND run.execution_mode = 'live'
@@ -51,11 +51,11 @@ export function getLiveEditorialProgress(ideaId: string, since?: string): Editor
        ORDER BY run.started_at DESC
        LIMIT 1`,
     ).get(ideaId, since ?? null, since ?? null) as
-      | { id: string; status: EditorialRunProgress["status"]; generated_draft_version_id: string | null; publication_plan: string | null }
+      | { id: string; status: EditorialRunProgress["status"]; generated_draft_version_id: string | null; output_shape: string | null }
       | undefined;
     if (!run) {
-      const plan = database.prepare("SELECT publication_plan FROM ideas WHERE id = ?").get(ideaId) as { publication_plan: string | null } | undefined;
-      const definitions = stageDefinitions(isDualOutputPlan(plan?.publication_plan));
+      const shape = database.prepare("SELECT output_shape FROM ideas WHERE id = ?").get(ideaId) as { output_shape: string | null } | undefined;
+      const definitions = stageDefinitions(includesDerivedShort(shape?.output_shape));
       return {
         status: "waiting",
         stages: definitions.map(([id, label], index) => ({
@@ -66,7 +66,7 @@ export function getLiveEditorialProgress(ideaId: string, since?: string): Editor
       };
     }
 
-    const definitions = stageDefinitions(isDualOutputPlan(run.publication_plan));
+    const definitions = stageDefinitions(includesDerivedShort(run.output_shape));
 
     const reviewRows = database.prepare(
       `SELECT role.name, review.status
@@ -109,15 +109,15 @@ export function getLiveEditorialProgress(ideaId: string, since?: string): Editor
           ? synthesisCompleted ? "failed" : "not_run"
           : synthesisCompleted ? "running" : "waiting",
     });
-    if (isDualOutputPlan(run.publication_plan)) {
-      const companion = run.generated_draft_version_id
+    if (includesDerivedShort(run.output_shape)) {
+      const derivedShort = run.generated_draft_version_id
         ? database.prepare(
             `SELECT child.id
              FROM draft_relationships relationship
              JOIN draft_versions child ON child.id = relationship.child_draft_version_id
              JOIN model_calls call ON call.id = child.model_call_id
              WHERE relationship.parent_draft_version_id = ?
-               AND relationship.relationship_type = 'linkedin_companion'
+               AND relationship.relationship_type = 'derived_short'
                AND json_extract(COALESCE(call.raw_usage, '{}'), '$.reviewRunId') = ?
                AND call.agent_role = 'final_drafter'
              ORDER BY child.rowid DESC
@@ -125,9 +125,9 @@ export function getLiveEditorialProgress(ideaId: string, since?: string): Editor
           ).get(run.generated_draft_version_id, run.id)
         : undefined;
       stages.push({
-        id: "linkedin_companion",
-        label: definitions.find(([id]) => id === "linkedin_companion")![1],
-        status: companion
+        id: "derived_short",
+        label: definitions.find(([id]) => id === "derived_short")![1],
+        status: derivedShort
           ? "completed"
           : terminal
             ? run.generated_draft_version_id ? "failed" : "not_run"

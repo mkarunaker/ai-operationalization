@@ -27,7 +27,7 @@ export function checkHumanVoice(input: unknown): VoiceCheck {
       id: "markdown_formatting",
       severity: "medium",
       message: `Markdown formatting found: ${markdownIssues.join(", ")}.`,
-      suggestion: "Use ordinary paragraphs so the draft is ready to paste into LinkedIn, Medium, or Substack.",
+      suggestion: "Use ordinary paragraphs so the draft is ready for its intended delivery channel.",
     });
   }
   const emDashes = matches(text, /—/g);

@@ -6,7 +6,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { IdeaDetailView, type Detail, type Theme } from "../../queue-client";
 import { AppNav } from "../../app-nav";
 import type { EditorialRunProgress } from "@/editorial/run-progress";
-import { boardRoleStageStatus, companionCreationStageStatus, primaryDraftCreationStageStatus, reconcileCompanionEditorState } from "@/editorial/board-status";
+import { boardRoleStageStatus, derivedShortCreationStageStatus, primaryDraftCreationStageStatus, reconcileDerivedShortEditorState } from "@/editorial/board-status";
 
 type VoiceCheck = {
   riskPercent: number;
@@ -34,19 +34,20 @@ export function IdeaWorkspaceClient({
     maximumBudgetCap: number;
     pricingAssumption: string;
     available: boolean;
+    source: { boardReady: boolean; unavailableReason?: string };
     estimatedCost: number;
     planned: Array<{ role: string; provider: string; model: string; tier: "low" | "medium" | "high" }>;
     reviewerReruns: {
       medium: { provider: string; model: string; tier: "medium"; estimatedCost: number; available: boolean };
       high: { provider: string; model: string; tier: "high"; estimatedCost: number; available: boolean };
     };
-    linkedinRefresh: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
-    linkedinEscalation: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
-    proofreader?: { provider: string; model: string; tier: "low" | "medium" | "high"; estimates: { linkedin: number; canonical: number; linkedin_companion: number }; available: boolean };
+    derivedShortRefresh: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
+    derivedShortEscalation: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
+    proofreader?: { provider: string; model: string; tier: "low" | "medium" | "high"; estimates: { short: number; article: number; derived_short: number }; available: boolean };
   }>();
   const [note, setNote] = useState("");
   const [draft, setDraft] = useState("");
-  const [companionDraft, setCompanionDraft] = useState("");
+  const [derivedShortDraft, setDerivedShortDraft] = useState("");
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -54,16 +55,16 @@ export function IdeaWorkspaceClient({
   const [runStartedAt, setRunStartedAt] = useState<string>();
   const [runProgress, setRunProgress] = useState<EditorialRunProgress>();
   const [draftDirty, setDraftDirty] = useState(false);
-  const [companionDirty, setCompanionDirty] = useState(false);
-  const [voiceChecks, setVoiceChecks] = useState<Partial<Record<"linkedin" | "canonical" | "linkedin_companion", VoiceCheck>>>({});
+  const [derivedShortDirty, setDerivedShortDirty] = useState(false);
+  const [voiceChecks, setVoiceChecks] = useState<Partial<Record<"short" | "article" | "derived_short", VoiceCheck>>>({});
   // A recovery response may arrive after the author begins typing. Refs keep
   // the async request path aligned with the editor's current state rather
   // than the state captured when the request started.
-  const companionEditorRef = useRef({ body: "", dirty: false });
-  function setCompanionEditor(body: string, dirty: boolean) {
-    companionEditorRef.current = { body, dirty };
-    setCompanionDraft(body);
-    setCompanionDirty(dirty);
+  const derivedShortEditorRef = useRef({ body: "", dirty: false });
+  function setDerivedShortEditor(body: string, dirty: boolean) {
+    derivedShortEditorRef.current = { body, dirty };
+    setDerivedShortDraft(body);
+    setDerivedShortDirty(dirty);
   }
   async function load() {
     const [ideaResponse, listResponse, previewResponse] = await Promise.all([
@@ -84,8 +85,8 @@ export function IdeaWorkspaceClient({
       const previewData = (await previewResponse.json()) as { preview?: typeof livePreview };
       if (previewData.preview) setLivePreview(previewData.preview);
     }
-    setDraft(ideaData.idea.draft?.body ?? "");
-    setCompanionEditor(ideaData.idea.linkedinCompanion?.body ?? "", false);
+    setDraft((ideaData.idea.shortPost ?? ideaData.idea.article)?.body ?? "");
+    setDerivedShortEditor(ideaData.idea.derivedShortPost?.body ?? "", false);
     setDraftDirty(false);
     setAnswers(
       Object.fromEntries(
@@ -96,7 +97,7 @@ export function IdeaWorkspaceClient({
   function terminalBoardProgress(nextIdea: Detail | undefined, stages: EditorialRunProgress["stages"]): EditorialRunProgress {
     const brief = nextIdea?.editorialBrief;
     const failures = new Set(brief?.runFailures.map((failure) => failure.role) ?? []);
-    const dualOutput = nextIdea?.publicationPlan === "medium_linkedin" || nextIdea?.publicationPlan === "substack_linkedin";
+    const includesDerivedShort = nextIdea?.outputShape === "long_with_derived_short";
     return {
       status: brief?.runStatus === "partially_completed" ? "partially_completed" : "failed",
       stages: stages.map((stage) => {
@@ -119,13 +120,13 @@ export function IdeaWorkspaceClient({
               initialDrafterFailed: failures.has("initial_drafter"),
             }),
           };
-        if (stage.id === "linkedin_companion")
+        if (stage.id === "derived_short")
           return {
             ...stage,
-            status: companionCreationStageStatus({
-              isDualOutputPlan: dualOutput,
+            status: derivedShortCreationStageStatus({
+              includesDerivedShort,
               generatedDraftVersionId: brief.generatedDraftVersionId,
-              generatedLinkedinCompanionDraftVersionId: brief.generatedLinkedinCompanionDraftVersionId,
+              generatedDerivedShortDraftVersionId: brief.generatedDerivedShortDraftVersionId,
               finalDrafterFailed: failures.has("final_drafter"),
             }) ?? "not_run",
           };
@@ -157,7 +158,7 @@ export function IdeaWorkspaceClient({
     try {
       const response = await fetch(`/api/ideas/${ideaId}`);
       const data = (await response.json()) as { idea?: Detail };
-      const recovery = data.idea?.companionRecovery;
+      const recovery = data.idea?.derivedShortRecovery;
       const persistedProviderFailure = Boolean(
         response.ok
           && data.idea
@@ -167,13 +168,13 @@ export function IdeaWorkspaceClient({
       if (data.idea) setIdea(data.idea);
       if (persistedProviderFailure) {
         setRunProgress({
-          kind: "companion_recovery",
+          kind: "derived_short_recovery",
           recoveryFailure: "persisted_provider_failure",
           status: "failed",
           stages: stages.map((stage) => ({
             ...stage,
             label: stage.id === "provenance" ? "Save failure provenance" : stage.label,
-            status: stage.id === "linkedin_companion" ? "failed" : "completed",
+            status: stage.id === "derived_short" ? "failed" : "completed",
           })),
         });
         return;
@@ -182,7 +183,7 @@ export function IdeaWorkspaceClient({
       // Fall through to the safe, non-persistent rejection state below.
     }
     setRunProgress({
-      kind: "companion_recovery",
+      kind: "derived_short_recovery",
       recoveryFailure: "pre_dispatch_rejection",
       status: "failed",
       stages: stages.map((stage) => ({
@@ -244,20 +245,20 @@ export function IdeaWorkspaceClient({
       "run_live_board",
       "save_draft",
     ].includes(action ?? "") ||
-      (action === "run_final_review" && body !== null && typeof body === "object" && (body as { format?: string }).format !== "linkedin_companion") ||
-      (action === "publish" && body !== null && typeof body === "object" && (body as { draftFormat?: string }).draftFormat !== "linkedin_companion");
+      (action === "run_final_review" && body !== null && typeof body === "object" && (body as { format?: string }).format !== "derived_short") ||
+      (action === "publish" && body !== null && typeof body === "object" && (body as { draftFormat?: string }).draftFormat !== "derived_short");
     if (!draftDirty || replacesPrimaryDraft) {
-      setDraft(data.idea.draft?.body ?? "");
+      setDraft((data.idea.shortPost ?? data.idea.article)?.body ?? "");
       setDraftDirty(false);
     }
-    const nextCompanionEditor = reconcileCompanionEditorState({
+    const nextDerivedShortEditor = reconcileDerivedShortEditorState({
       action,
-      hasUnsavedEdits: companionEditorRef.current.dirty,
-      currentBody: companionEditorRef.current.body,
-      returnedBody: data.idea.linkedinCompanion?.body,
+      hasUnsavedEdits: derivedShortEditorRef.current.dirty,
+      currentBody: derivedShortEditorRef.current.body,
+      returnedBody: data.idea.derivedShortPost?.body,
     });
-    if (nextCompanionEditor.replaced) {
-      setCompanionEditor(nextCompanionEditor.body, nextCompanionEditor.dirty);
+    if (nextDerivedShortEditor.replaced) {
+      setDerivedShortEditor(nextDerivedShortEditor.body, nextDerivedShortEditor.dirty);
     }
     return data.idea;
   }
@@ -313,22 +314,22 @@ export function IdeaWorkspaceClient({
       id: "draft",
       label: "Write",
       href: `/ideas/${ideaId}/draft`,
-      state: idea.draft ? `Version ${idea.draft.version}` : "Not created",
+      state: (idea.shortPost ?? idea.article) ? `Version ${(idea.shortPost ?? idea.article)!.version}` : "Not created",
     },
     {
       id: "publish",
       label: "Finalize",
       href: `/ideas/${ideaId}/publish`,
       state: (() => {
-        const outputIds = [idea.draft?.id, idea.linkedinCompanion?.id].filter(Boolean) as string[];
+        const outputIds = [idea.shortPost?.id, idea.article?.id, idea.derivedShortPost?.id].filter(Boolean) as string[];
         const published = outputIds.filter((id) => idea.publications.some((publication) => publication.draftVersionId === id)).length;
         return published ? `${published} of ${outputIds.length} published` : "Final check";
       })(),
     },
   ] as const;
-  async function checkVoice(format: "linkedin" | "canonical" | "linkedin_companion") {
+  async function checkVoice(format: "short" | "article" | "derived_short") {
     if (!idea) throw new Error("Idea is still loading.");
-    const output = format === "linkedin_companion" ? idea.linkedinCompanion : idea.draft;
+    const output = format === "derived_short" ? idea.derivedShortPost : format === "article" ? idea.article : idea.shortPost;
     if (!output) throw new Error("Save this output before running the final voice check.");
     if (idea.publications.some((publication) => publication.draftVersionId === output.id))
       throw new Error("This published output is read-only. Create a new revision before running another voice check.");
@@ -427,7 +428,7 @@ export function IdeaWorkspaceClient({
               return run(async () => {
                 await request({
                   title: idea.title,
-                  publicationPlan: idea.publicationPlan ?? "linkedin",
+                  outputShape: idea.outputShape,
                   audienceProfileKey: idea.audienceProfileKey,
                   audienceNotes: idea.audienceNotes ?? null,
                   outputPreferences: idea.outputPreferences,
@@ -469,7 +470,7 @@ export function IdeaWorkspaceClient({
                 // Deterministic execution does not emit live provider events.
                 // Show a separate local execution status without polling the
                 // live-provider endpoint or implying private model reasoning.
-                const dualOutput = idea.publicationPlan === "medium_linkedin" || idea.publicationPlan === "substack_linkedin";
+                const includesDerivedShort = idea.outputShape === "long_with_derived_short";
                 const deterministicStages: EditorialRunProgress["stages"] = [
                   { id: "context", label: "Prepare bounded idea and BOK context", status: "running" },
                   { id: "strategist", label: "Strategist review", status: "waiting" },
@@ -477,7 +478,7 @@ export function IdeaWorkspaceClient({
                   { id: "editor", label: "Editor review", status: "waiting" },
                   { id: "synthesizer", label: "Synthesize the editorial brief", status: "waiting" },
                   { id: "draft", label: "Create the voice-aligned working draft", status: "waiting" },
-                  ...(dualOutput ? [{ id: "linkedin_companion" as const, label: "Create standalone LinkedIn post", status: "waiting" as const }] : []),
+                  ...(includesDerivedShort ? [{ id: "derived_short" as const, label: "Create derived short post", status: "waiting" as const }] : []),
                   { id: "provenance", label: "Save provenance, usage, latency, and cost", status: "waiting" },
                 ];
                 setRunProgress({ status: "running", stages: deterministicStages });
@@ -491,7 +492,7 @@ export function IdeaWorkspaceClient({
                     status: updated.editorialBrief?.runStatus === "partially_completed" ? "partially_completed" : "completed",
                     stages: deterministicStages.map((stage) => ({
                       ...stage,
-                      status: failedRoles.has(stage.id) || (stage.id === "linkedin_companion" && dualOutput && !updated.linkedinCompanion)
+                      status: failedRoles.has(stage.id) || (stage.id === "derived_short" && includesDerivedShort && !updated.derivedShortPost)
                         ? "failed"
                         : "completed",
                     })),
@@ -521,8 +522,8 @@ export function IdeaWorkspaceClient({
                   { id: "editor", label: "Editor review", status: "waiting" },
                   { id: "synthesizer", label: "Synthesize the editorial brief", status: "waiting" },
                   { id: "draft", label: "Create the voice-aligned working draft", status: "waiting" },
-                  ...((idea.publicationPlan === "medium_linkedin" || idea.publicationPlan === "substack_linkedin")
-                    ? [{ id: "linkedin_companion" as const, label: "Create standalone LinkedIn post", status: "waiting" as const }]
+                  ...(idea.outputShape === "long_with_derived_short"
+                    ? [{ id: "derived_short" as const, label: "Create derived short post", status: "waiting" as const }]
                     : []),
                   { id: "provenance", label: "Save provenance, usage, latency, and cost", status: "waiting" },
                 ];
@@ -547,28 +548,28 @@ export function IdeaWorkspaceClient({
                 }
               })
             }
-            retryLinkedinCompanion={(budgetCap, mode) =>
+            retryDerivedShort={(budgetCap, mode) =>
               run(async () => {
                 const retryStages: EditorialRunProgress["stages"] = [
-                  { id: "context", label: "Load the saved canonical article and voice reference", status: "running" },
-                  { id: "linkedin_companion", label: "Create standalone LinkedIn post", status: "waiting" },
-                  { id: "provenance", label: "Save linked companion and provenance", status: "waiting" },
+                  { id: "context", label: "Load the saved article and voice reference", status: "running" },
+                  { id: "derived_short", label: "Create derived short post", status: "waiting" },
+                  { id: "provenance", label: "Save derived-output provenance", status: "waiting" },
                 ];
-                const priorRecoveryId = idea.companionRecovery?.id;
-                setRunProgress({ kind: "companion_recovery", status: "running", stages: retryStages });
-                setEditorialRunLabel(mode === "refresh" ? "Refreshing only the LinkedIn post" : mode === "escalation" ? "Escalating only the LinkedIn post" : "Retrying only the LinkedIn post");
+                const priorRecoveryId = idea.derivedShortRecovery?.id;
+                setRunProgress({ kind: "derived_short_recovery", status: "running", stages: retryStages });
+                setEditorialRunLabel(mode === "refresh" ? "Refreshing only the derived short post" : mode === "escalation" ? "Escalating only the derived short post" : "Retrying only the derived short post");
                 try {
                   await request({
-                    action: mode === "refresh" ? "refresh_live_linkedin_companion" : mode === "escalation" ? "escalate_live_linkedin_companion" : "retry_live_linkedin_companion",
+                    action: mode === "refresh" ? "refresh_live_derived_short" : mode === "escalation" ? "escalate_live_derived_short" : "retry_live_derived_short",
                     budgetCap,
-                    escalationReason: mode === "escalation" ? "Author explicitly selected a medium-tier LinkedIn recovery after a failed lower-cost attempt." : undefined,
+                    escalationReason: mode === "escalation" ? "Author explicitly selected a medium-tier derived-short recovery after a failed lower-cost attempt." : undefined,
                   });
                   setRunProgress({
-                    kind: "companion_recovery",
+                    kind: "derived_short_recovery",
                     status: "completed",
                     stages: retryStages.map((stage) => ({ ...stage, status: "completed" })),
                   });
-                  setMessage(mode === "refresh" ? "LinkedIn post refreshed from the saved canonical article. The Board review remains unchanged." : "LinkedIn post created from the saved canonical article. The prior Board review remains unchanged.");
+                  setMessage(mode === "refresh" ? "Derived short post refreshed from the saved article. The Board review remains unchanged." : "Derived short post created from the saved article. The prior Board review remains unchanged.");
                 } catch (error) {
                   await hydrateRecoveryFailure(retryStages, priorRecoveryId);
                   throw error;
@@ -597,7 +598,7 @@ export function IdeaWorkspaceClient({
             }
             finalReview={(format) =>
               run(async () => {
-                const output = format === "linkedin_companion" ? idea.linkedinCompanion : idea.draft;
+                const output = format === "derived_short" ? idea.derivedShortPost : format === "article" ? idea.article : idea.shortPost;
                 if (!output) throw new Error("Save this output before running its review.");
                 const useLiveProofread = Boolean(livePreview?.proofreader?.available);
                 await request({ action: "run_final_review", body: output.body, format, draftVersionId: output.id, proofreadMode: useLiveProofread ? "live_required" : "deterministic" });
@@ -640,14 +641,14 @@ export function IdeaWorkspaceClient({
                 setMessage("Draft version saved locally.");
               })
             }
-            publish={(event, format, platform, output) => {
+            publish={(event, format, channel, output) => {
               event.preventDefault();
               const form = new FormData(event.currentTarget);
               return run(async () => {
                 const publishedAt = String(form.get("publishedAt") ?? "").trim();
                 await request({
                   action: "publish",
-                  platform,
+                  channel,
                   url: form.get("url"),
                   publishedAt: publishedAt ? new Date(publishedAt).toISOString() : undefined,
                   finalText: output.body,
@@ -675,36 +676,36 @@ export function IdeaWorkspaceClient({
                 setMessage("Visual companion saved locally for this draft version.");
               })
             }
-            companionDraft={companionDraft}
-            setCompanionDraft={(body) => {
-              companionEditorRef.current = { ...companionEditorRef.current, body };
-              setCompanionDraft(body);
+            derivedShortDraft={derivedShortDraft}
+            setDerivedShortDraft={(body) => {
+              derivedShortEditorRef.current = { ...derivedShortEditorRef.current, body };
+              setDerivedShortDraft(body);
             }}
-            saveLinkedinCompanion={() =>
+            saveDerivedShort={() =>
               run(async () => {
-                await request({ action: "save_linkedin_companion", body: companionDraft });
-                setCompanionEditor(companionEditorRef.current.body, false);
-                setMessage("LinkedIn companion version saved locally. Review it when useful, then continue to Finalize.");
+                await request({ action: "save_derived_short", body: derivedShortDraft });
+                setDerivedShortEditor(derivedShortEditorRef.current.body, false);
+                setMessage("Derived short-post version saved locally. Review it when useful, then continue to Finalize.");
               })
             }
             draftDirty={draftDirty}
             onDraftChange={() => {
               setVoiceChecks((current) => {
                 const next = { ...current };
-                delete next[idea.publicationPlan?.startsWith("medium") || idea.publicationPlan?.startsWith("substack") ? "canonical" : "linkedin"];
+                delete next[idea.outputShape === "short" ? "short" : "article"];
                 return next;
               });
               setDraftDirty(true);
             }}
-            companionDirty={companionDirty}
-            onCompanionChange={() => {
+            derivedShortDirty={derivedShortDirty}
+            onDerivedShortChange={() => {
               setVoiceChecks((current) => {
                 const next = { ...current };
-                delete next.linkedin_companion;
+                delete next.derived_short;
                 return next;
               });
-              companionEditorRef.current = { ...companionEditorRef.current, dirty: true };
-              setCompanionDirty(true);
+              derivedShortEditorRef.current = { ...derivedShortEditorRef.current, dirty: true };
+              setDerivedShortDirty(true);
             }}
             saveProvidedResearch={(research) =>
               run(async () => {

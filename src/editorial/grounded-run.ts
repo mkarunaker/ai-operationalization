@@ -23,7 +23,7 @@ import { assertPublishedWorkflowUnlocked } from "@/lean/service";
 
 type Database = ReturnType<typeof openInitializedDatabase>;
 type ReviewerRole = "strategist" | "skeptic" | "editor";
-export type LinkedinRecoveryKind = "refresh" | "retry" | "escalation";
+export type DerivedShortRecoveryKind = "refresh" | "retry" | "escalation";
 type PromptSource = { path: string; text: string; checksum: string };
 type SnapshotInput = {
   ideaId: string;
@@ -33,12 +33,13 @@ type SnapshotInput = {
   notes: Array<{ id: string; body: string; createdAt: string }>;
   answers: Array<{ question: string; answer: string; choice: string }>;
   themes: Array<{ id: string; name: string }>;
-  publicationPlan: string | null;
+  outputShape: "short" | "long" | "long_with_derived_short";
   audienceProfile: string;
   audienceNotes?: string;
   longForm?: { min: number; max: number };
   shortForm?: { min: number; max: number; derived: boolean };
 };
+type ImmutableReaderContract = Pick<SnapshotInput, "outputShape" | "audienceProfile" | "audienceNotes" | "longForm" | "shortForm">;
 type PersistedReview = {
   role: ReviewerRole;
   status: "completed" | "failed";
@@ -53,20 +54,20 @@ export type MeteredAttempt = {
   reservedCost: number;
   estimatedCost: number;
 };
-type LinkedinRecoveryInput = {
+type DerivedShortRecoveryInput = {
   model: string;
   providerName: string;
   tier: ModelTier;
   budgetCap: number;
   pricingAssumption: string;
-  recoveryKind?: LinkedinRecoveryKind;
+  recoveryKind?: DerivedShortRecoveryKind;
   escalationReason?: string;
 };
-export type ScopedLinkedinRequestInput = {
+export type ScopedDerivedShortRequestInput = {
   audienceProfile: string;
   audienceNotes?: string;
   shortForm?: { min: number; max: number; derived: boolean };
-  canonicalBody: string;
+  articleBody: string;
   voiceText: string;
   provider: string;
   model: string;
@@ -83,7 +84,29 @@ const draftOutputTokens = 1_800;
 // This includes the structured response and any model-managed reasoning
 // budget. A 160–240 word post alone is smaller, but 700 caused valid
 // low-cost Responses calls to end as incomplete before JSON validation.
-const linkedinCompanionOutputTokens = 1_200;
+const derivedShortOutputTokens = 1_200;
+const immutableReaderContractSchema = z
+  .object({
+    outputShape: z.enum(["short", "long", "long_with_derived_short"]),
+    audienceProfile: z.enum(["professional", "executive", "practitioner", "general"]),
+    audienceNotes: z.string().max(1_000).optional(),
+    longForm: z.object({ min: z.number().int().min(100).max(10_000), max: z.number().int().min(100).max(10_000) }).strict().optional(),
+    shortForm: z.object({ min: z.number().int().min(40).max(5_000), max: z.number().int().min(40).max(5_000), derived: z.boolean() }).strict().optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.longForm && value.longForm.min > value.longForm.max)
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["longForm"], message: "Long-form range must be coherent." });
+    if (value.shortForm && value.shortForm.min > value.shortForm.max)
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["shortForm"], message: "Short-form range must be coherent." });
+    const coherent = value.outputShape === "short"
+      ? Boolean(value.shortForm && !value.longForm && !value.shortForm.derived)
+      : value.outputShape === "long"
+        ? Boolean(value.longForm && !value.shortForm)
+        : Boolean(value.longForm && value.shortForm?.derived);
+    if (!coherent)
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["outputShape"], message: "Reader contract must coherently match its output shape." });
+  });
 
 function publicExecutionError(error: unknown) {
   const message = error instanceof Error ? error.message : "Model execution failed.";
@@ -97,35 +120,35 @@ function publicExecutionError(error: unknown) {
   // response bodies, raw JSON, prompts, or filesystem details to the browser.
   if (/^Structured output remained invalid/.test(message))
     return "The model response did not match the required structured format after one bounded repair. No validated output was saved; retry the affected role only.";
-  if (/^(Generated draft|Generated LinkedIn companion) did not satisfy the no-em-dash voice rule\.$/.test(message))
+  if (/^(Generated draft|Generated derived short post) did not satisfy the no-em-dash voice rule\.$/.test(message))
     return "The generated publication text did not satisfy the required voice rule. No affected draft was saved; revise the role instruction or retry that role only.";
   if (/^Publication text must be plain prose/.test(message))
     return "The generated text contained Markdown formatting, which publication outputs do not allow. No affected draft was saved; retry the affected role only.";
   if (/^Live-run budget/.test(message)) return `${message} Increase the cap only if you explicitly accept the projected cost.`;
   if (/^(Anthropic|OpenAI|ZenMux|grounded-test) refused the editorial request\.$/i.test(message))
     return "The configured model declined the editorial request. No validated output was saved; retry the affected role with a compatible configured model.";
-  if (/^The LinkedIn drafting call could not be recorded\.$/.test(message))
-    return "The LinkedIn drafter completed, but its result could not be saved safely.";
+  if (/^The derived-short drafting call could not be recorded\.$/.test(message))
+    return "The derived-short drafter completed, but its result could not be saved safely.";
   if (/^Editorial review stopped because no reviewer produced validated output\.$/.test(message))
     return "No reviewer returned a validated editorial evaluation. No brief or draft was created; review the individual safe failure messages before retrying.";
   return "The model call failed before producing validated editorial output. Completed work, if any, was preserved; raw provider and local exception details are intentionally withheld.";
 }
 
 /**
- * Companion failures should be actionable without disclosing untrusted provider
- * bodies or internal exceptions. The canonical article and completed Board
+ * Derived-output failures should be actionable without disclosing untrusted
+ * provider bodies or internal exceptions. The article and completed Board
  * reviews have already been persisted by the time this is used.
  */
-function publicLinkedinDrafterError(error: unknown) {
+function publicDerivedShortDrafterError(error: unknown) {
   const detail = publicExecutionError(error);
   if (/configured model declined the editorial request/.test(detail))
-    return "The configured model declined the structured LinkedIn drafting request. The canonical article and completed Board review were saved; no LinkedIn version was created.";
+    return "The configured model declined the structured derived-short drafting request. The article and completed Board review were saved; no derived short post was created.";
   if (/response reached its output limit/.test(detail))
-    return "The LinkedIn drafter reached its output limit before producing a validated post. The canonical article and completed Board review were saved.";
+    return "The derived-short drafter reached its output limit before producing a validated post. The article and completed Board review were saved.";
   if (/required structured format/.test(detail))
-    return "The LinkedIn drafter returned an invalid structured response after one bounded repair. The canonical article and completed Board review were saved.";
-  if (/^The LinkedIn drafter completed, but/.test(detail)) return detail;
-  return "The LinkedIn drafter failed before a validated response was available. The canonical article and completed Board review were saved; raw provider details are intentionally withheld.";
+    return "The derived-short drafter returned an invalid structured response after one bounded repair. The article and completed Board review were saved.";
+  if (/^The derived-short drafter completed, but/.test(detail)) return detail;
+  return "The derived-short drafter failed before a validated response was available. The article and completed Board review were saved; raw provider details are intentionally withheld.";
 }
 
 /**
@@ -255,11 +278,11 @@ export function requestMaximumUsage(request: ModelRequest): TokenUsage {
  * makes the displayed reservation auditable and keeps reader-contract input
  * on the identical untrusted boundary in both paths.
  */
-export function scopedLinkedinDraftRequestFor(input: ScopedLinkedinRequestInput) {
+export function scopedDerivedShortDraftRequestFor(input: ScopedDerivedShortRequestInput) {
   const prompts = { final_drafter: readPrompt(promptFile("final_drafter")) };
   const shared = readSharedPrompts();
   const boundary = createUntrustedContextBlock([
-    { source: "saved canonical article", text: input.canonicalBody },
+    { source: "saved article", text: input.articleBody },
     ...(input.audienceNotes ? [{ source: "author reader note", text: input.audienceNotes }] : []),
   ]);
   const voiceBoundary = createUntrustedContextBlock([{ source: "configured kk-spoken-voice style reference", text: input.voiceText }]);
@@ -270,12 +293,12 @@ export function scopedLinkedinDraftRequestFor(input: ScopedLinkedinRequestInput)
     request: {
       provider: input.provider,
       model: input.model,
-      systemPrompt: `${trustedSystemPrompt(prompts.final_drafter, shared, voiceBoundary.contextBlock)}\n\nTrusted reader contract: write for ${input.audienceProfile}. Trusted delivery requirement: create one standalone LinkedIn post of ${input.shortForm?.min ?? 180}-${input.shortForm?.max ?? 300} words from the saved canonical article. Preserve the central observation, state one concrete practical consequence, and close with one natural invitation or question. Do not refer to a longer article, a companion, or the drafting process. Do not use Markdown.\n\nReturn only this JSON object shape: {"role":"final_drafter","body":"plain publication prose"}.`,
+      systemPrompt: `${trustedSystemPrompt(prompts.final_drafter, shared, voiceBoundary.contextBlock)}\n\nTrusted reader contract: write for ${input.audienceProfile}. Trusted output requirement: create one derived short post of ${input.shortForm?.min ?? 180}-${input.shortForm?.max ?? 300} words from the saved article. Preserve the central observation, state one concrete practical consequence, and close with one natural invitation or question. Do not mention delivery channels, another output, or the drafting process. Do not use Markdown.\n\nReturn only this JSON object shape: {"role":"final_drafter","body":"plain publication prose"}.`,
       messages: [{ role: "user" as const, content: boundary.contextBlock }],
-      maxOutputTokens: linkedinCompanionOutputTokens,
+      maxOutputTokens: derivedShortOutputTokens,
       reasoningEffort: "low" as const,
       responseFormat: { type: "json_schema" as const },
-      metadata: { agentRole: "final_drafter" as const, task: "draft", retryStage: "linkedin_companion", modelTier: input.tier, publicationTarget: "linkedin", sourceFingerprint: checksum(boundary.contextBlock).slice(0, 10) },
+      metadata: { agentRole: "final_drafter" as const, task: "draft", retryStage: "derived_short", modelTier: input.tier, publicationTarget: "derived_short", sourceFingerprint: checksum(boundary.contextBlock).slice(0, 10) },
     },
   };
 }
@@ -384,14 +407,14 @@ function seedRole(database: Database, role: AgentRole, prompt: PromptSource) {
 function loadSnapshot(database: Database, ideaId: string): SnapshotInput {
   const idea = database
     .prepare(
-      "SELECT idea.id, idea.title, idea.raw_notes, idea.publication_plan, idea.audience_profile_key, idea.audience_notes, content.id AS content_id, preference.long_form_enabled, preference.long_form_min_words, preference.long_form_max_words, preference.short_form_enabled, preference.short_form_min_words, preference.short_form_max_words, preference.short_form_source FROM ideas idea JOIN content_items content ON content.idea_id = idea.id LEFT JOIN idea_output_preferences preference ON preference.idea_id = idea.id WHERE idea.id = ?",
+      "SELECT idea.id, idea.title, idea.raw_notes, idea.output_shape, idea.audience_profile_key, idea.audience_notes, content.id AS content_id, preference.long_form_enabled, preference.long_form_min_words, preference.long_form_max_words, preference.short_form_enabled, preference.short_form_min_words, preference.short_form_max_words, preference.short_form_source FROM ideas idea JOIN content_items content ON content.idea_id = idea.id LEFT JOIN idea_output_preferences preference ON preference.idea_id = idea.id WHERE idea.id = ?",
     )
     .get(ideaId) as
     | {
         id: string;
         title: string;
         raw_notes: string;
-        publication_plan: string | null;
+        output_shape: string | null;
         content_id: string;
         audience_profile_key: string | null; audience_notes: string | null; long_form_enabled: number | null; long_form_min_words: number | null; long_form_max_words: number | null; short_form_enabled: number | null; short_form_min_words: number | null; short_form_max_words: number | null; short_form_source: string | null;
       }
@@ -430,12 +453,72 @@ function loadSnapshot(database: Database, ideaId: string): SnapshotInput {
     notes: notes.map((note) => ({ id: note.id, body: note.body, createdAt: note.created_at })),
     answers,
     themes,
-    publicationPlan: idea.publication_plan,
+    outputShape: ["short", "long", "long_with_derived_short"].includes(String(idea.output_shape))
+      ? idea.output_shape as SnapshotInput["outputShape"]
+      : "short",
     audienceProfile: idea.audience_profile_key ?? "professional",
     audienceNotes: idea.audience_notes ?? undefined,
     longForm: idea.long_form_enabled ? { min: idea.long_form_min_words ?? 800, max: idea.long_form_max_words ?? 1100 } : undefined,
     shortForm: idea.short_form_enabled ? { min: idea.short_form_min_words ?? 180, max: idea.short_form_max_words ?? 300, derived: idea.short_form_source === "derived_from_long" } : undefined,
   };
+}
+
+/**
+ * Scoped drafting and targeted reruns must retain the reader/output contract
+ * the Board actually used. Current Develop preferences remain editable, but
+ * are never a substitute for that immutable provenance after a Board run.
+ */
+function loadImmutableReaderContract(database: Database | ReturnType<typeof readDb>, ideaId: string): ImmutableReaderContract {
+  const stored = database
+    .prepare(
+      "SELECT snapshot.prompt_manifest FROM editorial_run_snapshots snapshot JOIN review_runs run ON run.id = snapshot.review_run_id WHERE snapshot.idea_id = ? AND run.review_type = 'editorial' AND run.status IN ('completed', 'partially_completed') AND snapshot.generated_draft_version_id IS NOT NULL ORDER BY run.completed_at DESC, run.rowid DESC LIMIT 1",
+    )
+    .get(ideaId) as { prompt_manifest: string } | undefined;
+  if (!stored) throw new Error("The saved Editorial Board reader contract is unavailable. Run the Editorial Board again before this scoped action.");
+  try {
+    const parsed = immutableReaderContractSchema.safeParse(JSON.parse(stored.prompt_manifest).readerContract);
+    if (parsed.success) return parsed.data;
+  } catch {
+    // Use the same safe message below. Persisted provenance is data, not a
+    // reason to fall back to mutable preferences or disclose parser details.
+  }
+  throw new Error("The saved Editorial Board reader contract is invalid. Run the Editorial Board again before this scoped action.");
+}
+
+/**
+ * Read-only preflight must be safe for a manually supplied draft that
+ * predates its first Board run. Execution continues to use the throwing
+ * loader above, so a scoped action can never substitute mutable preferences
+ * for the missing immutable contract.
+ */
+function savedReaderContractOrUndefined(database: Database | ReturnType<typeof readDb>, ideaId: string) {
+  try {
+    return loadImmutableReaderContract(database, ideaId);
+  } catch {
+    return undefined;
+  }
+}
+
+export function hasSavedBoardReaderContract(ideaId: string) {
+  const database = readDb();
+  try {
+    return Boolean(savedReaderContractOrUndefined(database, ideaId));
+  } finally {
+    database.close();
+  }
+}
+
+function snapshotWithImmutableReaderContract(snapshot: SnapshotInput, readerContract: ImmutableReaderContract): SnapshotInput {
+  return { ...snapshot, ...readerContract };
+}
+
+function trustedReaderContractInstruction(snapshot: ImmutableReaderContract, verb: "assess" | "write") {
+  return [
+    `Trusted reader/output contract: ${verb} for ${snapshot.audienceProfile}.`,
+    `Selected output shape: ${snapshot.outputShape}.`,
+    snapshot.longForm ? `Article target: ${snapshot.longForm.min}-${snapshot.longForm.max} words.` : "",
+    snapshot.shortForm ? `Short-post target: ${snapshot.shortForm.min}-${snapshot.shortForm.max} words${snapshot.shortForm.derived ? "; derived from the article" : ""}.` : "",
+  ].filter(Boolean).join(" ");
 }
 
 function selectKnowledge(snapshot: SnapshotInput) {
@@ -455,13 +538,14 @@ function sourceManifest(
   shared: PromptSource[],
   rolePrompts: Record<ReviewerRole | "synthesizer" | "initial_drafter" | "final_drafter", PromptSource>,
   providerInfo: { name: string; modelForRole: (role: AgentRole) => string; providerForRole?: (role: AgentRole) => string; pricingAssumption: string; pricingAssumptionForRole?: (role: AgentRole) => string },
-  readerContract?: Pick<SnapshotInput, "audienceProfile" | "audienceNotes" | "longForm" | "shortForm">,
+  readerContract?: Pick<SnapshotInput, "outputShape" | "audienceProfile" | "audienceNotes" | "longForm" | "shortForm">,
 ) {
   // A provenance reader contract is intentionally smaller than SnapshotInput.
-  // Captures, notes, answers, themes, IDs, and publication plan have their own
+  // Captures, notes, answers, themes, and IDs have their own
   // snapshot columns and must never be duplicated into model provenance.
   const immutableReaderContract = readerContract
     ? {
+        outputShape: readerContract.outputShape,
         audienceProfile: readerContract.audienceProfile,
         ...(readerContract.audienceNotes ? { audienceNotes: readerContract.audienceNotes } : {}),
         ...(readerContract.longForm ? { longForm: { min: readerContract.longForm.min, max: readerContract.longForm.max } } : {}),
@@ -573,7 +657,7 @@ function persistModelCall(
     reservedCost?: number;
     attemptNumber?: number;
     reviewRunId?: string;
-    recoveryKind?: LinkedinRecoveryKind;
+    recoveryKind?: DerivedShortRecoveryKind;
     escalationReason?: string;
     diagnostic?: ReturnType<typeof failureDiagnostic>;
   },
@@ -809,7 +893,7 @@ export type GroundedRunResult = {
   runId: string;
   status: "completed" | "partially_completed" | "failed";
   draftVersionId?: string;
-  linkedinCompanionDraftVersionId?: string;
+  derivedShortDraftVersionId?: string;
 };
 
 export type GroundedRunOptions = {
@@ -834,7 +918,7 @@ function projectedCost(
   providerForRole: (role: AgentRole) => string,
   tierForRole: (role: AgentRole) => ModelTier | undefined,
   boundaryCharacters: number,
-  includeLinkedinCompanion: boolean,
+  includeDerivedShort: boolean,
 ) {
   const inputTokens = boundaryCharacters + 12_000;
   const planned: Array<[AgentRole, number, number]> = [
@@ -844,8 +928,8 @@ function projectedCost(
     ["synthesizer", 12_000 + 3 * reviewOutputTokens * 4, synthesisOutputTokens],
     ["initial_drafter", inputTokens + 40_000 + synthesisOutputTokens * 4, draftOutputTokens],
   ];
-  if (includeLinkedinCompanion) {
-    planned.push(["final_drafter", inputTokens + draftOutputTokens * 4, linkedinCompanionOutputTokens]);
+  if (includeDerivedShort) {
+    planned.push(["final_drafter", inputTokens + draftOutputTokens * 4, derivedShortOutputTokens]);
   }
   return planned.reduce((total, [role, input, output]) => {
     const oneAttempt = provider.estimateCost?.(
@@ -857,8 +941,8 @@ function projectedCost(
   }, 0);
 }
 
-function isDualOutputPlan(plan: string | null) {
-  return plan === "medium_linkedin" || plan === "substack_linkedin";
+function hasDerivedShortOutput(shape: SnapshotInput["outputShape"]) {
+  return shape === "long_with_derived_short";
 }
 
 /**
@@ -866,22 +950,22 @@ function isDualOutputPlan(plan: string | null) {
  * route layer. A future internal caller must not be able to relabel a more
  * expensive call as an ordinary refresh or retry.
  */
-export function assertLinkedinRecoveryPolicy(input: {
+export function assertDerivedShortRecoveryPolicy(input: {
   tier: ModelTier;
-  recoveryKind?: LinkedinRecoveryKind;
+  recoveryKind?: DerivedShortRecoveryKind;
   escalationReason?: string;
 }) {
   const recoveryKind = input.recoveryKind ?? "retry";
   if (recoveryKind === "escalation") {
     if (input.tier !== "medium")
-      throw new Error("An explicit LinkedIn escalation must use the medium-tier model.");
+      throw new Error("An explicit derived-short escalation must use the medium-tier model.");
     const escalationReason = input.escalationReason?.trim();
     if (!escalationReason)
-      throw new Error("Explain why this LinkedIn recovery needs the medium-tier model before escalating.");
+      throw new Error("Explain why this derived-short recovery needs the medium-tier model before escalating.");
     return { recoveryKind, escalationReason } as const;
   }
   if (input.tier !== "low")
-    throw new Error("Only an explicit LinkedIn escalation may use the medium-tier model.");
+    throw new Error("Only an explicit derived-short escalation may use the medium-tier model.");
   return { recoveryKind, escalationReason: undefined } as const;
 }
 
@@ -889,7 +973,7 @@ export function plannedRolesForIdea(ideaId: string): AgentRole[] {
   const database = readDb();
   try {
     const snapshot = loadSnapshot(database, ideaId);
-    return isDualOutputPlan(snapshot.publicationPlan)
+    return hasDerivedShortOutput(snapshot.outputShape)
       ? ["strategist", "skeptic", "editor", "synthesizer", "initial_drafter", "final_drafter"]
       : ["strategist", "skeptic", "editor", "synthesizer", "initial_drafter"];
   } finally {
@@ -918,7 +1002,7 @@ export function estimateGroundedEditorialRun(
       providerForRole,
       tierForRole,
       boundaryFor(snapshot, selected).contextBlock.length,
-      isDualOutputPlan(snapshot.publicationPlan),
+      hasDerivedShortOutput(snapshot.outputShape),
     );
   } finally {
     database.close();
@@ -937,7 +1021,19 @@ export function estimateSingleReviewerRun(
   if (sourceStatus.bok.status !== "ready") throw new Error("A ready Book of Knowledge index is required for a reviewer estimate.");
   const database = readDb();
   try {
-    const snapshot = loadSnapshot(database, ideaId);
+    const mutableSnapshot = loadSnapshot(database, ideaId);
+    const draft = database
+      .prepare("SELECT 1 FROM draft_versions WHERE content_item_id = ? AND created_by != 'development_snapshot' LIMIT 1")
+      .get(mutableSnapshot.contentItemId);
+    // A targeted rerun is unavailable before a saved Board/draft path exists.
+    // Returning zero lets the read-only preflight remain truthful on a fresh idea.
+    if (!draft) return 0;
+    const readerContract = savedReaderContractOrUndefined(database, ideaId);
+    // A human may save a working draft before ever running the Board. That
+    // draft is not provenance for a targeted Board rerun, so preview no cost
+    // instead of throwing while the Board page loads.
+    if (!readerContract) return 0;
+    const snapshot = snapshotWithImmutableReaderContract(mutableSnapshot, readerContract);
     const selected = selectKnowledge(snapshot);
     const estimate = provider.estimateCost?.(
       { inputTokens: boundaryFor(snapshot, selected).contextBlock.length + 12_000, outputTokens: reviewOutputTokens, reasoningTokens: reviewOutputTokens },
@@ -951,12 +1047,12 @@ export function estimateSingleReviewerRun(
 }
 
 /**
- * Read-only estimate for a LinkedIn-only recovery or stale refresh. It uses
- * the actual saved canonical article and current indexed voice reference,
+ * Read-only estimate for a derived-short recovery or stale refresh. It uses
+ * the actual saved article and current indexed voice reference,
  * rather than a reviewer-shaped approximation. The 2x reservation accounts
  * for the one permitted same-route structured-output repair.
  */
-export function estimateLinkedinCompanionDraft(
+export function estimateDerivedShortDraft(
   ideaId: string,
   provider: Pick<ModelProvider, "estimateCost">,
   model: string,
@@ -966,28 +1062,34 @@ export function estimateLinkedinCompanionDraft(
   const config = getAppConfig();
   const sourceStatus = getContentStatus(config);
   if (sourceStatus.voiceSkill.status !== "ready")
-    throw new Error("A ready kk-spoken-voice skill is required for a LinkedIn estimate.");
+    throw new Error("A ready kk-spoken-voice skill is required for a derived-short estimate.");
   const database = readDb();
   try {
-    const snapshot = loadSnapshot(database, ideaId);
-    // The general live-preview endpoint is also loaded for LinkedIn-only and
-    // not-yet-drafted ideas. A scoped companion estimate is simply not needed
-    // until a dual-output idea has a saved canonical source.
-    if (!isDualOutputPlan(snapshot.publicationPlan)) return 0;
-    const canonical = database
-      .prepare("SELECT body FROM draft_versions WHERE content_item_id = ? AND publication_format = 'canonical' ORDER BY version_number DESC LIMIT 1")
-      .get(snapshot.contentItemId) as { body: string } | undefined;
-    if (!canonical) return 0;
+    const mutableSnapshot = loadSnapshot(database, ideaId);
+    // The general live-preview endpoint is also loaded for not-yet-drafted
+    // ideas. A scoped derived-short estimate is not needed until an article
+    // source exists; once it does, only the saved Board contract decides
+    // whether that exact article has a derived-short workflow.
+    const article = database
+      .prepare("SELECT body FROM draft_versions WHERE content_item_id = ? AND publication_format = 'article' ORDER BY version_number DESC LIMIT 1")
+      .get(mutableSnapshot.contentItemId) as { body: string } | undefined;
+    if (!article) return 0;
+    const readerContract = savedReaderContractOrUndefined(database, ideaId);
+    // A manually supplied article is not eligible for scoped derived output
+    // recovery until a Board run has captured its immutable reader contract.
+    if (!readerContract) return 0;
+    const snapshot = snapshotWithImmutableReaderContract(mutableSnapshot, readerContract);
+    if (!hasDerivedShortOutput(snapshot.outputShape)) return 0;
     const voice = database
       .prepare("SELECT source_path FROM voice_skill_versions WHERE source_path = ? AND status = 'ready' ORDER BY loaded_at DESC LIMIT 1")
       .get(sourceStatus.voiceSkill.path) as { source_path: string } | undefined;
-    if (!voice) throw new Error("Configured voice source is unavailable for the LinkedIn estimate.");
+    if (!voice) throw new Error("Configured voice source is unavailable for the derived-short estimate.");
     const voiceText = fs.readFileSync(/* turbopackIgnore: true */ voice.source_path, "utf8");
-    const scoped = scopedLinkedinDraftRequestFor({
+    const scoped = scopedDerivedShortDraftRequestFor({
       audienceProfile: snapshot.audienceProfile,
       audienceNotes: snapshot.audienceNotes,
       shortForm: snapshot.shortForm,
-      canonicalBody: canonical.body,
+      articleBody: article.body,
       voiceText,
       provider: providerName,
       model,
@@ -1050,7 +1152,7 @@ export async function runGroundedEditorialRun(
       providerForRole,
       tierForRole,
       boundary.contextBlock.length,
-      isDualOutputPlan(snapshot.publicationPlan),
+      hasDerivedShortOutput(snapshot.outputShape),
     );
     if (executionMode === "live" && runEstimate > budgetCap) {
       throw new Error(`Projected live-run cost $${runEstimate.toFixed(4)} exceeds the $${budgetCap.toFixed(2)} budget cap. No provider call was made.`);
@@ -1072,7 +1174,7 @@ export async function runGroundedEditorialRun(
         .run(runId, snapshot.contentItemId, snapshotDraftId, executionMode, runEstimate, executionMode === "grounded_test" ? 0 : null, budgetCap, timestamp());
       database
         .prepare(
-          "INSERT INTO editorial_run_snapshots (id, review_run_id, idea_id, content_item_id, original_capture, notes_json, clarification_answers_json, themes_json, publication_plan, bok_document_id, bok_version, bok_checksum, voice_skill_version_id, voice_skill_version, voice_skill_checksum, prompt_manifest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO editorial_run_snapshots (id, review_run_id, idea_id, content_item_id, original_capture, notes_json, clarification_answers_json, themes_json, output_shape, bok_document_id, bok_version, bok_checksum, voice_skill_version_id, voice_skill_version, voice_skill_checksum, prompt_manifest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .run(
           identifier("snapshot"),
@@ -1083,7 +1185,7 @@ export async function runGroundedEditorialRun(
           JSON.stringify(snapshot.notes),
           JSON.stringify(snapshot.answers),
           JSON.stringify(snapshot.themes),
-          snapshot.publicationPlan,
+          snapshot.outputShape,
           document.id,
           document.version,
           document.checksum,
@@ -1110,7 +1212,7 @@ export async function runGroundedEditorialRun(
           {
             provider: providerForRole(role),
             model: modelForRole(role),
-            systemPrompt: `${trustedSystemPrompt(prompts[role], shared)}\n\nTrusted reader contract: assess this work for ${snapshot.audienceProfile}. ${snapshot.longForm ? `Long-form target: ${snapshot.longForm.min}-${snapshot.longForm.max} words.` : ""} ${snapshot.shortForm ? `LinkedIn target: ${snapshot.shortForm.min}-${snapshot.shortForm.max} words${snapshot.shortForm.derived ? "; derived from the canonical article" : ""}.` : ""}`,
+          systemPrompt: `${trustedSystemPrompt(prompts[role], shared)}\n\n${trustedReaderContractInstruction(snapshot, "assess")}`,
             messages: [{ role: "user", content: boundary.contextBlock }],
             maxOutputTokens: reviewOutputTokens,
             responseFormat: { type: "json_schema" },
@@ -1273,9 +1375,9 @@ export async function runGroundedEditorialRun(
         {
           provider: providerForRole("initial_drafter"),
           model: modelForRole("initial_drafter"),
-          systemPrompt: `${trustedSystemPrompt(prompts.initial_drafter, shared, voiceBoundary.contextBlock)}\n\n${["medium", "substack", "medium_linkedin", "substack_linkedin"].includes(snapshot.publicationPlan ?? "")
-            ? `Trusted reader contract: write for ${snapshot.audienceProfile}. Create a canonical article of ${snapshot.longForm?.min ?? 800}-${snapshot.longForm?.max ?? 1100} words. Do not create the LinkedIn companion yet.`
-            : `Trusted reader contract: write for ${snapshot.audienceProfile}. Create one standalone LinkedIn post of ${snapshot.shortForm?.min ?? 180}-${snapshot.shortForm?.max ?? 300} words.`}`,
+          systemPrompt: `${trustedSystemPrompt(prompts.initial_drafter, shared, voiceBoundary.contextBlock)}\n\n${snapshot.outputShape === "short"
+            ? `Trusted reader contract: write for ${snapshot.audienceProfile}. Create one standalone short post of ${snapshot.shortForm?.min ?? 180}-${snapshot.shortForm?.max ?? 300} words.`
+            : `Trusted reader contract: write for ${snapshot.audienceProfile}. Create an article of ${snapshot.longForm?.min ?? 800}-${snapshot.longForm?.max ?? 1100} words. ${snapshot.shortForm?.derived ? `A separate derived short post will later use ${snapshot.shortForm.min}-${snapshot.shortForm.max} words; do not create it yet.` : ""}`}`,
           messages: [
             { role: "user", content: draftBoundary.contextBlock },
             { role: "user", content: draftSynthesisBoundary.contextBlock },
@@ -1291,7 +1393,7 @@ export async function runGroundedEditorialRun(
             bokFocus: safeBokFocus(selected, draftBoundary.injectionSignals),
             sourceFingerprint: checksum(`${draftBoundary.contextBlock}:${JSON.stringify(synthesis)}`).slice(0, 10),
             factualGaps: [synthesis.evidence_needed],
-            publicationTarget: ["medium", "substack", "medium_linkedin", "substack_linkedin"].includes(snapshot.publicationPlan ?? "") ? "canonical" : "linkedin",
+            publicationTarget: snapshot.outputShape === "short" ? "short" : "article",
           },
         },
         initialDraftOutputSchema,
@@ -1331,7 +1433,7 @@ export async function runGroundedEditorialRun(
           executionMode === "live" ? "Live, BOK-grounded working draft created after synthesis." : "Grounded deterministic working draft created after synthesis.",
           voice.id,
           draftCallId,
-          ["medium", "substack", "medium_linkedin", "substack_linkedin"].includes(snapshot.publicationPlan ?? "") ? "canonical" : "linkedin",
+          snapshot.outputShape === "short" ? "short" : "article",
         );
       database
         .prepare("UPDATE model_calls SET draft_version_id = ? WHERE id = ?")
@@ -1353,10 +1455,10 @@ export async function runGroundedEditorialRun(
         database.exec("ROLLBACK");
         throw error;
       }
-      if (!isDualOutputPlan(snapshot.publicationPlan)) return { runId, status, draftVersionId };
+      if (!hasDerivedShortOutput(snapshot.outputShape)) return { runId, status, draftVersionId };
 
       const companionBoundary = createUntrustedContextBlock([
-        { source: "exact canonical article generated in this Board run", text: normalizedDraftBody },
+        { source: "exact article generated in this Board run", text: normalizedDraftBody },
         ...(snapshot.audienceNotes ? [{ source: "author reader note", text: snapshot.audienceNotes }] : []),
         { source: "validated editorial synthesis", text: JSON.stringify(synthesis) },
       ]);
@@ -1367,9 +1469,9 @@ export async function runGroundedEditorialRun(
           {
             provider: providerForRole("final_drafter"),
             model: modelForRole("final_drafter"),
-            systemPrompt: `${trustedSystemPrompt(prompts.final_drafter, shared, voiceBoundary.contextBlock)}\n\nTrusted reader contract: write for ${snapshot.audienceProfile}. Create one standalone LinkedIn post of ${snapshot.shortForm?.min ?? 180}-${snapshot.shortForm?.max ?? 300} words from the exact canonical article. Preserve the central observation, state one concrete practical consequence, and close with one natural invitation or question. Do not refer to a longer article, a companion, or the drafting process. Do not use Markdown.\n\nReturn only this JSON object shape: {"role":"final_drafter","body":"plain publication prose"}.`,
+            systemPrompt: `${trustedSystemPrompt(prompts.final_drafter, shared, voiceBoundary.contextBlock)}\n\nTrusted reader contract: write for ${snapshot.audienceProfile}. Create one derived short post of ${snapshot.shortForm?.min ?? 180}-${snapshot.shortForm?.max ?? 300} words from the exact article. Preserve the central observation, state one concrete practical consequence, and close with one natural invitation or question. Do not mention delivery channels, another output, or the drafting process. Do not use Markdown.\n\nReturn only this JSON object shape: {"role":"final_drafter","body":"plain publication prose"}.`,
             messages: [{ role: "user", content: companionBoundary.contextBlock }],
-            maxOutputTokens: linkedinCompanionOutputTokens,
+            maxOutputTokens: derivedShortOutputTokens,
             reasoningEffort: "low",
             responseFormat: { type: "json_schema" },
             metadata: {
@@ -1378,7 +1480,7 @@ export async function runGroundedEditorialRun(
               modelTier: tierForRole("final_drafter"),
               draftSeed: normalizedDraftBody,
               sourceFingerprint: checksum(companionBoundary.contextBlock).slice(0, 10),
-              publicationTarget: "linkedin",
+              publicationTarget: "derived_short",
               factualGaps: [synthesis.evidence_needed],
             },
           },
@@ -1387,7 +1489,7 @@ export async function runGroundedEditorialRun(
         const normalizedCompanionBody = normalizePublicationPunctuation(generatedCompanion.output.body);
         const companionVoiceCheck = checkHumanVoice(normalizedCompanionBody);
         if (normalizedCompanionBody.includes("—") || companionVoiceCheck.findings.some((finding) => finding.id === "em_dash"))
-          throw new Error("Generated LinkedIn companion did not satisfy the no-em-dash voice rule.");
+          throw new Error("Generated derived short post did not satisfy the no-em-dash voice rule.");
         const companionDraftVersionId = identifier("draft");
         database.exec("BEGIN IMMEDIATE");
         try {
@@ -1404,23 +1506,23 @@ export async function runGroundedEditorialRun(
             reviewRunId: runId,
           });
           const callId = callIds.at(-1);
-          if (!callId) throw new Error("The LinkedIn drafting call could not be recorded.");
+          if (!callId) throw new Error("The derived-short drafting call could not be recorded.");
           database.prepare(
-            "INSERT INTO draft_versions (id, content_item_id, version_number, body, created_by, parent_version_id, change_summary, voice_skill_version_id, model_call_id, publication_format) VALUES (?, ?, COALESCE((SELECT MAX(version_number) + 1 FROM draft_versions WHERE content_item_id = ?), 1), ?, 'final_drafter', ?, ?, ?, ?, 'linkedin_companion')",
-          ).run(companionDraftVersionId, snapshot.contentItemId, snapshot.contentItemId, normalizedCompanionBody, draftVersionId, executionMode === "live" ? "Live, BOK-grounded LinkedIn companion created from this canonical article." : "Grounded deterministic LinkedIn companion created from this canonical article.", voice.id, callId);
+            "INSERT INTO draft_versions (id, content_item_id, version_number, body, created_by, parent_version_id, change_summary, voice_skill_version_id, model_call_id, publication_format) VALUES (?, ?, COALESCE((SELECT MAX(version_number) + 1 FROM draft_versions WHERE content_item_id = ?), 1), ?, 'final_drafter', ?, ?, ?, ?, 'derived_short')",
+          ).run(companionDraftVersionId, snapshot.contentItemId, snapshot.contentItemId, normalizedCompanionBody, draftVersionId, executionMode === "live" ? "Live, BOK-grounded derived short post created from this article." : "Grounded deterministic derived short post created from this article.", voice.id, callId);
           database.prepare("UPDATE model_calls SET draft_version_id = ? WHERE id = ?").run(companionDraftVersionId, callId);
-          database.prepare("INSERT OR IGNORE INTO canonical_draft_approvals (canonical_draft_version_id, idea_id, approved_at) VALUES (?, ?, ?)").run(draftVersionId, ideaId, timestamp());
-          database.prepare("INSERT INTO draft_relationships (parent_draft_version_id, child_draft_version_id, relationship_type) VALUES (?, ?, 'linkedin_companion')").run(draftVersionId, companionDraftVersionId);
+          database.prepare("INSERT OR IGNORE INTO article_draft_approvals (article_draft_version_id, idea_id, approved_at) VALUES (?, ?, ?)").run(draftVersionId, ideaId, timestamp());
+          database.prepare("INSERT INTO draft_relationships (parent_draft_version_id, child_draft_version_id, relationship_type) VALUES (?, ?, 'derived_short')").run(draftVersionId, companionDraftVersionId);
           database.prepare("UPDATE review_runs SET actual_cost = ?, completed_at = ? WHERE id = ?").run(executionMode === "grounded_test" ? 0 : null, timestamp(), runId);
           database.exec("COMMIT");
-          return { runId, status, draftVersionId, linkedinCompanionDraftVersionId: companionDraftVersionId };
+          return { runId, status, draftVersionId, derivedShortDraftVersionId: companionDraftVersionId };
         } catch (error) {
           database.exec("ROLLBACK");
           throw error;
         }
       } catch (error) {
         status = "partially_completed";
-        const companionFailure = publicLinkedinDrafterError(error);
+        const companionFailure = publicDerivedShortDrafterError(error);
         database.exec("BEGIN IMMEDIATE");
         try {
           persistAttempts(database, meteredProvider.attempts.slice(companionAttemptStart), {
@@ -1478,24 +1580,24 @@ export async function runGroundedEditorialRun(
   }
 }
 
-function assertConfiguredLiveLinkedinRecovery(input: LinkedinRecoveryInput) {
-  const recovery = assertLinkedinRecoveryPolicy(input);
+function assertConfiguredLiveDerivedShortRecovery(input: DerivedShortRecoveryInput) {
+  const recovery = assertDerivedShortRecoveryPolicy(input);
   if (!Number.isFinite(input.budgetCap) || input.budgetCap <= 0)
-    throw new Error("A positive per-run budget cap is required for the LinkedIn recovery.");
+    throw new Error("A positive per-run budget cap is required for the derived-short recovery.");
   if (input.budgetCap > maximumRunBudgetUsd())
-    throw new Error(`The LinkedIn recovery cap cannot exceed $${maximumRunBudgetUsd().toFixed(2)}.`);
+    throw new Error(`The derived-short recovery cap cannot exceed $${maximumRunBudgetUsd().toFixed(2)}.`);
   const route = routeFor("final_drafter", input.tier);
   if (input.providerName !== route.provider || input.model !== route.model || input.pricingAssumption !== route.pricingAssumption)
-    throw new Error("LinkedIn recovery must use the configured Final Drafter route and pricing assumption.");
+    throw new Error("Derived-short recovery must use the configured Final Drafter route and pricing assumption.");
   return recovery;
 }
 
-function assertTestOnlyLinkedinRecovery(input: LinkedinRecoveryInput) {
+function assertTestOnlyDerivedShortRecovery(input: DerivedShortRecoveryInput) {
   if (process.env.NODE_ENV !== "test")
-    throw new Error("The injected LinkedIn recovery provider is available only to automated tests.");
+    throw new Error("The injected derived-short recovery provider is available only to automated tests.");
   if (!Number.isFinite(input.budgetCap) || input.budgetCap <= 0)
-    throw new Error("A positive per-run budget cap is required for the LinkedIn recovery.");
-  return assertLinkedinRecoveryPolicy(input);
+    throw new Error("A positive per-run budget cap is required for the derived-short recovery.");
+  return assertDerivedShortRecoveryPolicy(input);
 }
 
 /**
@@ -1504,32 +1606,32 @@ function assertTestOnlyLinkedinRecovery(input: LinkedinRecoveryInput) {
  * in the route handler. This prevents a future direct caller from relabeling
  * an unintended model as a low-cost recovery.
  */
-export async function retryLinkedinCompanionDraft(
+export async function retryDerivedShortDraft(
   ideaId: string,
   provider: ModelProvider,
-  input: LinkedinRecoveryInput,
+  input: DerivedShortRecoveryInput,
 ) {
-  return executeLinkedinCompanionDraft(ideaId, provider, input, assertConfiguredLiveLinkedinRecovery(input));
+  return executeDerivedShortDraft(ideaId, provider, input, assertConfiguredLiveDerivedShortRecovery(input));
 }
 
 /**
  * Test-only dependency-injection seam. It is deliberately rejected outside
  * the test runtime so production services cannot select arbitrary models.
  */
-export async function retryLinkedinCompanionDraftForTest(
+export async function retryDerivedShortDraftForTest(
   ideaId: string,
   provider: ModelProvider,
-  input: LinkedinRecoveryInput,
+  input: DerivedShortRecoveryInput,
 ) {
-  return executeLinkedinCompanionDraft(ideaId, provider, input, assertTestOnlyLinkedinRecovery(input));
+  return executeDerivedShortDraft(ideaId, provider, input, assertTestOnlyDerivedShortRecovery(input));
 }
 
-/** Recreates only a missing LinkedIn companion from a saved canonical output. */
-async function executeLinkedinCompanionDraft(
+/** Recreates only a missing derived short post from a saved article. */
+async function executeDerivedShortDraft(
   ideaId: string,
   provider: ModelProvider,
-  input: LinkedinRecoveryInput,
-  recovery: ReturnType<typeof assertLinkedinRecoveryPolicy>,
+  input: DerivedShortRecoveryInput,
+  recovery: ReturnType<typeof assertDerivedShortRecoveryPolicy>,
 ) {
   assertPublishedWorkflowUnlocked(ideaId);
   const config = getAppConfig();
@@ -1539,20 +1641,24 @@ async function executeLinkedinCompanionDraft(
   if (sourceStatus.voiceSkill.status !== "ready") throw new Error("A ready kk-spoken-voice skill is required for drafting.");
   const database = db();
   try {
-    const snapshot = loadSnapshot(database, ideaId);
-    if (!isDualOutputPlan(snapshot.publicationPlan)) throw new Error("LinkedIn-only retry is available only for a Medium/Substack plus LinkedIn plan.");
-    const canonical = database.prepare("SELECT id, body FROM draft_versions WHERE content_item_id = ? AND publication_format = 'canonical' ORDER BY version_number DESC LIMIT 1").get(snapshot.contentItemId) as { id: string; body: string } | undefined;
-    if (!canonical) throw new Error("A saved canonical article is required before retrying the LinkedIn drafter.");
-    const currentCompanion = database.prepare("SELECT child.id FROM draft_relationships relationship JOIN draft_versions child ON child.id = relationship.child_draft_version_id WHERE relationship.parent_draft_version_id = ? AND relationship.relationship_type = 'linkedin_companion' ORDER BY child.version_number DESC LIMIT 1").get(canonical.id);
-    if (currentCompanion) throw new Error("A current LinkedIn companion already exists. Edit or review that saved version instead.");
+    const mutableSnapshot = loadSnapshot(database, ideaId);
+    const snapshot = snapshotWithImmutableReaderContract(
+      mutableSnapshot,
+      loadImmutableReaderContract(database, ideaId),
+    );
+    if (!hasDerivedShortOutput(snapshot.outputShape)) throw new Error("Derived-short recovery is available only when the saved Editorial Board reader contract includes a derived short post.");
+    const article = database.prepare("SELECT id, body FROM draft_versions WHERE content_item_id = ? AND publication_format = 'article' ORDER BY version_number DESC LIMIT 1").get(snapshot.contentItemId) as { id: string; body: string } | undefined;
+    if (!article) throw new Error("A saved article is required before retrying the derived-short drafter.");
+    const currentDerivedShort = database.prepare("SELECT child.id FROM draft_relationships relationship JOIN draft_versions child ON child.id = relationship.child_draft_version_id WHERE relationship.parent_draft_version_id = ? AND relationship.relationship_type = 'derived_short' ORDER BY child.version_number DESC LIMIT 1").get(article.id);
+    if (currentDerivedShort) throw new Error("A current derived short post already exists. Edit or review that saved version instead.");
     const voice = database.prepare("SELECT id, source_path FROM voice_skill_versions WHERE source_path = ? AND status = 'ready' ORDER BY loaded_at DESC LIMIT 1").get(sourceStatus.voiceSkill.path) as { id: string; source_path: string } | undefined;
     if (!voice) throw new Error("Configured source versions could not be recorded.");
     const voiceText = fs.readFileSync(/* turbopackIgnore: true */ voice.source_path, "utf8");
-    const scoped = scopedLinkedinDraftRequestFor({
+    const scoped = scopedDerivedShortDraftRequestFor({
       audienceProfile: snapshot.audienceProfile,
       audienceNotes: snapshot.audienceNotes,
       shortForm: snapshot.shortForm,
-      canonicalBody: canonical.body,
+      articleBody: article.body,
       voiceText,
       provider: input.providerName,
       model: input.model,
@@ -1564,26 +1670,26 @@ async function executeLinkedinCompanionDraft(
       const generated = await generateStructured(metered, scoped.request, finalDraftOutputSchema);
       const body = normalizePublicationPunctuation(generated.output.body);
       const voiceCheck = checkHumanVoice(body);
-      if (body.includes("—") || voiceCheck.findings.some((finding) => finding.id === "em_dash")) throw new Error("Generated LinkedIn companion did not satisfy the no-em-dash voice rule.");
-      const companionId = identifier("draft");
+      if (body.includes("—") || voiceCheck.findings.some((finding) => finding.id === "em_dash")) throw new Error("Generated derived short post did not satisfy the no-em-dash voice rule.");
+      const derivedShortId = identifier("draft");
       database.exec("BEGIN IMMEDIATE");
       try {
-        const callId = persistAttempts(database, metered.attempts.slice(started), { role: "final_drafter", draftVersionId: canonical.id, promptChecksum: scoped.promptChecksum, voiceSkillVersionId: voice.id, injectionSignals: [...scoped.boundary.injectionSignals, ...scoped.voiceBoundary.injectionSignals], provider: metered, pricingAssumption: input.pricingAssumption, budgetCap: input.budgetCap, acceptedLastAttempt: true, recoveryKind: recovery.recoveryKind, escalationReason: recovery.escalationReason }).at(-1);
-        if (!callId) throw new Error("The LinkedIn drafting call could not be recorded.");
-        database.prepare("INSERT INTO draft_versions (id, content_item_id, version_number, body, created_by, parent_version_id, change_summary, voice_skill_version_id, model_call_id, publication_format) VALUES (?, ?, COALESCE((SELECT MAX(version_number) + 1 FROM draft_versions WHERE content_item_id = ?), 1), ?, 'final_drafter', ?, ?, ?, ?, 'linkedin_companion')").run(companionId, snapshot.contentItemId, snapshot.contentItemId, body, canonical.id, "Live LinkedIn companion retry created from the saved canonical article.", voice.id, callId);
-        database.prepare("UPDATE model_calls SET draft_version_id = ? WHERE id = ?").run(companionId, callId);
-        database.prepare("INSERT OR IGNORE INTO canonical_draft_approvals (canonical_draft_version_id, idea_id, approved_at) VALUES (?, ?, ?)").run(canonical.id, ideaId, timestamp());
-        database.prepare("INSERT INTO draft_relationships (parent_draft_version_id, child_draft_version_id, relationship_type) VALUES (?, ?, 'linkedin_companion')").run(canonical.id, companionId);
+        const callId = persistAttempts(database, metered.attempts.slice(started), { role: "final_drafter", draftVersionId: article.id, promptChecksum: scoped.promptChecksum, voiceSkillVersionId: voice.id, injectionSignals: [...scoped.boundary.injectionSignals, ...scoped.voiceBoundary.injectionSignals], provider: metered, pricingAssumption: input.pricingAssumption, budgetCap: input.budgetCap, acceptedLastAttempt: true, recoveryKind: recovery.recoveryKind, escalationReason: recovery.escalationReason }).at(-1);
+        if (!callId) throw new Error("The derived-short drafting call could not be recorded.");
+        database.prepare("INSERT INTO draft_versions (id, content_item_id, version_number, body, created_by, parent_version_id, change_summary, voice_skill_version_id, model_call_id, publication_format) VALUES (?, ?, COALESCE((SELECT MAX(version_number) + 1 FROM draft_versions WHERE content_item_id = ?), 1), ?, 'final_drafter', ?, ?, ?, ?, 'derived_short')").run(derivedShortId, snapshot.contentItemId, snapshot.contentItemId, body, article.id, "Live derived short post retry created from the saved article.", voice.id, callId);
+        database.prepare("UPDATE model_calls SET draft_version_id = ? WHERE id = ?").run(derivedShortId, callId);
+        database.prepare("INSERT OR IGNORE INTO article_draft_approvals (article_draft_version_id, idea_id, approved_at) VALUES (?, ?, ?)").run(article.id, ideaId, timestamp());
+        database.prepare("INSERT INTO draft_relationships (parent_draft_version_id, child_draft_version_id, relationship_type) VALUES (?, ?, 'derived_short')").run(article.id, derivedShortId);
         database.exec("COMMIT");
-        return { companionDraftVersionId: companionId };
+        return { derivedShortDraftVersionId: derivedShortId };
       } catch (error) { database.exec("ROLLBACK"); throw error; }
     } catch (error) {
       database.exec("BEGIN IMMEDIATE");
       try {
-        persistAttempts(database, metered.attempts.slice(started), { role: "final_drafter", draftVersionId: canonical.id, promptChecksum: scoped.promptChecksum, voiceSkillVersionId: voice.id, injectionSignals: [...scoped.boundary.injectionSignals, ...scoped.voiceBoundary.injectionSignals], provider: metered, pricingAssumption: input.pricingAssumption, budgetCap: input.budgetCap, acceptedLastAttempt: false, finalFailure: publicLinkedinDrafterError(error), recoveryKind: recovery.recoveryKind, escalationReason: recovery.escalationReason });
+        persistAttempts(database, metered.attempts.slice(started), { role: "final_drafter", draftVersionId: article.id, promptChecksum: scoped.promptChecksum, voiceSkillVersionId: voice.id, injectionSignals: [...scoped.boundary.injectionSignals, ...scoped.voiceBoundary.injectionSignals], provider: metered, pricingAssumption: input.pricingAssumption, budgetCap: input.budgetCap, acceptedLastAttempt: false, finalFailure: publicDerivedShortDrafterError(error), recoveryKind: recovery.recoveryKind, escalationReason: recovery.escalationReason });
         database.exec("COMMIT");
       } catch (persistError) { database.exec("ROLLBACK"); throw persistError; }
-      throw new Error(publicLinkedinDrafterError(error));
+      throw new Error(publicDerivedShortDrafterError(error));
     }
   } finally { database.close(); }
 }
@@ -1605,7 +1711,11 @@ export async function runSingleReviewer(
   if (sourceStatus.bok.status !== "ready") throw new Error("A ready Book of Knowledge index is required for a reviewer rerun.");
   const database = db();
   try {
-    const snapshot = loadSnapshot(database, ideaId);
+    const mutableSnapshot = loadSnapshot(database, ideaId);
+    const snapshot = snapshotWithImmutableReaderContract(
+      mutableSnapshot,
+      loadImmutableReaderContract(database, ideaId),
+    );
     const draft = database
       .prepare("SELECT id FROM draft_versions WHERE content_item_id = ? ORDER BY version_number DESC LIMIT 1")
       .get(snapshot.contentItemId) as { id: string } | undefined;
@@ -1641,7 +1751,7 @@ export async function runSingleReviewer(
         {
           provider: provider.name,
           model: input.model,
-          systemPrompt: trustedSystemPrompt(prompt, shared),
+          systemPrompt: `${trustedSystemPrompt(prompt, shared)}\n\n${trustedReaderContractInstruction(snapshot, "assess")}`,
           messages: [{ role: "user", content: boundary.contextBlock }],
           maxOutputTokens: reviewOutputTokens,
           responseFormat: { type: "json_schema" },

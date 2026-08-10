@@ -17,7 +17,7 @@ export function boardRoleStageStatus(input: {
 }
 
 /**
- * A companion recovery can repair only the Final Drafter output. It must never
+ * A derived-short recovery can repair only the Final Drafter output. It must never
  * turn a failed Board-thinking role into a completed Board review.
  */
 export function isBoardReviewIncomplete(input: {
@@ -30,31 +30,31 @@ export function isBoardReviewIncomplete(input: {
   return input.failures.some((failure) => failure.role !== "final_drafter") || !input.finalDrafterRecovered;
 }
 
-export function shouldResetCompanionEditor(action: string | undefined, hasUnsavedEdits: boolean) {
+export function shouldResetDerivedShortEditor(action: string | undefined, hasUnsavedEdits: boolean) {
   return !hasUnsavedEdits && [
     "run_grounded_board",
     "run_live_board",
-    "save_linkedin_companion",
-    "retry_live_linkedin_companion",
-    "refresh_live_linkedin_companion",
-    "escalate_live_linkedin_companion",
+    "save_derived_short",
+    "retry_live_derived_short",
+    "refresh_live_derived_short",
+    "escalate_live_derived_short",
   ].includes(action ?? "");
 }
 
 /**
- * A completed LinkedIn stage means that the current Board result actually
- * produced a linked companion. In particular, a failed Synthesizer means the
+ * A completed derived-short stage means that the current Board result actually
+ * produced a linked derived short post. In particular, a failed Synthesizer means the
  * drafting stages were never reached; they must not be rendered as success.
  */
-export function companionCreationStageStatus(input: {
-  isDualOutputPlan: boolean;
+export function derivedShortCreationStageStatus(input: {
+  includesDerivedShort: boolean;
   generatedDraftVersionId?: string;
-  generatedLinkedinCompanionDraftVersionId?: string;
+  generatedDerivedShortDraftVersionId?: string;
   finalDrafterFailed: boolean;
 }): PersistedBoardStageStatus | undefined {
-  if (!input.isDualOutputPlan) return undefined;
+  if (!input.includesDerivedShort) return undefined;
   if (!input.generatedDraftVersionId) return "not_run";
-  if (input.generatedLinkedinCompanionDraftVersionId) return "completed";
+  if (input.generatedDerivedShortDraftVersionId) return "completed";
   return input.finalDrafterFailed ? "failed" : "not_run";
 }
 
@@ -77,13 +77,13 @@ export function primaryDraftCreationStageStatus(input: {
  * Keep the editor controlled without silently overwriting author text when a
  * server response arrives after a scoped recovery action.
  */
-export function reconcileCompanionEditorState(input: {
+export function reconcileDerivedShortEditorState(input: {
   action: string | undefined;
   hasUnsavedEdits: boolean;
   currentBody: string;
   returnedBody?: string;
 }) {
-  if (!shouldResetCompanionEditor(input.action, input.hasUnsavedEdits)) {
+  if (!shouldResetDerivedShortEditor(input.action, input.hasUnsavedEdits)) {
     return { body: input.currentBody, dirty: input.hasUnsavedEdits, replaced: false };
   }
   return { body: input.returnedBody ?? "", dirty: false, replaced: true };

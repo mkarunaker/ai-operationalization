@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This roadmap converts the approved lean product direction and the 2026-08-06 alignment audit into bounded implementation milestones. The product is a local, single-user thinking and writing workspace. The first reliable release must take one rough idea through a genuinely BOK-grounded editorial review into a voice-aligned LinkedIn draft with visible provenance and cost.
+This roadmap converts the approved lean product direction and the 2026-08-06 alignment audit into bounded implementation milestones. The product is a local, single-user thinking and writing workspace. The first reliable release must take one rough idea through a genuinely BOK-grounded editorial review into a voice-aligned reader-appropriate output with visible provenance and cost.
 
 Work one milestone at a time. Stop at every checkpoint. Do not begin the next milestone until the current milestone's acceptance criteria, tests, status update, and user review are complete.
 
@@ -39,8 +39,9 @@ The dates below are planning targets, not promises: each milestone still stops f
 | Board and companion truthfulness closure checkpoint | Complete | 2026-08-09 | Truthful saved Board state, exact companion-stage identity, scoped provenance, governed LinkedIn recovery, and isolated deterministic E2E |
 | Reader-first output contract and integrated quality gate: Milestone 5.1 | Approved | 2026-08-09 | Independent Sol read-only audit found no blocking findings after the direct-regression and complete-local-validation gate |
 | Research and evidence: Milestone 6 | Complete (manual-first) | 2026-08-08 | Manual evidence workflow, explicit zero-cost planning brief, citations, injection tests |
+| Reader-first distribution-neutral reset: Milestone 6.2 | Independently approved | 2026-08-09 | Sol approved the reader/output contract, immutable proofread and scoped boundaries, compatibility migration, and Finalize lifecycle after read-only review |
 | Learning loop: Milestone 7 | Planned | 2026-08-14 | Manual feedback, follow-up ideas, Notebook history and explicit Notebook-to-Inbox flow |
-| Full visual companions: Milestone 8 | Planned | 2026-08-16 | Approved, traceable, platform-aware visuals beyond the current narrow deterministic SVG slice |
+| Full visual companions: Milestone 8 | Planned | 2026-08-16 | Approved, traceable visuals; any delivery-channel choice remains a Finalize concern |
 | Local personal MVP release gate: Milestone 9 | Planned | 2026-08-19 | Security, recovery, production-mode validation, and honest technical-debt handoff |
 
 Milestone 5.1 is independently approved following Sol's read-only review. The completed manual-first research work remains valid historical delivery evidence; later milestones still require their own acceptance, validation, and audit gates.
@@ -559,12 +560,46 @@ Model-independence routing policy — approved: role independence must not rely 
 Status: **planned; unlocked by Milestone 5.1 approval and required before the full visual-rendering work in Milestone 8.** Add a small visual-brief step after the reader-first output contract and before the full visual-rendering work in Milestone 8.
 
 - Do not force a visual for every post. First recommend either **no visual** or one explanatory purpose: contrast, decision path, sequence, lifecycle, framework, or comparison.
-- Show an editable brief before rendering: the intended reader takeaway, proposed visual grammar, exact source claims, labels, caption, alt text, and whether the visual is an optional LinkedIn or long-form asset.
+- Show an editable brief before rendering: the intended reader takeaway, proposed visual grammar, exact source claims, labels, caption, alt text, and whether the visual is an optional short-post or article asset.
 - The initial recommendation may use transparent local rules and author choice at zero cost. An explicitly requested low-cost model may later suggest a brief, but its output is advisory, bounded to the saved draft and selected BOK/research claims, and requires user approval.
 - Deterministic SVG diagrams remain the default renderer for conceptual and factual relationships. Generative imagery, characters, and illustration remain optional Milestone 8 work and must never be required for a usable visual.
 - The visual brief must not invent risk, security, governance, market, or quantitative claims that are absent from the saved draft or approved sources.
 
 Acceptance criteria: an author can understand why a visual is or is not recommended, edit the proposed claims and structure, approve it explicitly, and see that the rendered visual uses only the approved brief. This extension does not add an image-generation provider, browser research, or automatic rendering.
+
+---
+
+## Milestone 6.2 — Reader-first distribution-neutral reset
+
+### Objective
+
+Make the active product model reader-first end to end. Before Finalize, the author chooses only the reader contract and whether to create a short post, article, or derived short post. Platform names must not select, constrain, label, or imply a draft, review, prompt, relationship, or model route.
+
+### Scope
+
+- Replace the active `publicationPlan` contract with an output-shape contract: `short`, `long`, or `long_with_derived_short`.
+- Use reader-facing names in the UI: **Short post**, **Article**, and **Derived short post**. Keep exact-version and stale-dependency rules, but remove LinkedIn/Medium/Substack terminology from authoring, Write, review, and model prompts.
+- Give every output an explicit generic format and relationship. A derived short post remains tied to one exact article version, independently editable, reviewed, proofread, and publishable.
+- Keep delivery channel exclusively in Finalize. Recording a publication selects its actual channel for that exact already-approved output; it must not retroactively affect the Board run, prompts, range, provenance, or review eligibility.
+- Remove active service, route, client, schema, test, and documentation dependencies on `publicationPlan`, `linkedin`, `medium`, `substack`, `canonical`, and `linkedin_companion`. Historical migration scripts remain immutable; their legacy columns and records become inactive schema history only.
+- Add one additive migration to establish the generic output formats and relationships. Rebuild only the known synthetic local database after the migration is validated. Do not apply it to meaningful local data, inspect database contents, or rewrite pushed migrations.
+
+### Acceptance criteria
+
+- Capture and Develop expose audience, reader notes, ranges, and output shape; they expose no platform selector or platform-first default.
+- Every drafting, reviewing, proofread, scoped-estimation, and recovery request receives the immutable reader/output contract and no platform-delivery instruction.
+- Short-only, long-only, and long-with-derived-short workflows preserve exact-version review, stale dependency, proofreader, Finalize, and publication safeguards.
+- Finalize records a channel per exact output only after all current review/proofread/material-finding checks pass. Choosing a channel cannot cause drafting, a provider call, or a version change.
+- Fresh synthetic migration and deterministic production-mode browser coverage prove no active authoring surface or payload depends on a legacy platform plan.
+- The complete local validation and a new independent read-only audit pass before this milestone is accepted.
+
+### Required working method
+
+Create direct failing regressions first for each acceptance criterion. Use non-default reader ranges, adversarial reader notes, a derived-short relationship, deliberately different publication channels chosen only in Finalize, and a fresh temporary database. Inspect exact prompts, persisted generic formats/relationships, browser-visible labels, route payload rejection, reload behavior, and Finalize server enforcement. Do not use green aggregate counts as proof.
+
+### Handoff checkpoint — 2026-08-09
+
+The independent Sol read-only audit approved this milestone on 2026-08-09 with no blockers. `docs/MILESTONE_6_2_BLOCKER_MATRIX.md` maps each acceptance invariant to its implementation boundary, adversarial fixture, and direct unit, integration, migration, or browser regression. `IMPLEMENTATION_STATUS.md` contains the command-derived validation evidence and the deliberately limited synthetic-database reset record.
 
 ---
 
@@ -613,7 +648,7 @@ Create memorable visuals only when they materially improve understanding.
 - Never invent quantitative chart data.
 - Save local visual artifacts as `data/<title-name>/draft_<number>_<datetime>.svg`; reuse the title directory instead of creating a directory per version.
 - Use the same recognizable draft-and-timestamp naming convention for downloaded assets.
-- Allow a Medium/Substack article to have a lead visual and up to two supporting visuals when useful; its optional LinkedIn companion may use a separate platform-appropriate visual.
+- Allow an article to have a lead visual and up to two supporting visuals when useful; its optional derived short post may use a separate output-appropriate visual.
 - Provide editable visual suggestions for labels, caption, alt text, structure, and platform use before rendering.
 
 ### Acceptance criteria
@@ -621,7 +656,7 @@ Create memorable visuals only when they materially improve understanding.
 - Posts without a useful visual receive no forced recommendation.
 - A principles-based post can produce an accurate, legible diagram tied to the approved draft.
 - Every factual visual element is traceable to the draft, BOK, or cited research.
-- Alt text and platform-appropriate dimensions are generated and editable.
+- Alt text and output-appropriate dimensions are generated and editable; any delivery-channel choice remains a Finalize concern.
 - Rendering requires explicit approval and respects the budget cap.
 - Every saved and downloaded asset is identifiable by title, exact draft number, and timestamp.
 

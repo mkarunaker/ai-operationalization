@@ -1,8 +1,9 @@
 import {
   developIdea,
   deleteUnpublishedIdea,
+  createDerivedShortPost,
   createVisualCompanion,
-  saveLinkedinCompanionDraft,
+  saveDerivedShortPost,
   getIdea,
   moveIdea,
   publishIdea,
@@ -17,7 +18,7 @@ import {
   updateIdea,
 } from "@/lean/service";
 import { runGroundedEditorialRun } from "@/editorial/grounded-run";
-import { liveRunPreview, rerunLiveReviewer, retryLiveLinkedinCompanion, runLiveEditorialRun, runLiveProofreadReview } from "@/editorial/live-run";
+import { liveRunPreview, rerunLiveReviewer, retryLiveDerivedShort, runLiveEditorialRun, runLiveProofreadReview } from "@/editorial/live-run";
 import { requireLocalJsonMutation, safeRouteError } from "@/security/local-request";
 import { getLiveEditorialProgress } from "@/editorial/run-progress";
 
@@ -74,20 +75,20 @@ export async function POST(
       if (!idea) throw new Error("Idea not found after live editorial run.");
       return Response.json({ idea });
     }
-    if (body.action === "retry_live_linkedin_companion" || body.action === "refresh_live_linkedin_companion" || body.action === "escalate_live_linkedin_companion") {
-      const escalating = body.action === "escalate_live_linkedin_companion";
+    if (body.action === "retry_live_derived_short" || body.action === "refresh_live_derived_short" || body.action === "escalate_live_derived_short") {
+      const escalating = body.action === "escalate_live_derived_short";
       if (!escalating && body.tier !== undefined && body.tier !== "low")
-        throw new Error("Only the explicit LinkedIn escalation action may use the medium-tier model.");
+        throw new Error("Only the explicit derived-short escalation action may use the medium-tier model.");
       if (escalating && body.tier !== undefined && body.tier !== "medium")
-        throw new Error("The explicit LinkedIn escalation action uses the medium-tier model.");
-      await retryLiveLinkedinCompanion(ideaId, {
+        throw new Error("The explicit derived-short escalation action uses the medium-tier model.");
+      await retryLiveDerivedShort(ideaId, {
         budgetCap: Number(body.budgetCap),
         tier: escalating ? "medium" : "low",
-        recoveryKind: escalating ? "escalation" : body.action === "refresh_live_linkedin_companion" ? "refresh" : "retry",
+        recoveryKind: escalating ? "escalation" : body.action === "refresh_live_derived_short" ? "refresh" : "retry",
         escalationReason: escalating ? String(body.escalationReason ?? "") : undefined,
       });
       const idea = getIdea(ideaId);
-      if (!idea) throw new Error("Idea not found after LinkedIn retry.");
+      if (!idea) throw new Error("Idea not found after derived-short retry.");
       return Response.json({ idea });
     }
     if (body.action === "rerun_live_reviewer") {
@@ -110,14 +111,9 @@ export async function POST(
       return Response.json({ idea });
     }
     if (body.action === "run_final_review") {
-      const format =
-        body.format === "linkedin_companion"
-          ? "linkedin_companion"
-          : body.format === "canonical"
-            ? "canonical"
-            : body.format === "linkedin"
-              ? "linkedin"
-              : undefined;
+      const format = body.format === "derived_short" || body.format === "article" || body.format === "short"
+        ? body.format
+        : undefined;
       if (!format) throw new Error("A current draft format is required for final review.");
       return Response.json({
         idea: runFinalDraftReview(
@@ -132,7 +128,7 @@ export async function POST(
     if (body.action === "run_live_proofread") {
       if (["provider", "model", "tier", "pricingAssumption"].some((field) => field in body))
         throw new Error("Proofreader provider, model, tier, and pricing are resolved only by the server route.");
-      const format = body.format === "linkedin_companion" ? "linkedin_companion" : body.format === "canonical" ? "canonical" : "linkedin";
+      const format = body.format === "derived_short" || body.format === "article" ? body.format : "short";
       await runLiveProofreadReview(ideaId, { format, draftVersionId: String(body.draftVersionId ?? ""), budgetCap: Number(body.budgetCap) });
       const idea = getIdea(ideaId);
       if (!idea) throw new Error("Idea not found after proofread.");
@@ -149,27 +145,27 @@ export async function POST(
     if (body.action === "create_application_research_brief")
       return Response.json({ idea: createApplicationResearchBrief(ideaId, body) });
     if (body.action === "save_draft") {
-      if (body.format === "linkedin_companion")
-        throw new Error("Use the dedicated LinkedIn companion action to save a companion version.");
+      if (body.format === "derived_short")
+        throw new Error("Use the dedicated derived-short action to save a derived short post.");
       return Response.json({
         idea: saveEditedDraft(
           ideaId,
           String(body.body ?? ""),
-          body.format === "canonical" ? "canonical" : body.format === "linkedin" ? "linkedin" : undefined,
+          body.format === "article" ? "article" : body.format === "short" ? "short" : undefined,
         ),
       });
     }
     if (
-      body.action === "approve_canonical_draft" ||
-      body.action === "approve_linkedin_companion"
+      body.action === "approve_article" ||
+      body.action === "approve_derived_short"
     )
       throw new Error(
-        "This approval action is no longer available. Create the LinkedIn companion from the current article instead.",
+        "This approval action is no longer available. Create the derived short post from the current article instead.",
       );
-    if (body.action === "create_linkedin_companion")
-      throw new Error("LinkedIn output is generated with the Editorial Board for a dual-output plan. Run the Board again to create a matched pair.");
-    if (body.action === "save_linkedin_companion")
-      return Response.json({ idea: saveLinkedinCompanionDraft(ideaId, String(body.body ?? "")) });
+    if (body.action === "create_derived_short")
+      return Response.json({ idea: createDerivedShortPost(ideaId) });
+    if (body.action === "save_derived_short")
+      return Response.json({ idea: saveDerivedShortPost(ideaId, String(body.body ?? "")) });
     if (body.action === "create_visual_companion") {
       const template = body.template === "contrast" || body.template === "decision_fork" || body.template === "flow" || body.template === "vertical_path"
         ? body.template

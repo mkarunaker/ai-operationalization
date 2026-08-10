@@ -1,5 +1,24 @@
 # Implementation Status — Lean Refactor
 
+## Milestone 6.2 handoff — 2026-08-09
+
+Status: **approved by independent Sol read-only audit on 2026-08-09.** Milestone 5.1 remains independently approved.
+
+- Sol's 2026-08-09 read-only audit found two narrow contract gaps: scoped derived-short estimation/recovery used mutable Develop preferences instead of the saved Board contract, and targeted reviewer reruns omitted the trusted reader/output contract. Both regressions were added first and failed against the audited code. `loadImmutableReaderContract()` now reads the strict saved manifest, derives the scoped estimate/recovery request and reviewer-rerun system prompt from it, and never substitutes later mutable preferences.
+- User testing also exposed an expected empty-index state as repeated server-console errors that hid the entire Board setup. `liveRunPreview()` now reports local BOK/voice readiness without throwing; the Board panel stays visible and truthfully disables both live and deterministic Board actions until the required source is ready. This has direct integration and browser coverage.
+- The latest Sol findings are remediated with direct regressions: a manually saved pre-Board draft now yields a zero-cost scoped preview rather than loading nonexistent provenance; `hasSavedBoardReaderContract()` also keeps targeted-rerun and derived-refresh controls unavailable until an immutable Board contract exists. Migration 018 now proves every legacy paired, long, short, and null/default branch for both ideas and run snapshots, while mixed legacy/current payloads are rejected without changing the saved generic contract. The paired-output Finalize regression selects `medium` for the article and `substack` for its derived short post, records both after the article-first gate, and verifies exact persisted output/channel pairs.
+- The final remediation binds proofreader request construction and its two-attempt reservation to the strict saved Board reader contract. The adversarial regression changes Develop after the Board and proves estimate and dispatch retain executive / 1,234–1,567 / 321–357 while the original injection-shaped note stays only in escaped untrusted context. `updateIdea()` validates the complete merged shape/preferences state before a transaction; direct service and route tests cover shape-only rejection, preferences-only derivation, mismatches, rollback, and coherent acceptance. The blocker matrix was rechecked against every 6.2 acceptance criterion and names a direct regression for each boundary.
+- The final audit follow-up makes live proofreader availability require the saved Board manifest as well as a configured route. A manual pre-Board draft now reports zero proofreader estimates and unavailable routing; a live-required request for it is rejected before provider dispatch. The immutable-contract execution regression deliberately omits the test-only `readerContract` input, proving the persisted manifest loader supplies the original trusted values. Both missing and invalid saved-contract explanations are preserved by the local mutation sanitizer and its unit regression.
+
+- Active authoring now uses only the reader/output contract: `short`, `long`, or `long_with_derived_short`, with generic saved formats `short`, `article`, and `derived_short`. A delivery `channel` is selected only while recording an exact already-approved output in Finalize. Legacy platform plans and names remain only as immutable migration-history compatibility data.
+- `migrations/018_reader_first_distribution_neutral.sql` is additive. Its direct migration regression covers a fresh database plus a populated synthetic legacy database and asserts preservation of publication provenance, performance, feedback, and retrospective dependent rows. The earlier migrations were not changed.
+- The user authorized resetting the known synthetic local database. A verified owner-only backup was made; the former synthetic database was moved recoverably to the backup directory; then the new empty local database received migrations 001–018. No meaningful database or private content was opened or inspected, and no BOK/voice indexing was run.
+- The blocker-to-regression matrix is in `docs/MILESTONE_6_2_BLOCKER_MATRIX.md`. It names the exact implementation boundaries, test names, adversarial reader-note/range fixtures, persisted-data assertions, browser states, and proofreader terminal-outcome coverage. It is the required review map; green aggregate counts alone are not evidence.
+- Command-derived local validation passed after this remediation: `npm run typecheck`; `npm run lint`; `npm test -- --run` (24 files / 84 tests); `npm run db:validate` (18 migrations, validate-only); `npm run build`; `npm run test:e2e` (11 deterministic production-mode flows); `npm run security:secrets` (132 source/documentation files); `npm run security:audit` (0 vulnerabilities); `git diff --check`; and `git diff --cached --check`.
+- Tests used temporary databases and synthetic BOK/voice fixtures. No provider was configured or called. No `.env` file, secret, BOK, voice, private source, or provider request body was accessed. No files were staged, committed, or pushed.
+- Deliberate limitation: channel selection records local publication history only; external publishing integration remains out of scope. The newly empty local database was not populated by private-source indexing.
+- Sol's final read-only audit approved Milestone 6.2 with no blockers. It confirmed manual pre-Board proofread unavailability, production manifest loading, actionable saved-contract route errors, and the direct evidence listed in `docs/MILESTONE_6_2_BLOCKER_MATRIX.md`. No audit-side files, migrations, providers, environment/private sources, staging, commits, or pushes occurred.
+
 ## Milestone 5.1 handoff — 2026-08-09
 
 Status: **approved by independent Sol read-only audit on 2026-08-09.**
@@ -27,7 +46,7 @@ Status: **approved by independent Sol read-only audit on 2026-08-09.**
 
 ## Current checkpoint
 
-**Milestones 0–5, the publication UX closure work, Capture-to-Develop, and the historical manual-first research capability are complete. Milestone 5.1 reader-first output-contract remediation is independently approved. `BUILD_ROADMAP.md` is the active plan. No Git staging, commit, or push has occurred.**
+**Milestones 0–5, the publication UX closure work, Capture-to-Develop, and the historical manual-first research capability are complete. Milestones 5.1 and 6.2 are independently approved. `BUILD_ROADMAP.md` is the active plan. No Git staging, commit, or push has occurred.**
 
 ### Current delivery snapshot — 2026-08-08
 

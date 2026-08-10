@@ -2,11 +2,13 @@ import { defaultRunBudgetUsd, estimateRouteCost, maximumRunBudgetUsd, modelEnvir
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
 import { ZenMuxChatCompletionsProvider } from "@/ai/zenmux-provider";
-import { assertLinkedinRecoveryPolicy, estimateGroundedEditorialRun, estimateLinkedinCompanionDraft, estimateSingleReviewerRun, plannedRolesForIdea, retryLinkedinCompanionDraft, runGroundedEditorialRun, runSingleReviewer, type GroundedRunResult } from "@/editorial/grounded-run";
+import { assertDerivedShortRecoveryPolicy, estimateDerivedShortDraft, estimateGroundedEditorialRun, estimateSingleReviewerRun, hasSavedBoardReaderContract, plannedRolesForIdea, retryDerivedShortDraft, runGroundedEditorialRun, runSingleReviewer, type GroundedRunResult } from "@/editorial/grounded-run";
 import type { ModelProvider, ModelRequest, ModelResponse, TokenUsage, CostEstimate } from "@/ai/provider";
 import type { AgentRole } from "@/domain/roles";
-import { assertPublishedWorkflowUnlocked, getIdea, proofreadRequestFor, runLiveProofreadForExactReview, type DraftFormat } from "@/lean/service";
+import { assertPublishedWorkflowUnlocked, getIdea, proofreadRequestFor, runLiveProofreadForExactReview, type DraftFormat, type ReaderOutputContract } from "@/lean/service";
 import { requestMaximumUsage } from "@/editorial/grounded-run";
+import { getAppConfig } from "@/config/env";
+import { getContentStatus } from "@/content/loader";
 
 type ReviewerRole = "strategist" | "skeptic" | "editor";
 
@@ -33,8 +35,8 @@ function providerLabel(provider: LiveProviderName) {
 }
 
 function routeForPlannedRole(role: AgentRole) {
-  // A LinkedIn companion is a bounded adaptation of the canonical article,
-  // not a second long-form drafting task. Keep that extra call low-cost.
+  // A derived short post is a bounded adaptation of the article, not a
+  // second long-form drafting task. Keep that extra call low-cost.
   return routeFor(role);
 }
 
@@ -74,68 +76,91 @@ const routedLiveProvider = new RoutedLiveProvider();
  * dispatch; multiplying the maximum by two accounts for its sole permitted
  * same-route structured-output repair.
  */
-export function proofreaderReservationEstimate(body: string, route = routeFor("proofreader")) {
-  const request = proofreadRequestFor(body, route.provider, route.model).request;
+export function proofreaderReservationEstimate(body: string, readerContract: ReaderOutputContract, route = routeFor("proofreader")) {
+  const request = proofreadRequestFor(body, route.provider, route.model, readerContract).request;
   return estimateRouteCost(route, requestMaximumUsage(request)).totalCost * 2;
 }
 
 export function liveRunPreview(ideaId: string) {
+  // A missing local index is an expected setup state after a synthetic-data
+  // reset. Keep the Board setup visible and disable only the actions that
+  // truly need the source; do not throw from a page-load preview.
+  const sourceStatus = getContentStatus(getAppConfig());
+  const bokReady = sourceStatus.bok.status === "ready";
+  const voiceReady = sourceStatus.voiceSkill.status === "ready";
+  const hasSavedBoardContract = hasSavedBoardReaderContract(ideaId);
+  const boardUnavailableReason = !bokReady
+    ? "The Editorial Board needs a ready Book of Knowledge index. Index the configured source before starting a Board run."
+    : !voiceReady
+      ? "The Editorial Board needs a ready voice reference. Index the configured source before starting a Board run."
+      : undefined;
   const route = routeFor("strategist");
   const reviewerRerunRoutes = {
     medium: routeFor("strategist", "medium"),
     high: routeFor("strategist", "high"),
   } as const;
-  const estimatedCost = estimateGroundedEditorialRun(
-    ideaId,
-    routedLiveProvider,
-    (role) => routeForPlannedRole(role).model,
-    (role) => routeForPlannedRole(role).provider,
-    (role) => routeForPlannedRole(role).tier,
-  );
-  const reviewerRerunEstimatedCost = estimateSingleReviewerRun(
-    ideaId,
-    routedLiveProvider,
-    reviewerRerunRoutes.medium.model,
-    reviewerRerunRoutes.medium.provider,
-    reviewerRerunRoutes.medium.tier,
-  );
-  const highReviewerRerunEstimatedCost = estimateSingleReviewerRun(
-    ideaId,
-    routedLiveProvider,
-    reviewerRerunRoutes.high.model,
-    reviewerRerunRoutes.high.provider,
-    reviewerRerunRoutes.high.tier,
-  );
-  // A stale article needs the configured low-cost Final Drafter route. A
+  const estimatedCost = bokReady && voiceReady
+    ? estimateGroundedEditorialRun(
+        ideaId,
+        routedLiveProvider,
+        (role) => routeForPlannedRole(role).model,
+        (role) => routeForPlannedRole(role).provider,
+        (role) => routeForPlannedRole(role).tier,
+      )
+    : 0;
+  const reviewerRerunEstimatedCost = bokReady
+    ? estimateSingleReviewerRun(
+        ideaId,
+        routedLiveProvider,
+        reviewerRerunRoutes.medium.model,
+        reviewerRerunRoutes.medium.provider,
+        reviewerRerunRoutes.medium.tier,
+      )
+    : 0;
+  const highReviewerRerunEstimatedCost = bokReady
+    ? estimateSingleReviewerRun(
+        ideaId,
+        routedLiveProvider,
+        reviewerRerunRoutes.high.model,
+        reviewerRerunRoutes.high.provider,
+        reviewerRerunRoutes.high.tier,
+      )
+    : 0;
+  // A stale derived short post needs the configured low-cost Final Drafter route. A
   // higher tier is an explicit author-selected recovery escalation only.
-  const linkedinRefreshRoute = routeForPlannedRole("final_drafter");
-  const linkedinRefreshEstimatedCost = estimateLinkedinCompanionDraft(
-    ideaId,
-    routedLiveProvider,
-    linkedinRefreshRoute.model,
-    linkedinRefreshRoute.provider,
-    linkedinRefreshRoute.tier,
-  );
-  const linkedinEscalationRoute = routeFor("final_drafter", "medium");
-  const linkedinEscalationEstimatedCost = estimateLinkedinCompanionDraft(
-    ideaId,
-    routedLiveProvider,
-    linkedinEscalationRoute.model,
-    linkedinEscalationRoute.provider,
-    linkedinEscalationRoute.tier,
-  );
+  const derivedShortRefreshRoute = routeForPlannedRole("final_drafter");
+  const derivedShortRefreshEstimatedCost = voiceReady
+    ? estimateDerivedShortDraft(
+        ideaId,
+        routedLiveProvider,
+        derivedShortRefreshRoute.model,
+        derivedShortRefreshRoute.provider,
+        derivedShortRefreshRoute.tier,
+      )
+    : 0;
+  const derivedShortEscalationRoute = routeFor("final_drafter", "medium");
+  const derivedShortEscalationEstimatedCost = voiceReady
+    ? estimateDerivedShortDraft(
+        ideaId,
+        routedLiveProvider,
+        derivedShortEscalationRoute.model,
+        derivedShortEscalationRoute.provider,
+        derivedShortEscalationRoute.tier,
+      )
+    : 0;
   const plannedRoutes = plannedRolesForIdea(ideaId);
   const proofreaderRoute = routeFor("proofreader");
   const previewIdea = getIdea(ideaId);
+  const readerContract = previewIdea?.grounding?.readerContract;
   const proofreaderEstimates = {
-    linkedin: previewIdea?.draft && !previewIdea.canonicalDraft
-      ? proofreaderReservationEstimate(previewIdea.draft.body, proofreaderRoute)
+    short: previewIdea?.shortPost
+      && readerContract ? proofreaderReservationEstimate(previewIdea.shortPost.body, readerContract, proofreaderRoute)
       : 0,
-    canonical: previewIdea?.canonicalDraft
-      ? proofreaderReservationEstimate(previewIdea.canonicalDraft.body, proofreaderRoute)
+    article: previewIdea?.article
+      && readerContract ? proofreaderReservationEstimate(previewIdea.article.body, readerContract, proofreaderRoute)
       : 0,
-    linkedin_companion: previewIdea?.linkedinCompanion
-      ? proofreaderReservationEstimate(previewIdea.linkedinCompanion.body, proofreaderRoute)
+    derived_short: previewIdea?.derivedShortPost
+      && readerContract ? proofreaderReservationEstimate(previewIdea.derivedShortPost.body, readerContract, proofreaderRoute)
       : 0,
   };
   return {
@@ -145,7 +170,8 @@ export function liveRunPreview(ideaId: string) {
     budgetCap: defaultRunBudgetUsd(),
     maximumBudgetCap: maximumRunBudgetUsd(),
     pricingAssumption: route.pricingAssumption,
-    available: plannedRoutes.every((role) => {
+    source: { boardReady: bokReady && voiceReady, unavailableReason: boardUnavailableReason, hasSavedBoardContract },
+    available: bokReady && voiceReady && plannedRoutes.every((role) => {
       const planned = routeForPlannedRole(role);
       return providerAvailable(planned.provider) && Boolean(planned.model);
     }),
@@ -159,7 +185,10 @@ export function liveRunPreview(ideaId: string) {
       model: proofreaderRoute.model || "Model configuration required",
       tier: proofreaderRoute.tier,
       estimates: proofreaderEstimates,
-      available: providerAvailable(proofreaderRoute.provider) && Boolean(proofreaderRoute.model),
+      // A configured provider alone is not enough: live proofread is bound to
+      // the immutable Board manifest and must remain deterministic until one
+      // exists for this idea.
+      available: hasSavedBoardContract && Boolean(readerContract) && providerAvailable(proofreaderRoute.provider) && Boolean(proofreaderRoute.model),
     },
     reviewerReruns: {
       medium: {
@@ -167,29 +196,29 @@ export function liveRunPreview(ideaId: string) {
         model: reviewerRerunRoutes.medium.model,
         tier: reviewerRerunRoutes.medium.tier,
         estimatedCost: reviewerRerunEstimatedCost,
-        available: providerAvailable(reviewerRerunRoutes.medium.provider) && Boolean(reviewerRerunRoutes.medium.model),
+        available: hasSavedBoardContract && bokReady && providerAvailable(reviewerRerunRoutes.medium.provider) && Boolean(reviewerRerunRoutes.medium.model),
       },
       high: {
         provider: reviewerRerunRoutes.high.provider,
         model: reviewerRerunRoutes.high.model,
         tier: reviewerRerunRoutes.high.tier,
         estimatedCost: highReviewerRerunEstimatedCost,
-        available: providerAvailable(reviewerRerunRoutes.high.provider) && Boolean(reviewerRerunRoutes.high.model),
+        available: hasSavedBoardContract && bokReady && providerAvailable(reviewerRerunRoutes.high.provider) && Boolean(reviewerRerunRoutes.high.model),
       },
     },
-    linkedinRefresh: {
-      provider: linkedinRefreshRoute.provider,
-      model: linkedinRefreshRoute.model || "Model configuration required",
-      tier: linkedinRefreshRoute.tier,
-      estimatedCost: linkedinRefreshEstimatedCost,
-      available: providerAvailable(linkedinRefreshRoute.provider) && Boolean(linkedinRefreshRoute.model),
+    derivedShortRefresh: {
+      provider: derivedShortRefreshRoute.provider,
+      model: derivedShortRefreshRoute.model || "Model configuration required",
+      tier: derivedShortRefreshRoute.tier,
+      estimatedCost: derivedShortRefreshEstimatedCost,
+        available: hasSavedBoardContract && voiceReady && providerAvailable(derivedShortRefreshRoute.provider) && Boolean(derivedShortRefreshRoute.model),
     },
-    linkedinEscalation: {
-      provider: linkedinEscalationRoute.provider,
-      model: linkedinEscalationRoute.model || "Model configuration required",
-      tier: linkedinEscalationRoute.tier,
-      estimatedCost: linkedinEscalationEstimatedCost,
-      available: providerAvailable(linkedinEscalationRoute.provider) && Boolean(linkedinEscalationRoute.model),
+    derivedShortEscalation: {
+      provider: derivedShortEscalationRoute.provider,
+      model: derivedShortEscalationRoute.model || "Model configuration required",
+      tier: derivedShortEscalationRoute.tier,
+      estimatedCost: derivedShortEscalationEstimatedCost,
+        available: hasSavedBoardContract && voiceReady && providerAvailable(derivedShortEscalationRoute.provider) && Boolean(derivedShortEscalationRoute.model),
     },
   };
 }
@@ -245,7 +274,7 @@ export async function rerunLiveReviewer(
   });
 }
 
-export async function retryLiveLinkedinCompanion(
+export async function retryLiveDerivedShort(
   ideaId: string,
   input: { budgetCap?: number; tier?: "low" | "medium"; escalationReason?: string; recoveryKind?: "refresh" | "retry" | "escalation" } = {},
 ) {
@@ -253,13 +282,13 @@ export async function retryLiveLinkedinCompanion(
   // A medium model is never an implied escalation. Callers must name that
   // governed action and provide its reason explicitly.
   const recoveryKind = input.recoveryKind ?? "retry";
-  const recovery = assertLinkedinRecoveryPolicy({ tier, recoveryKind, escalationReason: input.escalationReason });
+  const recovery = assertDerivedShortRecoveryPolicy({ tier, recoveryKind, escalationReason: input.escalationReason });
   const route = routeFor("final_drafter", tier);
   const model = requireConfiguredModel(route, modelEnvironmentVariable(route));
   const budgetCap = input.budgetCap ?? defaultRunBudgetUsd();
-  if (!Number.isFinite(budgetCap) || budgetCap <= 0) throw new Error("A positive per-run budget cap is required for the LinkedIn retry.");
-  if (budgetCap > maximumRunBudgetUsd()) throw new Error(`The LinkedIn retry cap cannot exceed $${maximumRunBudgetUsd().toFixed(2)}.`);
-  return retryLinkedinCompanionDraft(ideaId, routedLiveProvider, {
+  if (!Number.isFinite(budgetCap) || budgetCap <= 0) throw new Error("A positive per-run budget cap is required for the derived-short retry.");
+  if (budgetCap > maximumRunBudgetUsd()) throw new Error(`The derived-short retry cap cannot exceed $${maximumRunBudgetUsd().toFixed(2)}.`);
+  return retryDerivedShortDraft(ideaId, routedLiveProvider, {
     model,
     providerName: route.provider,
     tier: route.tier,

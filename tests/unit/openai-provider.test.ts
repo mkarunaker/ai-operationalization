@@ -77,7 +77,7 @@ describe("OpenAIResponsesProvider", () => {
     ).rejects.toThrow("OpenAI request failed (400; invalid_api_key).");
   });
 
-  it("uses the narrow final-draft schema for a LinkedIn adaptation", async () => {
+  it("uses the narrow final-draft schema for a derived short output", async () => {
     let request: Request | undefined;
     const provider = new OpenAIResponsesProvider({
       apiKey: "test-key-not-a-real-secret",

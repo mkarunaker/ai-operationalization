@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { boardRoleStageStatus, companionCreationStageStatus, isBoardReviewIncomplete, primaryDraftCreationStageStatus, reconcileCompanionEditorState, shouldResetCompanionEditor } from "@/editorial/board-status";
+import { boardRoleStageStatus, derivedShortCreationStageStatus, isBoardReviewIncomplete, primaryDraftCreationStageStatus, reconcileDerivedShortEditorState, shouldResetDerivedShortEditor } from "@/editorial/board-status";
 
-describe("persisted Board and companion status", () => {
-  it("never lets companion recovery conceal a failed Board-thinking role", () => {
+describe("persisted Board and derived-short status", () => {
+  it("never lets derived-short recovery conceal a failed Board-thinking role", () => {
     expect(isBoardReviewIncomplete({
       runStatus: "partially_completed",
       failures: [{ role: "skeptic" }, { role: "final_drafter" }],
@@ -15,42 +15,42 @@ describe("persisted Board and companion status", () => {
     })).toBe(true);
   });
 
-  it("updates the controlled companion only when an action replaced it and the author has no unsaved edits", () => {
-    expect(shouldResetCompanionEditor("refresh_live_linkedin_companion", false)).toBe(true);
-    expect(shouldResetCompanionEditor("retry_live_linkedin_companion", true)).toBe(false);
-    expect(shouldResetCompanionEditor("run_final_review", false)).toBe(false);
+  it("updates the controlled derived short post only when an action replaced it and the author has no unsaved edits", () => {
+    expect(shouldResetDerivedShortEditor("refresh_live_derived_short", false)).toBe(true);
+    expect(shouldResetDerivedShortEditor("retry_live_derived_short", true)).toBe(false);
+    expect(shouldResetDerivedShortEditor("run_final_review", false)).toBe(false);
 
-    expect(reconcileCompanionEditorState({
-      action: "refresh_live_linkedin_companion",
+    expect(reconcileDerivedShortEditorState({
+      action: "refresh_live_derived_short",
       hasUnsavedEdits: false,
       currentBody: "Old local text",
-      returnedBody: "Recovered companion text",
-    })).toEqual({ body: "Recovered companion text", dirty: false, replaced: true });
-    expect(reconcileCompanionEditorState({
-      action: "retry_live_linkedin_companion",
+      returnedBody: "Recovered derived short text",
+    })).toEqual({ body: "Recovered derived short text", dirty: false, replaced: true });
+    expect(reconcileDerivedShortEditorState({
+      action: "retry_live_derived_short",
       hasUnsavedEdits: true,
       currentBody: "Unsaved author wording",
-      returnedBody: "Recovered companion text",
+      returnedBody: "Recovered derived short text",
     })).toEqual({ body: "Unsaved author wording", dirty: true, replaced: false });
   });
 
-  it("never represents an unattempted LinkedIn stage as completed", () => {
-    expect(companionCreationStageStatus({
-      isDualOutputPlan: true,
+  it("never represents an unattempted derived-short stage as completed", () => {
+    expect(derivedShortCreationStageStatus({
+      includesDerivedShort: true,
       generatedDraftVersionId: undefined,
-      generatedLinkedinCompanionDraftVersionId: undefined,
+      generatedDerivedShortDraftVersionId: undefined,
       finalDrafterFailed: false,
     })).toBe("not_run");
-    expect(companionCreationStageStatus({
-      isDualOutputPlan: true,
-      generatedDraftVersionId: "draft_canonical",
-      generatedLinkedinCompanionDraftVersionId: undefined,
+    expect(derivedShortCreationStageStatus({
+      includesDerivedShort: true,
+      generatedDraftVersionId: "draft_article",
+      generatedDerivedShortDraftVersionId: undefined,
       finalDrafterFailed: true,
     })).toBe("failed");
-    expect(companionCreationStageStatus({
-      isDualOutputPlan: true,
-      generatedDraftVersionId: "draft_canonical",
-      generatedLinkedinCompanionDraftVersionId: "draft_linkedin",
+    expect(derivedShortCreationStageStatus({
+      includesDerivedShort: true,
+      generatedDraftVersionId: "draft_article",
+      generatedDerivedShortDraftVersionId: "draft_derived_short",
       finalDrafterFailed: false,
     })).toBe("completed");
   });
@@ -61,10 +61,10 @@ describe("persisted Board and companion status", () => {
       synthesizerFailed: true,
       initialDrafterFailed: false,
     })).toBe("not_run");
-    expect(companionCreationStageStatus({
-      isDualOutputPlan: true,
+    expect(derivedShortCreationStageStatus({
+      includesDerivedShort: true,
       generatedDraftVersionId: undefined,
-      generatedLinkedinCompanionDraftVersionId: undefined,
+      generatedDerivedShortDraftVersionId: undefined,
       finalDrafterFailed: false,
     })).toBe("not_run");
   });

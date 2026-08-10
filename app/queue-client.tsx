@@ -6,7 +6,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AppNav } from "./app-nav";
 import { VisualFlow } from "./visual-flow";
 import type { EditorialRunProgress } from "@/editorial/run-progress";
-import { boardRoleStageStatus, companionCreationStageStatus, isBoardReviewIncomplete, primaryDraftCreationStageStatus } from "@/editorial/board-status";
+import { boardRoleStageStatus, derivedShortCreationStageStatus, isBoardReviewIncomplete, primaryDraftCreationStageStatus } from "@/editorial/board-status";
 
 export type Status =
   | "inbox"
@@ -22,7 +22,7 @@ export type Idea = {
   rawNotes: string;
   status: Status;
   priority: number;
-  publicationPlan: string | null;
+  outputShape: "short" | "long" | "long_with_derived_short";
   createdAt: string;
   updatedAt: string;
   themes: Theme[];
@@ -34,9 +34,9 @@ export type Idea = {
     shortFormSource: "standalone" | "derived_from_long"; deliveryHint?: string;
   };
 };
-function outputPreferencesForPlan(plan: string | null): NonNullable<Idea["outputPreferences"]> {
-  const longForm = plan === "medium" || plan === "substack" || plan === "medium_linkedin" || plan === "substack_linkedin";
-  const shortForm = !longForm || plan === "medium_linkedin" || plan === "substack_linkedin";
+function outputPreferencesForShape(shape: Idea["outputShape"]): NonNullable<Idea["outputPreferences"]> {
+  const longForm = shape !== "short";
+  const shortForm = shape !== "long";
   return { longFormEnabled: longForm, longFormMinWords: 800, longFormMaxWords: 1100, shortFormEnabled: shortForm, shortFormMinWords: 180, shortFormMaxWords: 300, shortFormSource: longForm && shortForm ? "derived_from_long" : "standalone" };
 }
 export type Detail = Idea & {
@@ -58,16 +58,16 @@ export type Detail = Idea & {
   }>;
   questions: string[];
   answers: Array<{ question: string; answer: string; choice: string }>;
-  draft?: { id: string; body: string; version: number; createdBy: string };
-  canonicalDraft?: { id: string; body: string; version: number; createdBy: string; approved: boolean };
-  linkedinCompanion?: { id: string; body: string; version: number; createdBy: string; stale: boolean; approved: boolean; sourceCanonicalVersion: number };
+  shortPost?: { id: string; body: string; version: number; createdBy: string };
+  article?: { id: string; body: string; version: number; createdBy: string; approved: boolean };
+  derivedShortPost?: { id: string; body: string; version: number; createdBy: string; stale: boolean; approved: boolean; sourceArticleVersion: number };
   context: Array<{ headingPath: string; sourceLocation: string; text: string }>;
   editorialBrief?: {
     runId: string;
     executionMode?: string;
     runStatus?: "completed" | "partially_completed" | "failed";
     generatedDraftVersionId?: string;
-    generatedLinkedinCompanionDraftVersionId?: string;
+    generatedDerivedShortDraftVersionId?: string;
     runFailures: Array<{ role: string; summary: string }>;
     attemptedRoles: string[];
     thesis: string;
@@ -86,7 +86,7 @@ export type Detail = Idea & {
       details: string[];
     }>;
   };
-  finalReview?: {
+  shortPostFinalReview?: {
     runId: string;
     draftVersionId: string;
     readiness: "ready" | "revise";
@@ -118,11 +118,13 @@ export type Detail = Idea & {
     proofreadCompleted: boolean;
     proofreadStatus?: "completed" | "failed" | "not_run";
   };
-  linkedinCompanionFinalReview?: Detail["finalReview"];
+  articleFinalReview?: Detail["shortPostFinalReview"];
+  derivedShortPostFinalReview?: Detail["shortPostFinalReview"];
   publicationIntegrityWarning?: string;
   publications: Array<{
     draftVersionId: string;
-    platform: "linkedin" | "medium" | "substack";
+    draftFormat: "short" | "article" | "derived_short";
+    channel: "linkedin" | "medium" | "substack";
     publishedAt: string;
     url?: string;
   }>;
@@ -139,7 +141,7 @@ export type Detail = Idea & {
     filePath: string;
     createdAt: string;
   };
-  companionRecovery?: {
+  derivedShortRecovery?: {
     id: string;
     status: "completed" | "failed";
     kind: "refresh" | "retry" | "escalation";
@@ -190,7 +192,7 @@ export type Detail = Idea & {
     draftVersionId?: string;
     bok: { version: string; checksum: string };
     voice: { version: string; checksum: string };
-    readerContract?: { audienceProfile: string; audienceNotes?: string; longForm?: { min: number; max: number }; shortForm?: { min: number; max: number; derived: boolean } };
+    readerContract?: { outputShape: "short" | "long" | "long_with_derived_short"; audienceProfile: string; audienceNotes?: string; longForm?: { min: number; max: number }; shortForm?: { min: number; max: number; derived: boolean } };
     sections: Array<{
       headingPath: string;
       sourceLocation: string;
@@ -223,12 +225,10 @@ const statusLabels: Record<Status, string> = {
   published: "Published",
   parked: "Parked",
 };
-const plans = [
-  { value: "linkedin", label: "LinkedIn only · 1–2 min" },
-  { value: "medium", label: "Medium · 3–4 min" },
-  { value: "substack", label: "Substack · 3–4 min" },
-  { value: "medium_linkedin", label: "Medium + LinkedIn companion" },
-  { value: "substack_linkedin", label: "Substack + LinkedIn companion" },
+const outputShapes = [
+  { value: "short", label: "Short post" },
+  { value: "long", label: "Article" },
+  { value: "long_with_derived_short", label: "Article + derived short post" },
 ];
 type VoiceCheckResult = {
   riskPercent: number;
@@ -476,7 +476,7 @@ export function IdeaDetailView({
   board,
   livePreview,
   liveBoard,
-  retryLinkedinCompanion,
+  retryDerivedShort,
   executionStatus,
   executionProgress,
   rerunReviewer,
@@ -500,13 +500,13 @@ export function IdeaDetailView({
   voiceChecks,
   checkVoice,
   createVisual,
-  companionDraft,
-  setCompanionDraft,
-  saveLinkedinCompanion,
+  derivedShortDraft,
+  setDerivedShortDraft,
+  saveDerivedShort,
   draftDirty = false,
   onDraftChange,
-  companionDirty = false,
-  onCompanionChange,
+  derivedShortDirty = false,
+  onDerivedShortChange,
   saveProvidedResearch,
   createApplicationResearchBrief,
 }: {
@@ -532,22 +532,23 @@ export function IdeaDetailView({
     maximumBudgetCap: number;
     pricingAssumption: string;
     available: boolean;
+    source: { boardReady: boolean; unavailableReason?: string };
     estimatedCost: number;
     planned: Array<{ role: string; provider: string; model: string; tier: "low" | "medium" | "high" }>;
     reviewerReruns: {
       medium: { provider: string; model: string; tier: "medium"; estimatedCost: number; available: boolean };
       high: { provider: string; model: string; tier: "high"; estimatedCost: number; available: boolean };
     };
-    linkedinRefresh: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
-    linkedinEscalation: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
-    proofreader?: { provider: string; model: string; tier: "low" | "medium" | "high"; estimates: { linkedin: number; canonical: number; linkedin_companion: number }; available: boolean };
+    derivedShortRefresh: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
+    derivedShortEscalation: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
+    proofreader?: { provider: string; model: string; tier: "low" | "medium" | "high"; estimates: { short: number; article: number; derived_short: number }; available: boolean };
   };
   liveBoard?: (budgetCap: number) => Promise<void>;
-  retryLinkedinCompanion?: (budgetCap: number, mode: "refresh" | "retry" | "escalation") => Promise<void>;
+  retryDerivedShort?: (budgetCap: number, mode: "refresh" | "retry" | "escalation") => Promise<void>;
   executionStatus?: string;
   executionProgress?: EditorialRunProgress;
   rerunReviewer?: (role: "strategist" | "skeptic" | "editor", budgetCap: number, tier: "medium" | "high") => Promise<void>;
-  finalReview: (format: "linkedin" | "canonical" | "linkedin_companion") => Promise<void>;
+  finalReview: (format: "short" | "article" | "derived_short") => Promise<void>;
   setReviewFindingDisposition?: (reviewRunId: string, findingId: string, disposition: "accepted" | "dismissed" | "revised" | "still_open") => Promise<void>;
   setRecommendationDisposition: (recommendation: string, disposition: "resolved" | "revised" | "superseded" | "still_open") => Promise<void>;
   setEscalationOutcome?: (modelCallId: string, outcome: { outputAccepted?: boolean; influencedFinalDraft?: boolean; materiallyImproved?: boolean }) => Promise<void>;
@@ -556,8 +557,8 @@ export function IdeaDetailView({
   saveDraft: () => Promise<void>;
   publish: (
     event: FormEvent<HTMLFormElement>,
-    format: "linkedin" | "canonical" | "linkedin_companion",
-    platform: "linkedin" | "medium" | "substack",
+    format: "short" | "article" | "derived_short",
+    channel: "linkedin" | "medium" | "substack",
     output: { id: string; body: string; version: number },
   ) => Promise<void>;
   request: (body: unknown) => Promise<Detail>;
@@ -569,16 +570,16 @@ export function IdeaDetailView({
   compactCapture?: boolean;
   showPriority?: boolean;
   reviewHref?: string;
-  voiceChecks?: Partial<Record<"linkedin" | "canonical" | "linkedin_companion", VoiceCheckResult>>;
-  checkVoice?: (format: "linkedin" | "canonical" | "linkedin_companion") => Promise<void>;
+  voiceChecks?: Partial<Record<"short" | "article" | "derived_short", VoiceCheckResult>>;
+  checkVoice?: (format: "short" | "article" | "derived_short") => Promise<void>;
   createVisual?: (template: "flow" | "vertical_path" | "contrast" | "decision_fork") => Promise<void>;
-  companionDraft?: string;
-  setCompanionDraft?: (value: string) => void;
-  saveLinkedinCompanion?: () => Promise<void>;
+  derivedShortDraft?: string;
+  setDerivedShortDraft?: (value: string) => void;
+  saveDerivedShort?: () => Promise<void>;
   draftDirty?: boolean;
   onDraftChange?: (value: string) => void;
-  companionDirty?: boolean;
-  onCompanionChange?: (value: string) => void;
+  derivedShortDirty?: boolean;
+  onDerivedShortChange?: (value: string) => void;
   saveProvidedResearch?: (input: { question: string; timeWindow?: string; evidenceSummary: string; interpretation?: string; sources: Array<{ title: string; sourceUrl?: string; publishedAt?: string; excerpt?: string; label: "fact" | "evidence" | "observation" | "pattern" | "opinion" | "hypothesis" | "recommended_default" }> }) => Promise<void>;
   createApplicationResearchBrief?: (input: { question: string; timeWindow: string }) => Promise<void>;
 }) {
@@ -602,40 +603,42 @@ export function IdeaDetailView({
     idea.visualCompanion?.type === "decision_fork" ? "decision_fork" : idea.visualCompanion?.type === "maturity_path" ? "vertical_path" : idea.visualCompanion?.type === "flow" ? "flow" : "contrast",
   );
   const liveBudget = liveBudgetOverride ?? livePreview?.budgetCap ?? 0.5;
-  const isDualOutputPlan = idea.publicationPlan === "medium_linkedin" || idea.publicationPlan === "substack_linkedin";
+  const includesDerivedShort = idea.outputShape === "long_with_derived_short";
   const failedBoardRoles = idea.editorialBrief?.runFailures ?? [];
   const finalDrafterFailed = failedBoardRoles.some((failure) => failure.role === "final_drafter");
   const synthesizerFailed = failedBoardRoles.some((failure) => failure.role === "synthesizer");
   const initialDrafterFailed = failedBoardRoles.some((failure) => failure.role === "initial_drafter");
   // A scoped retry deliberately preserves the original failed model-call and
-  // review record for provenance. Once it has created a current companion for
-  // the exact canonical draft, that historical failure must not keep the
+  // review record for provenance. Once it has created a current derived short
+  // post for the exact article, that historical failure must not keep the
   // current workflow labelled incomplete after a reload.
-  const linkedinFailureRecovered = Boolean(
-    isDualOutputPlan
+  const derivedShortFailureRecovered = Boolean(
+    includesDerivedShort
       && finalDrafterFailed
-      && idea.linkedinCompanion
-      && !idea.linkedinCompanion.stale
-      && idea.companionRecovery?.status === "completed",
+      && idea.derivedShortPost
+      && !idea.derivedShortPost.stale
+      && idea.derivedShortRecovery?.status === "completed",
   );
-  // A companion recovery only resolves the Final Drafter output. It must
+  // A derived-short recovery only resolves the Final Drafter output. It must
   // never turn an independently failed review/synthesis role into success.
   const reviewIncomplete = Boolean(idea.editorialBrief && isBoardReviewIncomplete({
     runStatus: idea.editorialBrief.runStatus,
     failures: failedBoardRoles,
-    finalDrafterRecovered: linkedinFailureRecovered,
+    finalDrafterRecovered: derivedShortFailureRecovered,
   }));
   const primaryPublished = Boolean(
-    idea.draft && idea.publications.some((publication) => publication.draftVersionId === idea.draft!.id),
+    (idea.shortPost ?? idea.article) && idea.publications.some((publication) => publication.draftVersionId === (idea.shortPost ?? idea.article)!.id),
   );
-  const companionPublished = Boolean(
-    idea.linkedinCompanion && idea.publications.some((publication) => publication.draftVersionId === idea.linkedinCompanion!.id),
+  const derivedShortPublished = Boolean(
+    idea.derivedShortPost && idea.publications.some((publication) => publication.draftVersionId === idea.derivedShortPost!.id),
   );
   const hasPublishedOutput = idea.publications.length > 0;
   const liveRunDisabledReason = hasPublishedOutput
     ? "Editorial Board runs are locked after publication. Create a new revision to develop fresh content."
     : busy
       ? "The current Editorial Board run is still finishing."
+    : !livePreview?.source.boardReady
+      ? livePreview?.source.unavailableReason ?? "The Editorial Board source index is unavailable."
     : !livePreview?.available
       ? "The configured provider or model route is unavailable."
       : !Number.isFinite(liveBudget) || liveBudget <= 0
@@ -652,26 +655,26 @@ export function IdeaDetailView({
     setDraft(nextDraft);
     onDraftChange?.(nextDraft);
   };
-  const proofreaderDisclosure = (format: "linkedin" | "canonical" | "linkedin_companion") => {
+  const proofreaderDisclosure = (format: "short" | "article" | "derived_short") => {
     const proofreader = livePreview?.proofreader;
     if (!proofreader) return "";
     if (!proofreader.available) return " · Editorial assessment + local deterministic proofread · $0.00 · no provider call";
     return ` · Editorial assessment + ${proofreader.model} proofread · est. $${proofreader.estimates[format].toFixed(4)}`;
   };
-  const applyCompanionPolishSuggestion = (current: string, suggested: string) => {
-    const activeCompanion = companionDraft ?? idea.linkedinCompanion?.body ?? "";
-    const start = activeCompanion.indexOf(current);
+  const applyDerivedShortPolishSuggestion = (current: string, suggested: string) => {
+    const activeDerivedShort = derivedShortDraft ?? idea.derivedShortPost?.body ?? "";
+    const start = activeDerivedShort.indexOf(current);
     if (start < 0) return;
-    const nextDraft = `${activeCompanion.slice(0, start)}${suggested}${activeCompanion.slice(start + current.length)}`;
-    setCompanionDraft?.(nextDraft);
-    onCompanionChange?.(nextDraft);
+    const nextDraft = `${activeDerivedShort.slice(0, start)}${suggested}${activeDerivedShort.slice(start + current.length)}`;
+    setDerivedShortDraft?.(nextDraft);
+    onDerivedShortChange?.(nextDraft);
   };
-  const companionNextEdit = (item: string) => {
+  const derivedShortNextEdit = (item: string) => {
     if (/expand the middle/i.test(item))
       return "Add one short sentence after the opening that explains the practical consequence for the reader. Keep it specific to this post rather than repeating the full article framework.";
     if (/example|evidence|uncertainty|boundary/i.test(item))
-      return "Add one concrete, clearly labelled example or state the boundary in plain language. Do not turn the companion into a list of unsupported claims.";
-    return "Make this one change in the LinkedIn version, save it as a new version, then rerun only the LinkedIn review.";
+      return "Add one concrete, clearly labelled example or state the boundary in plain language. Do not turn the derived short post into a list of unsupported claims.";
+    return "Make this one change in the derived short post, save it as a new version, then rerun only its review.";
   };
   const draftReviewLabel = (
     checkStatus?: "pass" | "review" | "needs_revision",
@@ -698,11 +701,11 @@ export function IdeaDetailView({
   };
   const executionSummary = () => {
     if (executionStatus) return executionStatus;
-    if (executionProgress?.kind === "companion_recovery") {
-      if (executionProgress.status === "completed") return "LinkedIn recovery complete";
+    if (executionProgress?.kind === "derived_short_recovery") {
+      if (executionProgress.status === "completed") return "Derived-short recovery complete";
       return executionProgress.recoveryFailure === "persisted_provider_failure"
-        ? "LinkedIn recovery failed after provider dispatch"
-        : "LinkedIn recovery rejected before provider dispatch";
+        ? "Derived-short recovery failed after provider dispatch"
+        : "Derived-short recovery rejected before provider dispatch";
     }
     return executionProgress?.status === "completed"
       ? "Live Editorial Board complete"
@@ -710,7 +713,7 @@ export function IdeaDetailView({
         ? "Live Editorial Board incomplete"
         : "Live Editorial Board stopped";
   };
-  const executionProgressNote = executionProgress?.kind === "companion_recovery"
+  const executionProgressNote = executionProgress?.kind === "derived_short_recovery"
     && executionProgress.recoveryFailure === "pre_dispatch_rejection"
     ? "This recovery was rejected before a provider attempt. No provider failure provenance was created."
     : "These are persisted workflow events, not the models’ private reasoning.";
@@ -724,8 +727,8 @@ export function IdeaDetailView({
     : showPublish && idea.status !== "published"
       ? "final-check"
       : idea.status;
-  const latestFinalDrafterFailure = idea.companionRecovery?.status === "failed"
-    ? idea.companionRecovery.error
+  const latestFinalDrafterFailure = idea.derivedShortRecovery?.status === "failed"
+    ? idea.derivedShortRecovery.error
     : idea.grounding?.calls
     .filter((call) => call.role === "final_drafter" && !call.success && call.errorCategory)
     .at(-1)?.errorCategory;
@@ -759,65 +762,57 @@ export function IdeaDetailView({
             initialDrafterFailed,
           }),
         },
-        ...(isDualOutputPlan ? [{
-          id: "linkedin_companion",
-          label: idea.linkedinCompanion?.stale
-            ? "Create standalone LinkedIn post (created; now stale after article revision)"
-            : "Create standalone LinkedIn post",
-          status: companionCreationStageStatus({
-            isDualOutputPlan,
+        ...(includesDerivedShort ? [{
+          id: "derived_short",
+          label: idea.derivedShortPost?.stale
+            ? "Create derived short post (created; now stale after article revision)"
+            : "Create derived short post",
+          status: derivedShortCreationStageStatus({
+            includesDerivedShort,
             generatedDraftVersionId: idea.editorialBrief.generatedDraftVersionId,
-            generatedLinkedinCompanionDraftVersionId: idea.editorialBrief.generatedLinkedinCompanionDraftVersionId,
+            generatedDerivedShortDraftVersionId: idea.editorialBrief.generatedDerivedShortDraftVersionId,
             finalDrafterFailed,
           })!,
         }] : []),
         { id: "provenance", label: "Save provenance, usage, latency, and cost", status: "completed" as const },
       ]
     : undefined;
-  const primaryFormat: "linkedin" | "canonical" =
-    idea.publicationPlan?.startsWith("medium") || idea.publicationPlan?.startsWith("substack")
-      ? "canonical"
-      : "linkedin";
-  const primaryPlatform: "linkedin" | "medium" | "substack" =
-    primaryFormat === "linkedin"
-      ? "linkedin"
-      : idea.publicationPlan?.startsWith("substack")
-        ? "substack"
-        : "medium";
-  const canonicalArticlePublished = Boolean(
-    idea.canonicalDraft && idea.publications.some((publication) => publication.draftVersionId === idea.canonicalDraft!.id),
+  const primaryFormat: "short" | "article" = idea.outputShape === "short" ? "short" : "article";
+  const primaryOutput = idea.shortPost ?? idea.article;
+  const primaryReview = primaryFormat === "short" ? idea.shortPostFinalReview : idea.articleFinalReview;
+  const articlePublished = Boolean(
+    idea.article && idea.publications.some((publication) => publication.draftVersionId === idea.article!.id),
   );
   const isCurrentVoiceCheck = (check: VoiceCheckResult | undefined, draftId?: string) =>
     Boolean(check && draftId && check.draftVersionId === draftId);
-  const outputsReadyForFinalize = idea.draft && !draftDirty && (
-    !isDualOutputPlan || Boolean(idea.linkedinCompanion && !idea.linkedinCompanion.stale && !companionDirty)
+  const outputsReadyForFinalize = primaryOutput && !draftDirty && (
+    !includesDerivedShort || Boolean(idea.derivedShortPost && !idea.derivedShortPost.stale && !derivedShortDirty)
   );
-  const finalizeBlockedMessage = draftDirty && isDualOutputPlan && companionDirty
-    ? "Save the article and LinkedIn edits before finalizing."
+  const finalizeBlockedMessage = draftDirty && includesDerivedShort && derivedShortDirty
+    ? "Save the article and derived short-post edits before finalizing."
     : draftDirty
       ? "Save the article edit before finalizing."
-      : companionDirty
-        ? "Save the LinkedIn edit before finalizing."
-          : isDualOutputPlan && !idea.linkedinCompanion
-          ? "The LinkedIn companion is missing. Refresh only LinkedIn from the saved article before finalizing."
-          : isDualOutputPlan && idea.linkedinCompanion?.stale
-            ? "The LinkedIn companion belongs to an earlier article version. Refresh only LinkedIn from the saved article before finalizing."
+      : derivedShortDirty
+        ? "Save the derived short-post edit before finalizing."
+          : includesDerivedShort && !idea.derivedShortPost
+          ? "The derived short post is missing. Refresh it from the saved article before finalizing."
+          : includesDerivedShort && idea.derivedShortPost?.stale
+            ? "The derived short post belongs to an earlier article version. Refresh it from the saved article before finalizing."
             : "Save the current output before finalizing.";
   const renderFinalizeOutput = (
     label: string,
-    format: "linkedin" | "canonical" | "linkedin_companion",
-    platform: "linkedin" | "medium" | "substack",
+    format: "short" | "article" | "derived_short",
     output: { id: string; body: string; version: number },
     sourceNote?: string,
   ) => {
     const voiceCheck = voiceChecks?.[format];
     const currentVoiceCheck = isCurrentVoiceCheck(voiceCheck, output.id);
     const publication = idea.publications.find((item) => item.draftVersionId === output.id);
-    const requiresCurrentCompanion = format === "canonical" && isDualOutputPlan && (
-      !idea.linkedinCompanion || idea.linkedinCompanion.stale
+    const requiresCurrentDerivedShort = format === "article" && includesDerivedShort && (
+      !idea.derivedShortPost || idea.derivedShortPost.stale
     );
-    const requiresCanonicalPublication = format === "linkedin_companion" && isDualOutputPlan && !canonicalArticlePublished;
-    const review = format === "linkedin_companion" ? idea.linkedinCompanionFinalReview : idea.finalReview;
+    const requiresArticlePublication = format === "derived_short" && includesDerivedShort && !articlePublished;
+    const review = format === "derived_short" ? idea.derivedShortPostFinalReview : format === "article" ? idea.articleFinalReview : idea.shortPostFinalReview;
     const unresolvedMaterial = review?.proofreadFindings.some((finding) => finding.severity === "material" && !["accepted", "dismissed", "revised"].includes(finding.disposition ?? ""));
     const proofreadStatus = review?.proofreadStatus ?? (review?.proofreadCompleted ? "completed" : "not_run");
     const needsReview = !review || proofreadStatus !== "completed";
@@ -862,17 +857,17 @@ export function IdeaDetailView({
                 </div>
               )}
             </section>
-            <form className="publish" onSubmit={(event) => void publish(event, format, platform, output)}>
+            <form className="publish" onSubmit={(event) => { const channel = String(new FormData(event.currentTarget).get("channel")); if (channel === "linkedin" || channel === "medium" || channel === "substack") void publish(event, format, channel, output); }}>
               <p className="eyebrow">PUBLICATION RECORD</p>
-              <h4>Record this {platform === "linkedin" ? "LinkedIn post" : `${platform === "medium" ? "Medium" : "Substack"} article`} when it is live.</h4>
-              <p className="publication-platform">Platform: {platform === "linkedin" ? "LinkedIn" : platform === "medium" ? "Medium" : "Substack"}</p>
-              {requiresCurrentCompanion && <p className="stale-output">Create a current LinkedIn companion in Write before recording this article publication.</p>}
-              {requiresCanonicalPublication && <p className="stale-output">Record the exact {idea.publicationPlan?.startsWith("substack") ? "Substack" : "Medium"} article publication first. The LinkedIn companion remains editable and can be published after that record is saved.</p>}
+              <h4>Record this exact output when it is live.</h4>
+              <label>Delivery channel <select name="channel" defaultValue="linkedin"><option value="linkedin">LinkedIn</option><option value="medium">Medium</option><option value="substack">Substack</option></select></label>
+              {requiresCurrentDerivedShort && <p className="stale-output">Create a current derived short post in Write before recording this article publication.</p>}
+              {requiresArticlePublication && <p className="stale-output">Record the exact article publication first. The derived short post remains editable and can be published after that record is saved.</p>}
               {needsReview && <p className="stale-output">{proofreadBlocker}</p>}
               {unresolvedMaterial && <p className="stale-output">Resolve or explicitly dismiss every material Proofread and clarity finding before publishing.</p>}
               <label>Publication URL <input name="url" type="url" placeholder="https://… (optional)" /></label>
               <label>Published date <input name="publishedAt" type="datetime-local" /></label>
-              <button disabled={busy || !currentVoiceCheck || requiresCurrentCompanion || requiresCanonicalPublication || needsReview || unresolvedMaterial} type="submit">Mark this version as published</button>
+              <button disabled={busy || !currentVoiceCheck || requiresCurrentDerivedShort || requiresArticlePublication || needsReview || unresolvedMaterial} type="submit">Mark this version as published</button>
             </form>
           </div>
         )}
@@ -1012,8 +1007,10 @@ export function IdeaDetailView({
               {(() => {
                 const preference = idea.outputPreferences ?? { longFormEnabled: false, longFormMinWords: 800, longFormMaxWords: 1100, shortFormEnabled: true, shortFormMinWords: 180, shortFormMaxWords: 300, shortFormSource: "standalone" as const };
                 const setPreference = (next: typeof preference) => {
-                  const platform = idea.publicationPlan?.startsWith("substack") ? "substack" : "medium";
-                  setSelected({ ...idea, outputPreferences: next, publicationPlan: next.longFormEnabled ? next.shortFormEnabled ? `${platform}_linkedin` : platform : "linkedin" });
+                  const outputShape = next.longFormEnabled
+                    ? next.shortFormEnabled && next.shortFormSource === "derived_from_long" ? "long_with_derived_short" : "long"
+                    : "short";
+                  setSelected({ ...idea, outputPreferences: next, outputShape });
                 };
                 return <>
                   <label><input type="checkbox" checked={preference.shortFormEnabled} onChange={(event) => setPreference({ ...preference, shortFormEnabled: event.target.checked, shortFormSource: preference.longFormEnabled && event.target.checked ? "derived_from_long" : "standalone" })} /> Short form</label>
@@ -1025,16 +1022,16 @@ export function IdeaDetailView({
               })()}
             </fieldset>
             <label>
-              Publication plan
+              Output shape
               <select
-                value={idea.publicationPlan ?? "linkedin"}
+                value={idea.outputShape}
                 onChange={(event) =>
-                  setSelected({ ...idea, publicationPlan: event.target.value, outputPreferences: outputPreferencesForPlan(event.target.value) })
+                  setSelected({ ...idea, outputShape: event.target.value as Idea["outputShape"], outputPreferences: outputPreferencesForShape(event.target.value as Idea["outputShape"]) })
                 }
               >
-                {plans.map((plan) => (
-                  <option key={plan.value} value={plan.value}>
-                    {plan.label}
+                {outputShapes.map((shape) => (
+                  <option key={shape.value} value={shape.value}>
+                    {shape.label}
                   </option>
                 ))}
               </select>
@@ -1212,15 +1209,24 @@ export function IdeaDetailView({
                     : "Run the Editorial Board"}
               </h3>
               <p>
-                Upper-bound reservation ${livePreview.estimatedCost.toFixed(4)} · cap ${liveBudget.toFixed(2)} · {livePreview.planned[0]?.model}
+                {livePreview.source.boardReady
+                  ? `Upper-bound reservation $${livePreview.estimatedCost.toFixed(4)} · cap $${liveBudget.toFixed(2)} · ${livePreview.planned[0]?.model}`
+                  : livePreview.source.unavailableReason}
               </p>
             </div>
             <span>{idea.editorialBrief && !reviewIncomplete ? "Run again" : "Review setup"}</span>
           </summary>
           <div className="live-board-controls">
+            {!livePreview.source.boardReady && (
+              <p className="warning" role="status">
+                {livePreview.source.unavailableReason} The free deterministic test uses the same local sources and remains unavailable until they are ready.
+              </p>
+            )}
             {!livePreview.available && (
               <p className="warning">
-                One or more planned provider routes are not configured in the local server environment. Add the required key and model IDs, then restart the app.
+                {livePreview.source.boardReady
+                  ? "One or more planned provider routes are not configured in the local server environment. Add the required key and model IDs, then restart the app."
+                  : "Live provider routing is not evaluated until the required local sources are ready."}
               </p>
             )}
             <div className="run-actions">
@@ -1259,7 +1265,7 @@ export function IdeaDetailView({
                     { id: "editor", label: "Editor review", status: "waiting" },
                     { id: "synthesizer", label: "Synthesize the editorial brief", status: "waiting" },
                     { id: "draft", label: "Create the voice-aligned working draft", status: "waiting" },
-                    ...(isDualOutputPlan ? [{ id: "linkedin_companion", label: "Create standalone LinkedIn post", status: "waiting" as const }] : []),
+                    ...(includesDerivedShort ? [{ id: "derived_short", label: "Create derived short post", status: "waiting" as const }] : []),
                     { id: "provenance", label: "Save provenance, usage, latency, and cost", status: "waiting" },
                   ]).map((stage) => (
                     <li key={stage.id} className={stage.status}>
@@ -1283,7 +1289,7 @@ export function IdeaDetailView({
               </ul>
               <div className="deterministic-test-action">
                 <p>Free local test · $0.00 · no provider call. It does not use or validate the live-run budget cap.</p>
-                <button disabled={busy || hasPublishedOutput} onClick={() => void board()}>
+                <button disabled={busy || hasPublishedOutput || !livePreview.source.boardReady} onClick={() => void board()}>
                   Run free deterministic editorial test
                 </button>
               </div>
@@ -1291,7 +1297,7 @@ export function IdeaDetailView({
           </div>
         </details>
       )}
-      {!showBoard && executionProgress?.kind === "companion_recovery" && executionProgress.status !== "waiting" && (
+      {!showBoard && executionProgress?.kind === "derived_short_recovery" && executionProgress.status !== "waiting" && (
         <details className="editorial-progress" open>
           <summary>{executionSummary()}</summary>
           <p>{executionProgressNote}</p>
@@ -1314,8 +1320,8 @@ export function IdeaDetailView({
             <details className="editorial-progress">
               <summary>Saved run status · {reviewIncomplete ? "incomplete" : "complete"}</summary>
               <p>Saved workflow results, not the model’s private reasoning.</p>
-              {linkedinFailureRecovered && (
-                <p>A later LinkedIn-only recovery completed successfully. The original Board history remains unchanged; this recovery is recorded separately.</p>
+              {derivedShortFailureRecovered && (
+                <p>A later derived-short recovery completed successfully. The original Board history remains unchanged; this recovery is recorded separately.</p>
               )}
               <ol className="run-stage-list">
                 {persistedRunStages.map((stage) => (
@@ -1326,11 +1332,11 @@ export function IdeaDetailView({
                   </li>
                 ))}
               </ol>
-              {idea.companionRecovery && (
+              {idea.derivedShortRecovery && (
                 <p className="grounded-note">
-                  Latest LinkedIn {idea.companionRecovery.kind} · {idea.companionRecovery.status} · {idea.companionRecovery.provider}/{idea.companionRecovery.model}
-                  {idea.companionRecovery.tier ? ` · ${idea.companionRecovery.tier}` : ""} · est. ${idea.companionRecovery.estimatedCost.toFixed(4)}
-                  {idea.companionRecovery.escalationReason ? ` · reason: ${idea.companionRecovery.escalationReason}` : ""}
+                  Latest derived-short {idea.derivedShortRecovery.kind} · {idea.derivedShortRecovery.status} · {idea.derivedShortRecovery.provider}/{idea.derivedShortRecovery.model}
+                  {idea.derivedShortRecovery.tier ? ` · ${idea.derivedShortRecovery.tier}` : ""} · est. ${idea.derivedShortRecovery.estimatedCost.toFixed(4)}
+                  {idea.derivedShortRecovery.escalationReason ? ` · reason: ${idea.derivedShortRecovery.escalationReason}` : ""}
                 </p>
               )}
             </details>
@@ -1347,17 +1353,17 @@ export function IdeaDetailView({
                   ))}
                 </ul>
               ) : <p>The Board review completed, but a later drafting output did not.</p>}
-              {finalDrafterFailed && !linkedinFailureRecovered && retryLinkedinCompanion && livePreview?.linkedinRefresh && (
+              {finalDrafterFailed && !derivedShortFailureRecovered && retryDerivedShort && livePreview?.derivedShortRefresh && (
                 <>
-                  <button className="reviewer-rerun" disabled={busy || !livePreview.linkedinRefresh.available || liveBudget < livePreview.linkedinRefresh.estimatedCost} onClick={() => void retryLinkedinCompanion(liveBudget, "retry")}>
-                    Retry LinkedIn post with the configured low-cost route · {livePreview.linkedinRefresh.model} · conservative est. ${livePreview.linkedinRefresh.estimatedCost.toFixed(4)}
+                  <button className="reviewer-rerun" disabled={busy || !livePreview.derivedShortRefresh.available || liveBudget < livePreview.derivedShortRefresh.estimatedCost} onClick={() => void retryDerivedShort(liveBudget, "retry")}>
+                    Retry derived short post with the configured low-cost route · {livePreview.derivedShortRefresh.model} · conservative est. ${livePreview.derivedShortRefresh.estimatedCost.toFixed(4)}
                   </button>
-                  {livePreview.linkedinEscalation.available && (
-                    <button className="quiet-button" disabled={busy || liveBudget < livePreview.linkedinEscalation.estimatedCost} onClick={() => {
-                      if (window.confirm(`Escalate only the LinkedIn drafter to ${livePreview.linkedinEscalation.model}? This is a separate, explicitly recorded higher-cost retry.`))
-                        void retryLinkedinCompanion(liveBudget, "escalation");
+                  {livePreview.derivedShortEscalation.available && (
+                    <button className="quiet-button" disabled={busy || liveBudget < livePreview.derivedShortEscalation.estimatedCost} onClick={() => {
+                      if (window.confirm(`Escalate only the derived-short drafter to ${livePreview.derivedShortEscalation.model}? This is a separate, explicitly recorded higher-cost retry.`))
+                        void retryDerivedShort(liveBudget, "escalation");
                     }}>
-                      Escalate LinkedIn drafter · {livePreview.linkedinEscalation.model} · conservative est. ${livePreview.linkedinEscalation.estimatedCost.toFixed(4)}
+                      Escalate derived-short drafter · {livePreview.derivedShortEscalation.model} · conservative est. ${livePreview.derivedShortEscalation.estimatedCost.toFixed(4)}
                     </button>
                   )}
                 </>
@@ -1526,6 +1532,18 @@ export function IdeaDetailView({
           </ul>
         </details>
       )}
+      {showDraft && (
+        <section className="reader-contract-panel" aria-label="Current reader preferences">
+          <p className="eyebrow">CURRENT READER PREFERENCES</p>
+          <p><strong>Audience:</strong> {idea.audienceProfileKey ?? "professional"}{idea.audienceNotes ? ` · ${idea.audienceNotes}` : ""}</p>
+          <p><strong>Output shape:</strong> {idea.outputShape.replaceAll("_", " ")}</p>
+          <p>
+            {idea.outputPreferences?.longFormEnabled && `Article: ${idea.outputPreferences.longFormMinWords}–${idea.outputPreferences.longFormMaxWords} words.`}
+            {idea.outputPreferences?.longFormEnabled && idea.outputPreferences?.shortFormEnabled && " "}
+            {idea.outputPreferences?.shortFormEnabled && `Short post: ${idea.outputPreferences.shortFormMinWords}–${idea.outputPreferences.shortFormMaxWords} words${idea.outputPreferences.shortFormSource === "derived_from_long" ? ", derived from the article." : "."}`}
+          </p>
+        </section>
+      )}
       {(showDraft || showPublish) && idea.publicationIntegrityWarning && (
         <p className="stale-output">{idea.publicationIntegrityWarning}</p>
       )}
@@ -1534,30 +1552,30 @@ export function IdeaDetailView({
           This draft came from an incomplete historical Board run. Return to Editorial Board and complete the review before treating it as validated.
         </p>
       )}
-      {showDraft && !idea.draft && (
+      {showDraft && !primaryOutput && (
         <section className="stage-empty-state">
           <h3>No working draft yet.</h3>
           <p>Run the Editorial Board first. A validated brief will create the working draft for this stage.</p>
           <Link className="stage-primary-link" href={`/ideas/${idea.id}/board`}>Open Editorial Board →</Link>
         </section>
       )}
-      {showDraft && idea.draft && (
+      {showDraft && primaryOutput && (
         <section className="draft-editor">
           <p className="eyebrow">
-            {idea.draft.createdBy === "initial_drafter"
-              ? idea.grounding?.draftVersionId === idea.draft.id
+            {primaryOutput.createdBy === "initial_drafter"
+              ? idea.grounding?.draftVersionId === primaryOutput.id
                 ? "GROUNDED WORKING DRAFT"
                 : "SIMULATED WORKING DRAFT"
-              : "WORKING DRAFT"} · VERSION {idea.draft.version}
+              : "WORKING OUTPUT"} · VERSION {primaryOutput.version}
           </p>
-          {idea.draft.createdBy === "initial_drafter" && idea.grounding?.draftVersionId === idea.draft.id && (
+          {primaryOutput.createdBy === "initial_drafter" && idea.grounding?.draftVersionId === primaryOutput.id && (
             <p className="grounded-note">
               {idea.grounding.executionMode === "live"
                 ? "Live grounded output. The selected BOK passages, configured voice skill, provider, model, usage, and pricing assumption are recorded below."
                 : "Grounded deterministic test output. The selected BOK passages and configured voice skill are recorded below; no paid model was called."}
             </p>
           )}
-          {idea.draft.createdBy === "initial_drafter" && !idea.grounding && (
+          {primaryOutput.createdBy === "initial_drafter" && !idea.grounding && (
             <p className="simulation-note">
               This starter text is deterministic test content. BOK and kk-spoken-voice have not been applied.
             </p>
@@ -1580,63 +1598,63 @@ export function IdeaDetailView({
           </div>
         </section>
       )}
-      {showDraft && (idea.publicationPlan === "medium_linkedin" || idea.publicationPlan === "substack_linkedin") && idea.canonicalDraft && (
+      {showDraft && includesDerivedShort && idea.article && (
         <section className="publication-outputs">
           <p className="eyebrow">PUBLICATION OUTPUTS</p>
-          <h3>Article first, then its LinkedIn companion.</h3>
-          <p className="publication-output-intro">The {idea.publicationPlan.startsWith("medium") ? "Medium" : "Substack"} article is version {idea.canonicalDraft.version}. The Editorial Board generates its LinkedIn version in the same run.</p>
-          {!idea.linkedinCompanion || idea.linkedinCompanion.stale ? (
+          <h3>Article first, then its derived short post.</h3>
+          <p className="publication-output-intro">The article is version {idea.article.version}. The Editorial Board generates its derived short post in the same run.</p>
+          {!idea.derivedShortPost || idea.derivedShortPost.stale ? (
             <div className="stale-output">
               <p>
-                {idea.linkedinCompanion
-                  ? "The LinkedIn version belongs to an earlier article version. Refresh only the LinkedIn post from this saved article; the Board brief and article will remain unchanged."
-                  : "This older Board run did not create a LinkedIn version. Generate only the LinkedIn post from this saved article; the Board brief and article will remain unchanged."}
+                {idea.derivedShortPost
+                  ? "The derived short post belongs to an earlier article version. Refresh it from this saved article; the Board brief and article will remain unchanged."
+                  : "This older Board run did not create a derived short post. Generate it from this saved article; the Board brief and article will remain unchanged."}
               </p>
-              {retryLinkedinCompanion && livePreview?.linkedinRefresh && (
+              {retryDerivedShort && livePreview?.derivedShortRefresh && (
                 <button
                   className="reviewer-rerun"
-                  disabled={busy || companionDirty || !livePreview.linkedinRefresh.available || liveBudget < livePreview.linkedinRefresh.estimatedCost}
-                  onClick={() => void retryLinkedinCompanion(liveBudget, "refresh")}
+                  disabled={busy || derivedShortDirty || !livePreview.derivedShortRefresh.available || liveBudget < livePreview.derivedShortRefresh.estimatedCost}
+                  onClick={() => void retryDerivedShort(liveBudget, "refresh")}
                 >
-                  Refresh LinkedIn from Article v{idea.canonicalDraft.version} · {livePreview.linkedinRefresh.model} · conservative est. ${livePreview.linkedinRefresh.estimatedCost.toFixed(4)}
+                  Refresh derived short post from Article v{idea.article.version} · {livePreview.derivedShortRefresh.model} · conservative est. ${livePreview.derivedShortRefresh.estimatedCost.toFixed(4)}
                 </button>
               )}
-              {companionDirty && <p>Save or discard the unsaved LinkedIn edits before replacing this stale version.</p>}
-              {livePreview?.linkedinRefresh && liveBudget < livePreview.linkedinRefresh.estimatedCost && (
-                <p>Increase the run cap to at least the conservative reservation of ${livePreview.linkedinRefresh.estimatedCost.toFixed(4)} to refresh only this LinkedIn post.</p>
+              {derivedShortDirty && <p>Save or discard the unsaved derived short-post edits before replacing this stale version.</p>}
+              {livePreview?.derivedShortRefresh && liveBudget < livePreview.derivedShortRefresh.estimatedCost && (
+                <p>Increase the run cap to at least the conservative reservation of ${livePreview.derivedShortRefresh.estimatedCost.toFixed(4)} to refresh this derived short post.</p>
               )}
             </div>
           ) : (
             <article className="companion-ready">
               <div className="companion-heading">
                 <div>
-                  <p className="eyebrow">LINKEDIN COMPANION · VERSION {idea.linkedinCompanion.version}</p>
+                  <p className="eyebrow">DERIVED SHORT POST · VERSION {idea.derivedShortPost.version}</p>
                   <h4>Shape the short post in its own voice.</h4>
-                  <p>Based on article version {idea.linkedinCompanion.sourceCanonicalVersion}. Its edits and review stay separate from the article.</p>
+                  <p>Based on article version {idea.derivedShortPost.sourceArticleVersion}. Its edits and review stay separate from the article.</p>
                 </div>
-                <span className={companionDirty ? "output-state stale" : "output-state"}>
-                  {companionDirty ? "Unsaved changes" : `Saved as version ${idea.linkedinCompanion.version}`}
+                <span className={derivedShortDirty ? "output-state stale" : "output-state"}>
+                  {derivedShortDirty ? "Unsaved changes" : `Saved as version ${idea.derivedShortPost.version}`}
                 </span>
               </div>
               <label>
-                <span>LinkedIn post</span>
-                <textarea className="companion-editor" aria-label="LinkedIn companion draft" disabled={companionPublished} value={companionDraft ?? idea.linkedinCompanion.body} onChange={(event) => {
-                  setCompanionDraft?.(event.target.value);
-                  onCompanionChange?.(event.target.value);
+                <span>Derived short post</span>
+                <textarea className="companion-editor" aria-label="Derived short post draft" disabled={derivedShortPublished} value={derivedShortDraft ?? idea.derivedShortPost.body} onChange={(event) => {
+                  setDerivedShortDraft?.(event.target.value);
+                  onDerivedShortChange?.(event.target.value);
                 }} maxLength={80_000} />
               </label>
               <div className="companion-actions">
-                <button disabled={busy || companionPublished} onClick={() => void saveLinkedinCompanion?.()}>Save LinkedIn version</button>
+                <button disabled={busy || derivedShortPublished} onClick={() => void saveDerivedShort?.()}>Save derived short version</button>
                 <p>Save when you complete a meaningful edit. Reviews and final checks apply only to saved versions.</p>
-                {companionPublished && <p className="published-lock-note">This exact LinkedIn version is published and now read-only.</p>}
+                {derivedShortPublished && <p className="published-lock-note">This exact derived short version is published and now read-only.</p>}
               </div>
             </article>
           )}
         </section>
       )}
-      {showDraft && idea.draft && (
+      {showDraft && primaryOutput && (
         <section className="draft-review">
-          <p className="eyebrow">REVIEW THIS DRAFT · VERSION {idea.draft.version}</p>
+          <p className="eyebrow">REVIEW THIS OUTPUT · VERSION {primaryOutput.version}</p>
           <div className="draft-review-heading">
             <div>
               <h3>One focused review before you publish.</h3>
@@ -1653,24 +1671,24 @@ export function IdeaDetailView({
               Unsaved edits are not covered by the current draft review or voice check. Save this output, then review it when useful.
             </p>
           )}
-          {idea.finalReview && (
-            <details className={`final-review-result ${idea.finalReview.readiness}${draftDirty ? " stale" : ""}`}>
+          {primaryReview && (
+            <details className={`final-review-result ${primaryReview.readiness}${draftDirty ? " stale" : ""}`}>
               <summary>
                 {draftDirty
                   ? "Previous review · draft has unsaved changes"
-                  : idea.finalReview.readiness === "ready"
+                  : primaryReview.readiness === "ready"
                     ? "Ready for your final judgment"
                     : "Revise before publishing"}
               </summary>
-              <p>{idea.finalReview.summary}</p>
+              <p>{primaryReview.summary}</p>
               <section className="proofread-findings" aria-label="Proofread and clarity findings">
                 <b>Proofread and clarity</b>
-                {!idea.finalReview.proofreadCompleted ? <p>Proofread and clarity has not produced a validated result for this exact version yet.</p> : idea.finalReview.proofreadFindings.length ? idea.finalReview.proofreadFindings.map((finding) => (
+                {!primaryReview.proofreadCompleted ? <p>Proofread and clarity has not produced a validated result for this exact version yet.</p> : primaryReview.proofreadFindings.length ? primaryReview.proofreadFindings.map((finding) => (
                   <article key={finding.id}>
                     <p><strong>{finding.severity === "material" ? "Material correction" : "Optional suggestion"}</strong> · {finding.category}</p>
                     <p>Current: {finding.current}</p><p>Suggested: {finding.suggestion}</p><small>{finding.rationale}</small>
                     {finding.severity === "material" && setReviewFindingDisposition && <label>Decision
-                      <select value={finding.disposition ?? ""} disabled={busy || primaryPublished} onChange={(event) => { if (event.target.value) void setReviewFindingDisposition(idea.finalReview!.runId, finding.id, event.target.value as "accepted" | "dismissed" | "revised" | "still_open"); }}>
+                      <select value={finding.disposition ?? ""} disabled={busy || primaryPublished} onChange={(event) => { if (event.target.value) void setReviewFindingDisposition(primaryReview.runId, finding.id, event.target.value as "accepted" | "dismissed" | "revised" | "still_open"); }}>
                         <option value="">Resolve or dismiss before Finalize</option><option value="revised">Revised</option><option value="accepted">Accepted</option><option value="dismissed">Dismissed as not applicable</option><option value="still_open">Still open</option>
                       </select>
                     </label>}
@@ -1681,7 +1699,7 @@ export function IdeaDetailView({
                 <div>
                   <b>Editorial assessment · original recommendations</b>
                   <ul>
-                    {idea.finalReview.recommendationStatuses.map((item) => (
+                    {primaryReview.recommendationStatuses.map((item) => (
                       <li key={item.recommendation}>
                         {item.recommendation}
                         <small className="recommendation-disposition">{item.disposition?.replace("_", " ") ?? "not yet recorded"}</small>
@@ -1692,8 +1710,8 @@ export function IdeaDetailView({
                 <div>
                   <b>Addressed</b>
                   <ul>
-                    {idea.finalReview.addressed.length ? (
-                      idea.finalReview.addressed.map((item) => (
+                    {primaryReview.addressed.length ? (
+                      primaryReview.addressed.map((item) => (
                         <li key={item}>{item}</li>
                       ))
                     ) : (
@@ -1704,8 +1722,8 @@ export function IdeaDetailView({
                 <div>
                   <b>Still open</b>
                   <ul>
-                    {idea.finalReview.remaining.length ? (
-                      idea.finalReview.remaining.map((item) => (
+                    {primaryReview.remaining.length ? (
+                      primaryReview.remaining.map((item) => (
                         <li key={item}>{item}</li>
                       ))
                     ) : (
@@ -1715,13 +1733,13 @@ export function IdeaDetailView({
                 </div>
               </div>
               <p>
-                <strong>Next step:</strong> {idea.finalReview.nextStep}
+                <strong>Next step:</strong> {primaryReview.nextStep}
               </p>
-              {idea.editorialBrief && idea.finalReview.recommendationStatuses.length > 0 && (
+              {idea.editorialBrief && primaryReview.recommendationStatuses.length > 0 && (
                 <details className="recommendation-decisions">
                   <summary>Record your decision on the original recommendations</summary>
                   <p>This is optional. It records your judgment; it does not claim the checklist inferred what you changed.</p>
-                  {idea.finalReview.recommendationStatuses.map((item) => (
+                  {primaryReview.recommendationStatuses.map((item) => (
                     <label key={item.recommendation}>
                       <span>{item.recommendation}</span>
                       <select
@@ -1741,13 +1759,13 @@ export function IdeaDetailView({
                   ))}
                 </details>
               )}
-              {idea.finalReview.readiness === "ready" && Boolean(idea.finalReview.polishSuggestions?.length) && (
+              {primaryReview.readiness === "ready" && Boolean(primaryReview.polishSuggestions?.length) && (
                 <div className="polish-suggestions">
                   <div>
                     <b>Optional final polish</b>
                     <p>These are not publication blockers. Apply only the changes that still sound like you.</p>
                   </div>
-                  {idea.finalReview.polishSuggestions!.map((suggestion) => (
+                  {primaryReview.polishSuggestions!.map((suggestion) => (
                     <article key={suggestion.id}>
                       <div className="polish-comparison">
                         <p><span>Current</span>{suggestion.current}</p>
@@ -1770,7 +1788,7 @@ export function IdeaDetailView({
                 <p className="local-checklist-explainer">
                   This is a local structural checklist, not a second live-model score. Pass means no change was identified; Review is optional judgment; Needs revision identifies a specific open item.
                 </p>
-                {idea.finalReview.reviews.map((review) => (
+                {primaryReview.reviews.map((review) => (
                   <article key={review.role}>
                     <b>
                       {review.role} · {review.status === "failed" ? "failed" : reviewStatusBadge(review.checkStatus, review.details)}
@@ -1786,58 +1804,58 @@ export function IdeaDetailView({
           )}
         </section>
       )}
-      {showDraft && isDualOutputPlan && idea.linkedinCompanion && !idea.linkedinCompanion.stale && (
+      {showDraft && includesDerivedShort && idea.derivedShortPost && !idea.derivedShortPost.stale && (
         <section className="draft-review companion-draft-review">
-          <p className="eyebrow">REVIEW LINKEDIN VERSION · VERSION {idea.linkedinCompanion.version}</p>
+          <p className="eyebrow">REVIEW DERIVED SHORT POST · VERSION {idea.derivedShortPost.version}</p>
           <div className="draft-review-heading">
             <div>
-              <h3>Check the companion as its own post.</h3>
-              <p>Its review stays attached to this exact LinkedIn version.</p>
+              <h3>Check the derived short post as its own output.</h3>
+              <p>Its review stays attached to this exact saved version.</p>
             </div>
-            <button disabled={busy || companionDirty || companionPublished} onClick={() => void finalReview("linkedin_companion")}>
-              Run LinkedIn review{proofreaderDisclosure("linkedin_companion")}
+            <button disabled={busy || derivedShortDirty || derivedShortPublished} onClick={() => void finalReview("derived_short")}>
+              Run derived short-post review{proofreaderDisclosure("derived_short")}
             </button>
           </div>
-          {companionDirty && (
+          {derivedShortDirty && (
             <p className="stale-review-notice">
-              Unsaved LinkedIn edits are not covered by its review or voice check. Save this version first.
+              Unsaved derived short-post edits are not covered by its review or voice check. Save this version first.
             </p>
           )}
-          {idea.linkedinCompanionFinalReview && (
-            <details className={`final-review-result ${idea.linkedinCompanionFinalReview.readiness}${companionDirty ? " stale" : ""}`}>
+          {idea.derivedShortPostFinalReview && (
+            <details className={`final-review-result ${idea.derivedShortPostFinalReview.readiness}${derivedShortDirty ? " stale" : ""}`}>
               <summary>
-                {companionDirty
-                  ? "Previous LinkedIn review · draft has unsaved changes"
-                  : idea.linkedinCompanionFinalReview.readiness === "ready"
-                    ? "LinkedIn version ready for final judgment"
-                    : "Revise LinkedIn version before finalizing"}
+                {derivedShortDirty
+                  ? "Previous derived short-post review · draft has unsaved changes"
+                  : idea.derivedShortPostFinalReview.readiness === "ready"
+                    ? "Derived short post ready for final judgment"
+                    : "Revise derived short post before finalizing"}
               </summary>
-              <p>{idea.linkedinCompanionFinalReview.summary}</p>
-              <section className="proofread-findings" aria-label="LinkedIn proofread and clarity findings">
+              <p>{idea.derivedShortPostFinalReview.summary}</p>
+              <section className="proofread-findings" aria-label="Derived short-post proofread and clarity findings">
                 <b>Proofread and clarity</b>
-                {!idea.linkedinCompanionFinalReview.proofreadCompleted ? <p>Proofread and clarity has not produced a validated result for this exact version yet.</p> : idea.linkedinCompanionFinalReview.proofreadFindings.length ? idea.linkedinCompanionFinalReview.proofreadFindings.map((finding) => (
+                {!idea.derivedShortPostFinalReview.proofreadCompleted ? <p>Proofread and clarity has not produced a validated result for this exact version yet.</p> : idea.derivedShortPostFinalReview.proofreadFindings.length ? idea.derivedShortPostFinalReview.proofreadFindings.map((finding) => (
                   <article key={finding.id}><p><strong>{finding.severity === "material" ? "Material correction" : "Optional suggestion"}</strong> · {finding.category}</p><p>Current: {finding.current}</p><p>Suggested: {finding.suggestion}</p><small>{finding.rationale}</small>
-                    {finding.severity === "material" && setReviewFindingDisposition && <label>Decision <select value={finding.disposition ?? ""} disabled={busy || companionPublished} onChange={(event) => { if (event.target.value) void setReviewFindingDisposition(idea.linkedinCompanionFinalReview!.runId, finding.id, event.target.value as "accepted" | "dismissed" | "revised" | "still_open"); }}><option value="">Resolve or dismiss before Finalize</option><option value="revised">Revised</option><option value="accepted">Accepted</option><option value="dismissed">Dismissed as not applicable</option><option value="still_open">Still open</option></select></label>}
+                    {finding.severity === "material" && setReviewFindingDisposition && <label>Decision <select value={finding.disposition ?? ""} disabled={busy || derivedShortPublished} onChange={(event) => { if (event.target.value) void setReviewFindingDisposition(idea.derivedShortPostFinalReview!.runId, finding.id, event.target.value as "accepted" | "dismissed" | "revised" | "still_open"); }}><option value="">Resolve or dismiss before Finalize</option><option value="revised">Revised</option><option value="accepted">Accepted</option><option value="dismissed">Dismissed as not applicable</option><option value="still_open">Still open</option></select></label>}
                   </article>
                 )) : <p>No proofread or clarity findings for this exact version.</p>}
               </section>
-              {idea.linkedinCompanionFinalReview.remaining.length > 0 && (
+              {idea.derivedShortPostFinalReview.remaining.length > 0 && (
                 <div className="companion-next-edits">
                   <b>Still open</b>
-                  <ul>{idea.linkedinCompanionFinalReview.remaining.map((item) => <li key={item}>{item}</li>)}</ul>
+                  <ul>{idea.derivedShortPostFinalReview.remaining.map((item) => <li key={item}>{item}</li>)}</ul>
                   <div>
                     <b>Suggested next edit</b>
-                    {idea.linkedinCompanionFinalReview.remaining.map((item) => <p key={`next-${item}`}>{companionNextEdit(item)}</p>)}
+                    {idea.derivedShortPostFinalReview.remaining.map((item) => <p key={`next-${item}`}>{derivedShortNextEdit(item)}</p>)}
                   </div>
                 </div>
               )}
-              {idea.linkedinCompanionFinalReview.polishSuggestions?.length ? (
+              {idea.derivedShortPostFinalReview.polishSuggestions?.length ? (
                 <div className="polish-suggestions companion-polish-suggestions">
                   <div>
                     <b>Optional final polish</b>
                     <p>These are not blockers. Apply only what still sounds like you.</p>
                   </div>
-                  {idea.linkedinCompanionFinalReview.polishSuggestions.map((suggestion) => (
+                  {idea.derivedShortPostFinalReview.polishSuggestions.map((suggestion) => (
                     <article key={suggestion.id}>
                       <div className="polish-comparison">
                         <p><span>Current</span>{suggestion.current}</p>
@@ -1846,8 +1864,8 @@ export function IdeaDetailView({
                       <p className="polish-reason">{suggestion.reason}</p>
                       <button
                         type="button"
-                        disabled={busy || companionPublished || !(companionDraft ?? idea.linkedinCompanion?.body ?? "").includes(suggestion.current)}
-                        onClick={() => applyCompanionPolishSuggestion(suggestion.current, suggestion.suggested)}
+                        disabled={busy || derivedShortPublished || !(derivedShortDraft ?? idea.derivedShortPost?.body ?? "").includes(suggestion.current)}
+                        onClick={() => applyDerivedShortPolishSuggestion(suggestion.current, suggestion.suggested)}
                       >
                         Apply this edit
                       </button>
@@ -1857,7 +1875,7 @@ export function IdeaDetailView({
               ) : null}
               <details>
                 <summary>View this review’s checklist details</summary>
-                {idea.linkedinCompanionFinalReview.reviews.map((review) => (
+                {idea.derivedShortPostFinalReview.reviews.map((review) => (
                   <article key={review.role}>
                     <b>{review.role} · {reviewStatusBadge(review.checkStatus, review.details)}</b>
                     <p>{review.summary}</p>
@@ -1869,7 +1887,7 @@ export function IdeaDetailView({
           )}
         </section>
       )}
-      {showDraft && idea.draft && createVisual && (
+      {showDraft && primaryOutput && createVisual && (
         <details className="visual-companion" open={Boolean(idea.visualCompanion)}>
           <summary>
             <span>Visual companion</span>
@@ -1904,8 +1922,8 @@ export function IdeaDetailView({
       {showDraft && (() => {
         const priorReviews = idea.reviewHistory.filter(
           (entry) =>
-            entry.runId !== idea.finalReview?.runId &&
-            entry.runId !== idea.linkedinCompanionFinalReview?.runId &&
+            entry.runId !== primaryReview?.runId &&
+            entry.runId !== idea.derivedShortPostFinalReview?.runId &&
             entry.runId !== idea.editorialBrief?.runId,
         );
         return priorReviews.length > 0 ? (
@@ -1944,7 +1962,7 @@ export function IdeaDetailView({
           </details>
         ) : null;
       })()}
-      {showDraft && idea.draft && (
+      {showDraft && primaryOutput && (
         outputsReadyForFinalize ? (
           <Link className="stage-primary-link" href={`/ideas/${idea.id}/publish`}>
             Continue to Finalize →
@@ -1955,14 +1973,14 @@ export function IdeaDetailView({
           </p>
         )
       )}
-      {showPublish && !idea.draft && (
+      {showPublish && !primaryOutput && (
         <section className="stage-empty-state">
           <h3>There is no saved draft to publish.</h3>
           <p>Create and save a draft before completing the final voice check.</p>
           <Link className="stage-primary-link" href={`/ideas/${idea.id}/draft`}>Open Write →</Link>
         </section>
       )}
-      {showPublish && idea.draft && (
+      {showPublish && primaryOutput && (
         <section className="finalize-panel">
           <div className="finalize-intro">
             <p className="eyebrow">FINALIZE</p>
@@ -1971,20 +1989,18 @@ export function IdeaDetailView({
             <Link className="quiet-button" href={`/ideas/${idea.id}/draft`}>Return to Write</Link>
           </div>
           {renderFinalizeOutput(
-            primaryPlatform === "linkedin" ? "LinkedIn post" : `${primaryPlatform === "medium" ? "Medium" : "Substack"} article`,
+            primaryFormat === "short" ? "Short post" : "Article",
             primaryFormat,
-            primaryPlatform,
-            idea.draft,
+            primaryOutput,
           )}
-          {isDualOutputPlan && idea.linkedinCompanion && !idea.linkedinCompanion.stale && renderFinalizeOutput(
-            "LinkedIn companion",
-            "linkedin_companion",
-            "linkedin",
-            idea.linkedinCompanion,
-            `Derived from article version ${idea.linkedinCompanion.sourceCanonicalVersion}.`,
+          {includesDerivedShort && idea.derivedShortPost && !idea.derivedShortPost.stale && renderFinalizeOutput(
+            "Derived short post",
+            "derived_short",
+            idea.derivedShortPost,
+            `Derived from article version ${idea.derivedShortPost.sourceArticleVersion}.`,
           )}
-          {isDualOutputPlan && (!idea.linkedinCompanion || idea.linkedinCompanion.stale) && (
-            <p className="stale-output">The LinkedIn companion is not current. Return to Editorial Board to generate a new matched pair.</p>
+          {includesDerivedShort && (!idea.derivedShortPost || idea.derivedShortPost.stale) && (
+            <p className="stale-output">The derived short post is not current. Return to Editorial Board to generate a new matched pair.</p>
           )}
           {idea.visualCompanion && (
             <details className="visual-companion" open>
@@ -2002,7 +2018,7 @@ export function IdeaDetailView({
           <p className="grounded-note">
             BOK version {idea.grounding.bok.version} · voice skill version {idea.grounding.voice.version} · {idea.grounding.executionMode === "live" ? "live provider run; per-call usage and pricing assumptions are recorded" : "local deterministic provider · $0.00"}
           </p>
-          {idea.grounding.readerContract && <p className="grounded-note">Reader contract used: {idea.grounding.readerContract.audienceProfile}{idea.grounding.readerContract.audienceNotes ? ` · ${idea.grounding.readerContract.audienceNotes}` : ""} · {idea.grounding.readerContract.longForm && `long ${idea.grounding.readerContract.longForm.min}–${idea.grounding.readerContract.longForm.max} words`} {idea.grounding.readerContract.shortForm && `short ${idea.grounding.readerContract.shortForm.min}–${idea.grounding.readerContract.shortForm.max} words`}</p>}
+          {idea.grounding.readerContract && <p className="grounded-note">Reader contract used: {idea.grounding.readerContract.outputShape.replaceAll("_", " ")} · {idea.grounding.readerContract.audienceProfile}{idea.grounding.readerContract.audienceNotes ? ` · ${idea.grounding.readerContract.audienceNotes}` : ""} · {idea.grounding.readerContract.longForm && `article ${idea.grounding.readerContract.longForm.min}–${idea.grounding.readerContract.longForm.max} words`} {idea.grounding.readerContract.shortForm && `short ${idea.grounding.readerContract.shortForm.min}–${idea.grounding.readerContract.shortForm.max} words`}</p>}
           <p className="provenance-label">Selected BOK passages</p>
           {idea.grounding.sections.map((section) => (
             <article key={`${section.headingPath}-${section.sourceLocation}`}>

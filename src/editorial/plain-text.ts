@@ -9,7 +9,7 @@ const markdownPatterns: Array<{ expression: RegExp; label: string }> = [
   { expression: /\[[^\]]+\]\([^\s)]+\)/, label: "Markdown link" },
 ];
 
-/** Publication copy is deliberately plain prose for direct LinkedIn, Medium, and Substack use. */
+/** Publication copy is deliberately plain prose for direct delivery-channel use. */
 export function publicationMarkdownIssues(text: string) {
   return markdownPatterns
     .filter(({ expression }) => expression.test(text))

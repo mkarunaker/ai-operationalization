@@ -15,7 +15,7 @@ type GroundedMetadata = {
   bokFocus?: string;
   sourceFingerprint?: string;
   factualGaps?: string[];
-  publicationTarget?: "linkedin" | "canonical";
+  publicationTarget?: "short" | "article" | "derived_short";
 };
 
 function words(value: string) {
@@ -93,9 +93,11 @@ function draftOutput(metadata: GroundedMetadata) {
     ? `One useful frame from the selected BOK material is ${plainPublicationText(metadata.bokFocus ?? metadata.bokHeading)}.`
     : "The useful frame is to make the operating consequence visible.";
   const shortBody = `${seed}\n\nA lot of AI discussion still starts with what a model or agent can do. The more useful starting point is the work that needs to become meaningfully better. That shifts the conversation from visible activity to an outcome people can actually observe.\n\n${bok} It does not settle the argument on its own. It gives the question a boundary: what would need to change in the workflow, decision, or customer experience for this to matter?\n\nThat is where a promising idea becomes more than a demo. It becomes a claim that can be tested, improved, or set aside.\n\nWhat is the operating change you would need to see before calling an AI initiative valuable?`;
-  const body = metadata.publicationTarget === "canonical"
-    ? `${shortBody}\n\nFor a longer article, it helps to distinguish a successful technical demonstration from a dependable workflow. The latter has an accountable owner, a clear place in the process, appropriate controls, and a way to see whether the outcome improved. Those conditions do not make every pilot worth scaling. They make the next decision more honest.\n\nThat is also why the first question should not be which platform or agent framework to adopt. It should be what problem is frequent enough, consequential enough, and observable enough to justify changing how people work. Sometimes the answer will be AI. Sometimes a simpler redesign, automation, or decision rule will do more good.\n\nA useful operating discipline is to state the baseline, decide what evidence would justify continuation, and name the conditions that would cause the work to be redesigned or stopped. This keeps curiosity intact without confusing activity with progress.\n\nWhat would make an AI initiative valuable enough to keep operating?`
-    : shortBody;
+  const body = metadata.publicationTarget === "article"
+    ? `${shortBody}\n\nFor a longer article, it helps to distinguish a successful technical demonstration from a dependable workflow. The latter has an accountable owner, a clear place in the process, appropriate controls, and a way to see whether the outcome improved. Those conditions do not make every pilot worth scaling. They make the next decision more honest.\n\nThat is also why the first question should not be which tool or agent framework to adopt. It should be what problem is frequent enough, consequential enough, and observable enough to justify changing how people work. Sometimes the answer will be AI. Sometimes a simpler redesign, automation, or decision rule will do more good.\n\nA useful operating discipline is to state the baseline, decide what evidence would justify continuation, and name the conditions that would cause the work to be redesigned or stopped. This keeps curiosity intact without confusing activity with progress.\n\nWhat would make an AI initiative valuable enough to keep operating?`
+    : metadata.publicationTarget === "derived_short"
+      ? `${seed}\n\n${bok} The point is practical: name the outcome, the owner, and the condition that would show the work is improving.\n\nWhat would you check before scaling it?`
+      : shortBody;
   return {
     role: metadata.agentRole === "final_drafter" ? "final_drafter" : "initial_drafter",
     body,

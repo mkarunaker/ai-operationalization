@@ -42,7 +42,8 @@ The dates below are planning targets, not promises: each milestone still stops f
 | Reader-first distribution-neutral reset: Milestone 6.2 | Independently approved | 2026-08-09 | Sol approved the reader/output contract, immutable proofread and scoped boundaries, compatibility migration, and Finalize lifecycle after read-only review |
 | Full visual companions: Milestone 7 | Planned | 2026-08-14 | Approved, traceable visuals; any delivery-channel choice remains a Finalize concern |
 | Learning loop: Milestone 8 | Planned | 2026-08-16 | Manual feedback, follow-up ideas, and Notebook history; no Notebook-to-Inbox flow in current scope |
-| Local personal MVP release gate: Milestone 9 | Planned | 2026-08-19 | Security, recovery, production-mode validation, and honest technical-debt handoff |
+| Local configuration and settings: Milestone 9 | Planned | 2026-08-19 | One safe home for themes, non-secret model/cost policy, source readiness, and other local configuration; no authoring-workflow coupling |
+| Local personal MVP release gate: Milestone 10 | Planned | 2026-08-22 | Security, recovery, production-mode validation, and honest technical-debt handoff |
 
 Milestone 5.1 is independently approved following Sol's read-only review. The completed manual-first research work remains valid historical delivery evidence; later milestones still require their own acceptance, validation, and audit gates.
 
@@ -601,6 +602,28 @@ Create direct failing regressions first for each acceptance criterion. Use non-d
 
 The independent Sol read-only audit approved this milestone on 2026-08-09 with no blockers. `docs/MILESTONE_6_2_BLOCKER_MATRIX.md` maps each acceptance invariant to its implementation boundary, adversarial fixture, and direct unit, integration, migration, or browser regression. `IMPLEMENTATION_STATUS.md` contains the command-derived validation evidence and the deliberately limited synthetic-database reset record.
 
+### Post-approval UX closure — approved by independent Sol read-only audit on 2026-08-10
+
+This is a bounded usability and observability pass before Milestone 7, not a replacement for the approved reader-first contract. It must preserve all existing exact-version, published-history, route-safety, immutable-provenance, and provider-boundary behavior.
+
+#### Scope and invariants
+
+- **Capture and queue:** keep optional working title subordinate to the thought capture, align the thought-capture editor with the Save action on wide screens, keep the theme-add affordance compact, and permit a confirmed deletion from the Ideas list only for an unpublished idea. The existing atomic service and route guard remain authoritative; a published item must never expose this action.
+- **Develop:** render original capture as a compact disclosure; keep the compact unpublished-only delete control beside Park; present reader and output choices as two clear, non-duplicated sections with visible breathing room; render the optional audience note as an ordinary bounded input; keep the output-shape selector and its active range controls on one wide-screen row; and describe research as either author-provided evidence or a local planning brief. Research-path choices must be simple stacked radio rows—not oversized cards—while clearly numbered field groups distinguish the question, evidence, interpretation, and source notes. Neither path may browse, call a provider, or blend evidence with interpretation.
+- **Editorial Board:** retain all persisted stage truth, but render a saved terminal run summary compactly. It must still state that the events are workflow records rather than private model reasoning.
+- **Write:** use the same bounded editor card for article and derived short post; attach each exact-output review action to that editor; prevent long text from overflowing its editor, heading, or action row; show assigned proofread model/cost disclosure as adjacent text rather than in the control label; show the saved Board reader contract separately from current Develop preferences; and keep the visible review result flat apart from its one optional local-checklist disclosure.
+- **Visual and Finalize:** render the on-page visual exclusively from the same escaped deterministic SVG source used for export, then make the user download a local PNG rendition of that exact image. Store generated local SVG artifacts beneath the configured, ignored `visuals/` root—not beside SQLite application data—with one readable title prefix capped at 20 characters plus a collision-resistant idea-ID suffix per idea. Keep all four visual-shape choices together in one desktop row, with responsive wrapping only on narrower screens. Every template must use bounded panels and line-limited text so titles, notes, outcomes, and footer never collide or escape the visual: character wrapping controls vertical lines, and every dynamic SVG line must carry a physical `textLength` bound no wider than its rendered region. Use connected branches rather than dangling paths. Put Refresh and Download PNG together. In Finalize, render the visual at a smaller readable scale, make Return to Write an unmistakable nearby navigation control, and render pending and recorded publication records in one shared component shape. Disabled publication guidance must state only the current concise next action while server-side review, proofread, material-finding, and article-first gates remain intact. A recorded publication displays only dynamic local delivery channel, URL (or its absence), and date for that exact output.
+- **Usage ledger:** show only aggregate, persisted per-idea telemetry—attempt count, total tokens, and recorded estimated cost—on both the Ideas list and the individual workspace header. It must label cost as an estimate rather than an invoice, show deterministic attempts as `$0.00 local`, and never return or render prompts, BOK/voice text, provider request bodies, secrets, or raw errors.
+- **Shell consistency:** restore the shared application navigation on Knowledge sources and widen the normal content columns without changing data or workflow state.
+
+#### Evidence reviewed by the independent UX audit
+
+- Browser coverage must prove reader/output setup labels, a capture editor aligned to its Save action, compact theme addition, compact original capture, adjacent unpublished-only deletion/Park controls, bounded audience input, same-row active output ranges, spaced Develop sections, stacked radio research paths with numbered field groups, queue-level confirmed deletion, shared Knowledge-sources navigation, matched non-overflowing Write editors, per-editor review controls with adjacent disclosure, a flat review result, compact saved Board status, and the ledger’s visible safe aggregate fields. It must also prove that all four visual choices share a desktop row, each rendered visual is an SVG data asset with bounded template regions, the Finalize visual is reduced to its documented scale, its user download is PNG from that exact asset, Refresh/Download are together, Return to Write is a visible control, concise disabled-publication guidance preserves each server gate, and article/derived-short publication records render the exact dynamic channel/URL/date independently.
+- Service coverage must prove queue and detail ledger values agree, deterministic runs record zero cost, and the returned ledger contains no source/prompt fields. It must also prove newly created and refreshed synthetic visual artifacts remain inside the configured visual root and never write beside the test database.
+- The complete established local gate must pass with providers disabled and migrations validate-only. The independent Sol review inspected this UX closure alongside the current diff and did not treat aggregate green counts as proof. It approved the closure with no blockers; lexical visual-root containment without a symlink-escape fixture remains a non-blocking documented limitation.
+
+Local command-derived evidence: TypeScript, ESLint, 24 unit/integration files / 91 tests, 18 validate-only migrations, production build, 16 deterministic production-mode browser flows, 132-file secret scan, zero-vulnerability dependency audit, and both diff checks passed. No provider was called and no meaningful local data migration was applied.
+
 ---
 
 ## Milestone 7 — Optional visual companions
@@ -664,7 +687,37 @@ Demonstrate publication feedback, a follow-up idea, and Notebook history. Stop.
 
 ---
 
-## Milestone 9 — Security, recovery, and release gate
+## Milestone 9 — Local configuration and settings
+
+### Objective
+
+Move local configuration out of authoring screens into one safe, understandable Settings surface without weakening the server-side routing, provenance, or source-boundary guarantees.
+
+### Scope
+
+- Create a dedicated Settings area for locally managed configuration rather than continuing to add theme, source-readiness, model-policy, budget, or default-preference controls to Capture, Develop, Board, or Write.
+- Move theme management there first: create, rename, reorder, archive, and restore local themes while preserving the historical labels already attached to ideas and runs.
+- Surface source and index readiness as metadata only: configured-source labels, readiness, index version, and safe remediation guidance. Never render BOK, voice, Notebook, or private-source contents from Settings.
+- Provide a guarded local policy surface for permitted provider/model routes, tiers, finite non-negative pricing assumptions, and per-run cost caps. Credentials, `.env` values, provider request bodies, and raw adapter errors remain server-only and must never be read or displayed.
+- Consolidate other genuine local defaults and operational flags only when they have a named owner, strict validation, audit history, and no conflict with the immutable reader contract captured by a saved Board run.
+- Keep active authoring controls focused on the current idea. Settings changes affect only future work unless an explicit, versioned action says otherwise; they must never rewrite historical prompts, provenance, output versions, reviews, proofreads, or publication records.
+
+### Acceptance criteria
+
+- Themes are managed from Settings and existing selected-theme history remains readable after rename, archive, restore, and reload.
+- A configuration change is validated atomically, recorded with its non-secret effective values, and either produces a coherent safe state or leaves the previous state untouched.
+- Browser-visible configuration contains no credential, raw source content, provider request, or arbitrary server error. Mutation routes retain loopback, same-origin, JSON-content, authorization, and safe-error protections.
+- Model/tier/pricing choices remain an allowlisted server-side route; every execution still resolves its final provider, model, tier, pricing, and cap on the server and persists the attempted route separately from provider-reported telemetry.
+- Source readiness remains truthful and non-throwing when a local index is missing or stale. Configuration never triggers source indexing, private-file reads, or a provider request as a side effect.
+- Direct regressions cover hostile names and labels, invalid prices/caps/routes, stale settings reload, historical theme preservation, immutable-run isolation, and sanitized route failures. The established local validation gate and a focused independent read-only audit pass before this milestone is accepted.
+
+### Checkpoint report
+
+Demonstrate a safe theme lifecycle, a rejected invalid local policy mutation with no persistence, a truthful source-readiness state, and a future-run-only configuration change. Stop. Do not create a Notebook-to-Inbox workflow as part of this milestone.
+
+---
+
+## Milestone 10 — Security, recovery, and release gate
 
 ### Objective
 
@@ -696,7 +749,7 @@ Security is tested during every milestone; this milestone is the final release a
 
 ### Final release label
 
-Use **“local personal MVP”** only after Milestones 0–5 and 9 pass. Milestones 6–8 may ship afterward without blocking the core writing workflow.
+Use **“local personal MVP”** only after Milestones 0–5 and 10 pass. Milestones 6–9 may ship afterward without blocking the core writing workflow.
 
 ## Execution prompt for GPT-5.6-terra
 

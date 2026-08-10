@@ -33,6 +33,11 @@ export type Idea = {
     shortFormEnabled: boolean; shortFormMinWords: number; shortFormMaxWords: number;
     shortFormSource: "standalone" | "derived_from_long"; deliveryHint?: string;
   };
+  runLedger: {
+    attempts: number;
+    totalTokens: number;
+    estimatedCost: number;
+  };
 };
 function outputPreferencesForShape(shape: Idea["outputShape"]): NonNullable<Idea["outputPreferences"]> {
   const longForm = shape !== "short";
@@ -239,6 +244,8 @@ type VoiceCheckResult = {
 };
 const short = (value: string, size = 140) =>
   value.length > size ? `${value.slice(0, size).trim()}…` : value;
+const localCost = (ledger: Idea["runLedger"]) =>
+  ledger.estimatedCost > 0 ? `est. $${ledger.estimatedCost.toFixed(4)}` : "$0.00 local";
 
 export function QueueClient() {
   const router = useRouter();
@@ -313,6 +320,27 @@ export function QueueClient() {
       setMessage(
         error instanceof Error ? error.message : "Could not add theme.",
       );
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function deleteFromQueue(idea: Idea) {
+    if (!window.confirm(`Delete “${idea.title}” and its local drafts, reviews, and notes? This cannot be undone.`)) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/ideas/${idea.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete_idea" }),
+      });
+      const data = (await response.json()) as { deleted?: boolean; error?: string };
+      if (!response.ok || !data.deleted)
+        throw new Error(data.error ?? "The idea could not be deleted.");
+      setIdeas((current) => current.filter((currentIdea) => currentIdea.id !== idea.id));
+      setMessage(`Deleted “${idea.title}” from this local workspace.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The idea could not be deleted.");
     } finally {
       setBusy(false);
     }
@@ -430,25 +458,39 @@ export function QueueClient() {
           </div>
           {visible.length ? (
             visible.map((idea) => (
-              <Link
-                className="idea-card"
-                key={idea.id}
-                href={`/ideas/${idea.id}`}
-              >
+              <article className="idea-card" key={idea.id}>
+                <Link className="idea-card-link" href={`/ideas/${idea.id}`}>
                 <div>
                   <span className={`status ${idea.status}`}>
                     {statusLabels[idea.status]}
                   </span>
                   <h3>{idea.title}</h3>
                   <p>{short(idea.rawNotes)}</p>
+                  <p className="card-ledger">
+                    {idea.runLedger.attempts
+                      ? `${idea.runLedger.attempts} model ${idea.runLedger.attempts === 1 ? "attempt" : "attempts"} · ${idea.runLedger.totalTokens.toLocaleString()} tokens · ${localCost(idea.runLedger)}`
+                      : "No model attempts yet"}
+                  </p>
                   <div className="card-meta">
                     {idea.themes.map((theme) => (
                       <span key={theme.id}>{theme.name}</span>
                     ))}
                   </div>
                 </div>
-                <b>›</b>
+                  <b aria-hidden="true">›</b>
               </Link>
+                {idea.status !== "published" && (
+                  <button
+                    className="idea-delete"
+                    type="button"
+                    disabled={busy}
+                    aria-label={`Delete ${idea.title}`}
+                    onClick={() => void deleteFromQueue(idea)}
+                  >
+                    Delete
+                  </button>
+                )}
+              </article>
             ))
           ) : (
             <p className="empty">No ideas here yet. Capture one above.</p>
@@ -657,9 +699,11 @@ export function IdeaDetailView({
   };
   const proofreaderDisclosure = (format: "short" | "article" | "derived_short") => {
     const proofreader = livePreview?.proofreader;
-    if (!proofreader) return "";
-    if (!proofreader.available) return " · Editorial assessment + local deterministic proofread · $0.00 · no provider call";
-    return ` · Editorial assessment + ${proofreader.model} proofread · est. $${proofreader.estimates[format].toFixed(4)}`;
+    if (!proofreader) return null;
+    if (!proofreader.available) {
+      return <p className="proofreader-disclosure">Editorial assessment + local deterministic proofread · $0.00 · no provider call</p>;
+    }
+    return <p className="proofreader-disclosure">Editorial assessment + {proofreader.model} proofread · upper-bound reservation est. ${proofreader.estimates[format].toFixed(4)}</p>;
   };
   const applyDerivedShortPolishSuggestion = (current: string, suggested: string) => {
     const activeDerivedShort = derivedShortDraft ?? idea.derivedShortPost?.body ?? "";
@@ -779,6 +823,8 @@ export function IdeaDetailView({
     : undefined;
   const primaryFormat: "short" | "article" = idea.outputShape === "short" ? "short" : "article";
   const primaryOutput = idea.shortPost ?? idea.article;
+  const primaryOutputLabel = primaryFormat === "short" ? "Short post" : "Article";
+  const primaryOutputVersionLabel = primaryFormat === "short" ? "short-post" : "article";
   const primaryReview = primaryFormat === "short" ? idea.shortPostFinalReview : idea.articleFinalReview;
   const articlePublished = Boolean(
     idea.article && idea.publications.some((publication) => publication.draftVersionId === idea.article!.id),
@@ -817,10 +863,10 @@ export function IdeaDetailView({
     const proofreadStatus = review?.proofreadStatus ?? (review?.proofreadCompleted ? "completed" : "not_run");
     const needsReview = !review || proofreadStatus !== "completed";
     const proofreadBlocker = !review
-      ? "Run the combined editorial assessment and proofread for this exact saved output in Write before publishing."
+      ? "Run this saved-output review in Write before publishing."
       : proofreadStatus === "failed"
-        ? "The low-cost proofread failed for this exact saved output. Retry the combined review in Write before publishing."
-        : "The live-required proofread has not produced a validated result for this exact saved output. Retry the combined review in Write before publishing.";
+        ? "Proofread failed for this saved output. Retry its review in Write."
+        : "Live proofread is not complete for this saved output. Retry its review in Write.";
     return (
       <article className="finalize-output" key={output.id}>
         <div className="finalize-output-heading">
@@ -833,9 +879,15 @@ export function IdeaDetailView({
         </div>
         <div className="publication-draft-preview"><p>{output.body}</p></div>
         {publication ? (
-          <p className="published-output-record">
-            Published {new Date(publication.publishedAt).toLocaleDateString()}{publication.url ? ` · ${publication.url}` : ""}
-          </p>
+          <section className="publication-record published-record" aria-label={`${label} publication record`}>
+            <p className="eyebrow">PUBLICATION RECORD</p>
+            <h4>Recorded for this exact output</h4>
+            <dl>
+              <div><dt>Delivery channel</dt><dd>{publication.channel === "linkedin" ? "LinkedIn" : publication.channel === "medium" ? "Medium" : "Substack"}</dd></div>
+              <div><dt>Publication URL</dt><dd>{publication.url || "No URL recorded"}</dd></div>
+              <div><dt>Published date</dt><dd>{new Date(publication.publishedAt).toLocaleString()}</dd></div>
+            </dl>
+          </section>
         ) : (
           <div className="finalize-actions">
             <section className="voice-check">
@@ -857,12 +909,12 @@ export function IdeaDetailView({
                 </div>
               )}
             </section>
-            <form className="publish" onSubmit={(event) => { const channel = String(new FormData(event.currentTarget).get("channel")); if (channel === "linkedin" || channel === "medium" || channel === "substack") void publish(event, format, channel, output); }}>
+            <form className="publication-record publish" aria-label={`${label} publication record`} onSubmit={(event) => { const channel = String(new FormData(event.currentTarget).get("channel")); if (channel === "linkedin" || channel === "medium" || channel === "substack") void publish(event, format, channel, output); }}>
               <p className="eyebrow">PUBLICATION RECORD</p>
               <h4>Record this exact output when it is live.</h4>
               <label>Delivery channel <select name="channel" defaultValue="linkedin"><option value="linkedin">LinkedIn</option><option value="medium">Medium</option><option value="substack">Substack</option></select></label>
-              {requiresCurrentDerivedShort && <p className="stale-output">Create a current derived short post in Write before recording this article publication.</p>}
-              {requiresArticlePublication && <p className="stale-output">Record the exact article publication first. The derived short post remains editable and can be published after that record is saved.</p>}
+              {requiresCurrentDerivedShort && <p className="stale-output">Refresh the derived short post in Write before recording this article.</p>}
+              {requiresArticlePublication && <p className="stale-output">Publish the article before recording this derived short post.</p>}
               {needsReview && <p className="stale-output">{proofreadBlocker}</p>}
               {unresolvedMaterial && <p className="stale-output">Resolve or explicitly dismiss every material Proofread and clarity finding before publishing.</p>}
               <label>Publication URL <input name="url" type="url" placeholder="https://… (optional)" /></label>
@@ -949,9 +1001,20 @@ export function IdeaDetailView({
           </div>
         )}
       </div>
+      <section className="idea-run-ledger" aria-label="Local run ledger">
+        <div>
+          <p className="eyebrow">LOCAL RUN LEDGER</p>
+          <p>Recorded usage across this idea. Cost is a local estimate, not a provider invoice.</p>
+        </div>
+        <dl>
+          <div><dt>Attempts</dt><dd>{idea.runLedger.attempts}</dd></div>
+          <div><dt>Tokens used</dt><dd>{idea.runLedger.totalTokens.toLocaleString()}</dd></div>
+          <div><dt>Recorded cost</dt><dd>{localCost(idea.runLedger)}</dd></div>
+        </dl>
+      </section>
       {compactCapture ? (
         <details className="original original-collapsed">
-          <summary>View original idea</summary>
+          <summary>View original capture</summary>
           <p>{idea.rawNotes}</p>
         </details>
       ) : (
@@ -960,7 +1023,7 @@ export function IdeaDetailView({
           <p>{idea.rawNotes}</p>
         </article>
       )}
-      {showDevelopment && idea.status !== "published" && idea.status !== "parked" && (
+      {showDevelopment && idea.status !== "published" && (
         <div className="lifecycle-actions">
           {idea.status === "inbox" && (
             <button
@@ -971,71 +1034,87 @@ export function IdeaDetailView({
               Develop this idea →
             </button>
           )}
-          <button
-            className="park-idea"
-            disabled={busy}
-            onClick={() => void request({ status: "parked" })}
-          >
-            Park this idea
-          </button>
+          {idea.status !== "parked" && (
+            <button
+              className="park-idea"
+              disabled={busy}
+              onClick={() => void request({ status: "parked" })}
+            >
+              Park this idea
+            </button>
+          )}
+          {deleteIdea && (
+            <button className="quiet-button delete-idea lifecycle-delete" disabled={busy} onClick={() => void deleteIdea()}>
+              Delete this idea
+            </button>
+          )}
         </div>
-      )}
-      {showDevelopment && idea.status !== "published" && deleteIdea && (
-        <button className="quiet-button delete-idea" disabled={busy} onClick={() => void deleteIdea()}>
-          Delete this idea
-        </button>
       )}
       {showDevelopment &&
         ["developing", "ready_to_review", "drafted"].includes(idea.status) && (
           <form className="development" onSubmit={saveDetails}>
             <p className="eyebrow">DEVELOPMENT</p>
-            <label>
-              Primary audience
-              <select value={idea.audienceProfileKey ?? "professional"} onChange={(event) => setSelected({ ...idea, audienceProfileKey: event.target.value as Idea["audienceProfileKey"] })}>
-                <option value="professional">Professionals across AI, data, technology, business, and leadership</option>
-                <option value="executive">Executives and organizational leaders</option>
-                <option value="practitioner">Practitioners building or operating AI</option>
-                <option value="general">Curious general readers</option>
-              </select>
-            </label>
-            <label>
-              Audience note <small>Optional</small>
-              <input value={idea.audienceNotes ?? ""} maxLength={1_000} onChange={(event) => setSelected({ ...idea, audienceNotes: event.target.value })} placeholder="What should this reader already understand?" />
-            </label>
-            <fieldset>
-              <legend>Output shape</legend>
-              {(() => {
-                const preference = idea.outputPreferences ?? { longFormEnabled: false, longFormMinWords: 800, longFormMaxWords: 1100, shortFormEnabled: true, shortFormMinWords: 180, shortFormMaxWords: 300, shortFormSource: "standalone" as const };
-                const setPreference = (next: typeof preference) => {
-                  const outputShape = next.longFormEnabled
-                    ? next.shortFormEnabled && next.shortFormSource === "derived_from_long" ? "long_with_derived_short" : "long"
-                    : "short";
-                  setSelected({ ...idea, outputPreferences: next, outputShape });
-                };
-                return <>
-                  <label><input type="checkbox" checked={preference.shortFormEnabled} onChange={(event) => setPreference({ ...preference, shortFormEnabled: event.target.checked, shortFormSource: preference.longFormEnabled && event.target.checked ? "derived_from_long" : "standalone" })} /> Short form</label>
-                  <label><input type="checkbox" checked={preference.longFormEnabled} onChange={(event) => setPreference({ ...preference, longFormEnabled: event.target.checked, shortFormSource: event.target.checked && preference.shortFormEnabled ? "derived_from_long" : "standalone" })} /> Long form</label>
-                  <label>Short target range <span><input aria-label="Short minimum words" type="number" min="40" max="5000" value={preference.shortFormMinWords} onChange={(event) => setPreference({ ...preference, shortFormMinWords: Number(event.target.value) })} /> to <input aria-label="Short maximum words" type="number" min="40" max="5000" value={preference.shortFormMaxWords} onChange={(event) => setPreference({ ...preference, shortFormMaxWords: Number(event.target.value) })} /> words</span></label>
-                  <label>Long target range <span><input aria-label="Long minimum words" type="number" min="100" max="10000" value={preference.longFormMinWords} onChange={(event) => setPreference({ ...preference, longFormMinWords: Number(event.target.value) })} /> to <input aria-label="Long maximum words" type="number" min="100" max="10000" value={preference.longFormMaxWords} onChange={(event) => setPreference({ ...preference, longFormMaxWords: Number(event.target.value) })} /> words</span></label>
-                  <p>When both are selected, the short output is derived from the exact long-form version.</p>
-                </>;
-              })()}
-            </fieldset>
-            <label>
-              Output shape
-              <select
-                value={idea.outputShape}
-                onChange={(event) =>
-                  setSelected({ ...idea, outputShape: event.target.value as Idea["outputShape"], outputPreferences: outputPreferencesForShape(event.target.value as Idea["outputShape"]) })
-                }
-              >
-                {outputShapes.map((shape) => (
-                  <option key={shape.value} value={shape.value}>
-                    {shape.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <section className="development-section">
+              <div className="development-section-heading">
+                <p className="eyebrow">READER</p>
+                <h3>Who should this help?</h3>
+                <p>Choose the reader first. The note adds context without changing the core point.</p>
+              </div>
+              <div className="development-grid">
+                <label>
+                  Primary audience
+                  <select value={idea.audienceProfileKey ?? "professional"} onChange={(event) => setSelected({ ...idea, audienceProfileKey: event.target.value as Idea["audienceProfileKey"] })}>
+                    <option value="professional">Professionals across AI, data, technology, business, and leadership</option>
+                    <option value="executive">Executives and organizational leaders</option>
+                    <option value="practitioner">Practitioners building or operating AI</option>
+                    <option value="general">Curious general readers</option>
+                  </select>
+                </label>
+                <label className="audience-note-field">
+                  <span>Audience note <small>Optional</small></span>
+                  <input value={idea.audienceNotes ?? ""} maxLength={1_000} onChange={(event) => setSelected({ ...idea, audienceNotes: event.target.value })} placeholder="What should this reader already understand?" />
+                </label>
+              </div>
+            </section>
+            {(() => {
+              const preference = idea.outputPreferences ?? { longFormEnabled: false, longFormMinWords: 800, longFormMaxWords: 1100, shortFormEnabled: true, shortFormMinWords: 180, shortFormMaxWords: 300, shortFormSource: "standalone" as const };
+              const setPreference = (next: typeof preference) => {
+                const outputShape = next.longFormEnabled
+                  ? next.shortFormEnabled && next.shortFormSource === "derived_from_long" ? "long_with_derived_short" : "long"
+                  : "short";
+                setSelected({ ...idea, outputPreferences: next, outputShape });
+              };
+              return <section className="development-section">
+                <div className="development-section-heading">
+                  <p className="eyebrow">OUTPUT</p>
+                  <h3>What should this Board run create?</h3>
+                  <p>Set the shape once, then tune only the ranges that apply.</p>
+                </div>
+                <fieldset className="output-shape-picker">
+                  <div className="output-shape-and-ranges">
+                    <label>
+                      Output shape
+                      <select
+                        value={idea.outputShape}
+                        onChange={(event) => {
+                          const outputShape = event.target.value as Idea["outputShape"];
+                          setSelected({ ...idea, outputShape, outputPreferences: outputPreferencesForShape(outputShape) });
+                        }}
+                      >
+                        {outputShapes.map((shape) => (
+                          <option key={shape.value} value={shape.value}>{shape.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="output-range-grid">
+                      {preference.longFormEnabled && <label>Article target range <span><input aria-label="Long minimum words" type="number" min="100" max="10000" value={preference.longFormMinWords} onChange={(event) => setPreference({ ...preference, longFormMinWords: Number(event.target.value) })} /> to <input aria-label="Long maximum words" type="number" min="100" max="10000" value={preference.longFormMaxWords} onChange={(event) => setPreference({ ...preference, longFormMaxWords: Number(event.target.value) })} /> words</span></label>}
+                      {preference.shortFormEnabled && <label>Short-post target range <span><input aria-label="Short minimum words" type="number" min="40" max="5000" value={preference.shortFormMinWords} onChange={(event) => setPreference({ ...preference, shortFormMinWords: Number(event.target.value) })} /> to <input aria-label="Short maximum words" type="number" min="40" max="5000" value={preference.shortFormMaxWords} onChange={(event) => setPreference({ ...preference, shortFormMaxWords: Number(event.target.value) })} /> words</span></label>}
+                    </div>
+                  </div>
+                  {idea.outputShape === "long_with_derived_short" && <p>When both are selected, the short output is derived from the exact long-form version.</p>}
+                </fieldset>
+              </section>;
+            })()}
             <label>
               Theme(s)
               <details className="theme-dropdown">
@@ -1073,38 +1152,50 @@ export function IdeaDetailView({
               Save development notes
             </button>
           </form>
-        )}
+      )}
       {showDevelopment && ["developing", "ready_to_review", "drafted"].includes(idea.status) && (
         <details className="research-workspace">
-          <summary>Research and evidence <span>Optional</span></summary>
-          <p>Keep sources and your interpretation separate. Research informs your thinking; it does not write the post for you.</p>
-          <label>
-            Research path
-            <select value={researchMode} onChange={(event) => setResearchMode(event.target.value as "provided" | "application")}>
-              <option value="provided">I will add research I found</option>
-              <option value="application">Prepare a bounded research brief</option>
-            </select>
-          </label>
-          <label>
-            Research question
-            <textarea value={researchQuestion} onChange={(event) => setResearchQuestion(event.target.value)} placeholder="What do you want to understand or cross-check?" maxLength={2_000} />
-          </label>
-          <label>
-            Time window
-            <input value={researchWindow} onChange={(event) => setResearchWindow(event.target.value)} placeholder="For example: Last 30 days" maxLength={200} />
-          </label>
-          {researchMode === "provided" ? (
-            <>
+          <summary>Optional research and evidence</summary>
+          <p>Use this only to preserve what you already found or to frame what you want to investigate. It never searches the web or writes the post for you.</p>
+          <fieldset className="research-mode-picker">
+            <legend>Choose one path</legend>
+            <label>
+              <input type="radio" name="research-mode" value="provided" checked={researchMode === "provided"} onChange={() => setResearchMode("provided")} />
+              <span><b>Record sources I already have</b><small>Keep evidence and your interpretation separate.</small></span>
+            </label>
+            <label>
+              <input type="radio" name="research-mode" value="application" checked={researchMode === "application"} onChange={() => setResearchMode("application")} />
+              <span><b>Prepare a local research brief</b><small>Save a bounded question and time window; no search is run.</small></span>
+            </label>
+          </fieldset>
+          <fieldset className="research-field-group">
+            <legend>1. Frame the question</legend>
+            <p>State what the evidence should help you understand. This question is stored with the research, not answered automatically.</p>
+            <div className="research-fields">
               <label>
-                What the sources say
+                Question to guide this research
+                <textarea value={researchQuestion} onChange={(event) => setResearchQuestion(event.target.value)} placeholder="What do you want to understand or cross-check?" maxLength={2_000} />
+              </label>
+              <label>
+                Time window <small>Optional for your own sources</small>
+                <input value={researchWindow} onChange={(event) => setResearchWindow(event.target.value)} placeholder="For example: Last 30 days" maxLength={200} />
+              </label>
+            </div>
+          </fieldset>
+          {researchMode === "provided" ? (
+            <fieldset className="research-field-group">
+              <legend>2. Preserve what you found</legend>
+              <p>Keep source-backed evidence separate from the interpretation you may draw from it.</p>
+              <label>
+                Evidence you found
                 <textarea value={researchEvidence} onChange={(event) => setResearchEvidence(event.target.value)} placeholder="Capture facts, quotations, findings, or uncertainty. Do not add your conclusion here." maxLength={12_000} />
               </label>
               <label>
-                Your interpretation <span>Optional</span>
+                Your takeaway <span>Optional</span>
                 <textarea value={researchInterpretation} onChange={(event) => setResearchInterpretation(event.target.value)} placeholder="What this may mean for your point of view. Keep it separate from evidence." maxLength={8_000} />
               </label>
               <label>
-                Sources <span>Optional</span>
+                Source notes <span>Optional</span>
                 <textarea value={researchSources} onChange={(event) => setResearchSources(event.target.value)} placeholder="One per line: Title | https://source.example | date | short excerpt" maxLength={20_000} />
               </label>
               <button disabled={busy || !researchQuestion.trim() || !researchEvidence.trim()} onClick={() => void saveProvidedResearch?.({
@@ -1117,12 +1208,13 @@ export function IdeaDetailView({
                   return { title, sourceUrl: sourceUrl || undefined, publishedAt: publishedAt || undefined, excerpt: excerpt || undefined, label: "evidence" as const };
                 }).filter((source) => source.title),
               })}>Save research and evidence</button>
-            </>
+            </fieldset>
           ) : (
-            <>
-              <p className="research-disclosure">This creates a zero-cost local research brief. It does not browse the web, claim comprehensive awareness, or add sources automatically.</p>
+            <fieldset className="research-field-group">
+              <legend>2. Save the planning brief</legend>
+              <p className="research-disclosure">This saves a zero-cost local planning brief. It does not browse the web, claim comprehensive awareness, or add sources automatically.</p>
               <button disabled={busy || !researchQuestion.trim() || !researchWindow.trim()} onClick={() => void createApplicationResearchBrief?.({ question: researchQuestion, timeWindow: researchWindow })}>Prepare research brief</button>
-            </>
+            </fieldset>
           )}
           {idea.research.length > 0 && (
             <div className="research-history">
@@ -1317,7 +1409,7 @@ export function IdeaDetailView({
       {showBoard && idea.editorialBrief && (
         <>
           {persistedRunStages && (
-            <details className="editorial-progress">
+            <details className="editorial-progress saved-run-status">
               <summary>Saved run status · {reviewIncomplete ? "incomplete" : "complete"}</summary>
               <p>Saved workflow results, not the model’s private reasoning.</p>
               {derivedShortFailureRecovered && (
@@ -1507,41 +1599,39 @@ export function IdeaDetailView({
           </section>
         </>
       )}
-      {showDraft && idea.editorialBrief && (
-        <section className="reader-contract" aria-label="Reader contract">
-          <p className="eyebrow">READER CONTRACT</p>
-          {idea.grounding?.readerContract && <div className="saved-reader-contract"><b>Saved Board-run contract</b><p>{idea.grounding.readerContract.audienceProfile === "executive" ? "Executives and organizational leaders" : idea.grounding.readerContract.audienceProfile === "practitioner" ? "Practitioners building or operating AI" : idea.grounding.readerContract.audienceProfile === "general" ? "Curious general readers" : "Professionals across AI, data, technology, business, and leadership"}{idea.grounding.readerContract.audienceNotes ? ` · ${idea.grounding.readerContract.audienceNotes}` : ""} · {idea.grounding.readerContract.longForm && `Long ${idea.grounding.readerContract.longForm.min}–${idea.grounding.readerContract.longForm.max} words. `}{idea.grounding.readerContract.shortForm && `Short ${idea.grounding.readerContract.shortForm.min}–${idea.grounding.readerContract.shortForm.max} words.`}</p></div>}
-          <b>Current Develop preferences</b>
-          <h3>{idea.audienceProfileKey === "executive" ? "Executives and organizational leaders" : idea.audienceProfileKey === "practitioner" ? "Practitioners building or operating AI" : idea.audienceProfileKey === "general" ? "Curious general readers" : "Professionals across AI, data, technology, business, and leadership"}</h3>
-          {idea.audienceNotes && <p>{idea.audienceNotes}</p>}
-          <p>
-            {idea.outputPreferences?.longFormEnabled && `Long form: ${idea.outputPreferences.longFormMinWords}–${idea.outputPreferences.longFormMaxWords} words.`}
-            {idea.outputPreferences?.longFormEnabled && idea.outputPreferences?.shortFormEnabled && " "}
-            {idea.outputPreferences?.shortFormEnabled && `Short form: ${idea.outputPreferences.shortFormMinWords}–${idea.outputPreferences.shortFormMaxWords} words${idea.outputPreferences.shortFormSource === "derived_from_long" ? ", derived from this exact article." : "."}`}
-          </p>
-        </section>
-      )}
-      {showDraft && idea.editorialBrief && (
-        <details className="draft-brief-reference">
-          <summary>Editorial brief reference</summary>
-          <p>{idea.editorialBrief.thesis}</p>
-          <ul>
-            {idea.editorialBrief.recommendedChanges.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </details>
-      )}
       {showDraft && (
-        <section className="reader-contract-panel" aria-label="Current reader preferences">
-          <p className="eyebrow">CURRENT READER PREFERENCES</p>
-          <p><strong>Audience:</strong> {idea.audienceProfileKey ?? "professional"}{idea.audienceNotes ? ` · ${idea.audienceNotes}` : ""}</p>
-          <p><strong>Output shape:</strong> {idea.outputShape.replaceAll("_", " ")}</p>
-          <p>
-            {idea.outputPreferences?.longFormEnabled && `Article: ${idea.outputPreferences.longFormMinWords}–${idea.outputPreferences.longFormMaxWords} words.`}
-            {idea.outputPreferences?.longFormEnabled && idea.outputPreferences?.shortFormEnabled && " "}
-            {idea.outputPreferences?.shortFormEnabled && `Short post: ${idea.outputPreferences.shortFormMinWords}–${idea.outputPreferences.shortFormMaxWords} words${idea.outputPreferences.shortFormSource === "derived_from_long" ? ", derived from the article." : "."}`}
-          </p>
+        <section className="write-context" aria-label="Writing setup">
+          <div className="write-context-heading">
+            <p className="eyebrow">WRITING SETUP</p>
+            <p>Keep the saved Board contract distinct from the preferences you can still change in Develop.</p>
+          </div>
+          <div className="write-context-grid">
+            {idea.editorialBrief && (
+              <section className="reader-contract" aria-label="Reader contract">
+                <p className="eyebrow">SAVED FOR THIS BOARD RUN</p>
+                <h2>Saved Board-run contract</h2>
+                {idea.grounding?.readerContract ? <p>{idea.grounding.readerContract.audienceProfile === "executive" ? "Executives and organizational leaders" : idea.grounding.readerContract.audienceProfile === "practitioner" ? "Practitioners building or operating AI" : idea.grounding.readerContract.audienceProfile === "general" ? "Curious general readers" : "Professionals across AI, data, technology, business, and leadership"}{idea.grounding.readerContract.audienceNotes ? ` · ${idea.grounding.readerContract.audienceNotes}` : ""} · {idea.grounding.readerContract.longForm && `Long ${idea.grounding.readerContract.longForm.min}–${idea.grounding.readerContract.longForm.max} words. `}{idea.grounding.readerContract.shortForm && `Short ${idea.grounding.readerContract.shortForm.min}–${idea.grounding.readerContract.shortForm.max} words.`}</p> : <p>No immutable Board contract is available for this historical run.</p>}
+              </section>
+            )}
+            <section className="reader-contract-panel" aria-label="Current reader preferences">
+              <p className="eyebrow">CURRENTLY EDITABLE</p>
+              <h2>Current Develop preferences</h2>
+              <p><strong>Audience:</strong> {idea.audienceProfileKey ?? "professional"}{idea.audienceNotes ? ` · ${idea.audienceNotes}` : ""}</p>
+              <p><strong>Output shape:</strong> {idea.outputShape.replaceAll("_", " ")}</p>
+              <p>
+                {idea.outputPreferences?.longFormEnabled && `Article: ${idea.outputPreferences.longFormMinWords}–${idea.outputPreferences.longFormMaxWords} words.`}
+                {idea.outputPreferences?.longFormEnabled && idea.outputPreferences?.shortFormEnabled && " "}
+                {idea.outputPreferences?.shortFormEnabled && `Short post: ${idea.outputPreferences.shortFormMinWords}–${idea.outputPreferences.shortFormMaxWords} words${idea.outputPreferences.shortFormSource === "derived_from_long" ? ", derived from the article." : "."}`}
+              </p>
+            </section>
+          </div>
+          {idea.editorialBrief && (
+            <details className="draft-brief-reference">
+              <summary>Editorial brief reference</summary>
+              <p>{idea.editorialBrief.thesis}</p>
+              <ul>{idea.editorialBrief.recommendedChanges.map((item) => <li key={item}>{item}</li>)}</ul>
+            </details>
+          )}
         </section>
       )}
       {(showDraft || showPublish) && idea.publicationIntegrityWarning && (
@@ -1560,14 +1650,15 @@ export function IdeaDetailView({
         </section>
       )}
       {showDraft && primaryOutput && (
-        <section className="draft-editor">
-          <p className="eyebrow">
-            {primaryOutput.createdBy === "initial_drafter"
-              ? idea.grounding?.draftVersionId === primaryOutput.id
-                ? "GROUNDED WORKING DRAFT"
-                : "SIMULATED WORKING DRAFT"
-              : "WORKING OUTPUT"} · VERSION {primaryOutput.version}
-          </p>
+        <section className="draft-editor output-editor">
+          <div className="output-editor-heading">
+            <div>
+              <p className="eyebrow">{primaryFormat === "article" ? "ARTICLE" : "SHORT POST"} · VERSION {primaryOutput.version}</p>
+              <h2>{primaryFormat === "article" ? "Article draft" : "Short post draft"}</h2>
+              <p>Edit the exact saved output. Save before running its review or final voice check.</p>
+            </div>
+            <span className={draftDirty ? "output-state stale" : "output-state"}>{primaryPublished ? "Published" : draftDirty ? "Unsaved changes" : `Saved as version ${primaryOutput.version}`}</span>
+          </div>
           {primaryOutput.createdBy === "initial_drafter" && idea.grounding?.draftVersionId === primaryOutput.id && (
             <p className="grounded-note">
               {idea.grounding.executionMode === "live"
@@ -1580,20 +1671,25 @@ export function IdeaDetailView({
               This starter text is deterministic test content. BOK and kk-spoken-voice have not been applied.
             </p>
           )}
-          <textarea
-            value={draft}
-            disabled={primaryPublished}
-            onChange={(event) => {
-              setDraft(event.target.value);
-              onDraftChange?.(event.target.value);
-            }}
-            aria-label="Working draft"
-            maxLength={80_000}
-          />
-          <div>
+          <label className="output-editor-field">
+            <span>{primaryFormat === "article" ? "Article" : "Short post"}</span>
+            <textarea
+              value={draft}
+              disabled={primaryPublished}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                onDraftChange?.(event.target.value);
+              }}
+              aria-label="Working draft"
+              maxLength={80_000}
+            />
+          </label>
+          <div className="output-editor-actions">
             <button disabled={busy || primaryPublished} onClick={() => void saveDraft()}>
               Save draft version
             </button>
+            <button disabled={busy || draftDirty || primaryPublished} onClick={() => void finalReview(primaryFormat)}>Run draft review</button>
+            {proofreaderDisclosure(primaryFormat)}
             {primaryPublished && <p className="published-lock-note">This exact version is published and now read-only. Its text, reviews, and visual are retained as publication history.</p>}
           </div>
         </section>
@@ -1625,26 +1721,28 @@ export function IdeaDetailView({
               )}
             </div>
           ) : (
-            <article className="companion-ready">
-              <div className="companion-heading">
+            <article className="companion-ready output-editor">
+              <div className="companion-heading output-editor-heading">
                 <div>
                   <p className="eyebrow">DERIVED SHORT POST · VERSION {idea.derivedShortPost.version}</p>
-                  <h4>Shape the short post in its own voice.</h4>
+                  <h2>Derived short post draft</h2>
                   <p>Based on article version {idea.derivedShortPost.sourceArticleVersion}. Its edits and review stay separate from the article.</p>
                 </div>
                 <span className={derivedShortDirty ? "output-state stale" : "output-state"}>
                   {derivedShortDirty ? "Unsaved changes" : `Saved as version ${idea.derivedShortPost.version}`}
                 </span>
               </div>
-              <label>
+              <label className="output-editor-field">
                 <span>Derived short post</span>
                 <textarea className="companion-editor" aria-label="Derived short post draft" disabled={derivedShortPublished} value={derivedShortDraft ?? idea.derivedShortPost.body} onChange={(event) => {
                   setDerivedShortDraft?.(event.target.value);
                   onDerivedShortChange?.(event.target.value);
                 }} maxLength={80_000} />
               </label>
-              <div className="companion-actions">
+              <div className="companion-actions output-editor-actions">
                 <button disabled={busy || derivedShortPublished} onClick={() => void saveDerivedShort?.()}>Save derived short version</button>
+                <button disabled={busy || derivedShortDirty || derivedShortPublished} onClick={() => void finalReview("derived_short")}>Run derived short-post review</button>
+                {proofreaderDisclosure("derived_short")}
                 <p>Save when you complete a meaningful edit. Reviews and final checks apply only to saved versions.</p>
                 {derivedShortPublished && <p className="published-lock-note">This exact derived short version is published and now read-only.</p>}
               </div>
@@ -1657,14 +1755,11 @@ export function IdeaDetailView({
           <p className="eyebrow">REVIEW THIS OUTPUT · VERSION {primaryOutput.version}</p>
           <div className="draft-review-heading">
             <div>
-              <h3>One focused review before you publish.</h3>
+              <h3>{primaryOutputLabel} review</h3>
               <p>
-                The latest memo stays connected to this exact draft version.
+                The saved assessment stays connected to this exact {primaryOutputVersionLabel} version.
               </p>
             </div>
-            <button disabled={busy || draftDirty || primaryPublished} onClick={() => void finalReview(primaryFormat)}>
-              Run draft review{proofreaderDisclosure(primaryFormat)}
-            </button>
           </div>
           {draftDirty && (
             <p className="stale-review-notice">
@@ -1672,14 +1767,17 @@ export function IdeaDetailView({
             </p>
           )}
           {primaryReview && (
-            <details className={`final-review-result ${primaryReview.readiness}${draftDirty ? " stale" : ""}`}>
-              <summary>
+            <section className={`final-review-result ${primaryReview.readiness}${draftDirty ? " stale" : ""}`}>
+              <div className="review-result-heading">
+                <p className="eyebrow">SAVED REVIEW RESULT</p>
+                <h4>
                 {draftDirty
                   ? "Previous review · draft has unsaved changes"
                   : primaryReview.readiness === "ready"
                     ? "Ready for your final judgment"
                     : "Revise before publishing"}
-              </summary>
+                </h4>
+              </div>
               <p>{primaryReview.summary}</p>
               <section className="proofread-findings" aria-label="Proofread and clarity findings">
                 <b>Proofread and clarity</b>
@@ -1736,8 +1834,8 @@ export function IdeaDetailView({
                 <strong>Next step:</strong> {primaryReview.nextStep}
               </p>
               {idea.editorialBrief && primaryReview.recommendationStatuses.length > 0 && (
-                <details className="recommendation-decisions">
-                  <summary>Record your decision on the original recommendations</summary>
+                <section className="recommendation-decisions">
+                  <h4>Record your decision on the original recommendations</h4>
                   <p>This is optional. It records your judgment; it does not claim the checklist inferred what you changed.</p>
                   {primaryReview.recommendationStatuses.map((item) => (
                     <label key={item.recommendation}>
@@ -1757,7 +1855,7 @@ export function IdeaDetailView({
                       </select>
                     </label>
                   ))}
-                </details>
+                </section>
               )}
               {primaryReview.readiness === "ready" && Boolean(primaryReview.polishSuggestions?.length) && (
                 <div className="polish-suggestions">
@@ -1783,7 +1881,7 @@ export function IdeaDetailView({
                   ))}
                 </div>
               )}
-              <details>
+              <details className="review-checklist">
                 <summary>View this review’s checklist details</summary>
                 <p className="local-checklist-explainer">
                   This is a local structural checklist, not a second live-model score. Pass means no change was identified; Review is optional judgment; Needs revision identifies a specific open item.
@@ -1800,7 +1898,7 @@ export function IdeaDetailView({
                   </article>
                 ))}
               </details>
-            </details>
+            </section>
           )}
         </section>
       )}
@@ -1809,12 +1907,9 @@ export function IdeaDetailView({
           <p className="eyebrow">REVIEW DERIVED SHORT POST · VERSION {idea.derivedShortPost.version}</p>
           <div className="draft-review-heading">
             <div>
-              <h3>Check the derived short post as its own output.</h3>
-              <p>Its review stays attached to this exact saved version.</p>
+              <h3>Derived short-post review</h3>
+              <p>Its saved assessment stays attached to this exact short-post version.</p>
             </div>
-            <button disabled={busy || derivedShortDirty || derivedShortPublished} onClick={() => void finalReview("derived_short")}>
-              Run derived short-post review{proofreaderDisclosure("derived_short")}
-            </button>
           </div>
           {derivedShortDirty && (
             <p className="stale-review-notice">
@@ -1822,14 +1917,17 @@ export function IdeaDetailView({
             </p>
           )}
           {idea.derivedShortPostFinalReview && (
-            <details className={`final-review-result ${idea.derivedShortPostFinalReview.readiness}${derivedShortDirty ? " stale" : ""}`}>
-              <summary>
+            <section className={`final-review-result ${idea.derivedShortPostFinalReview.readiness}${derivedShortDirty ? " stale" : ""}`}>
+              <div className="review-result-heading">
+                <p className="eyebrow">SAVED REVIEW RESULT</p>
+                <h4>
                 {derivedShortDirty
                   ? "Previous derived short-post review · draft has unsaved changes"
                   : idea.derivedShortPostFinalReview.readiness === "ready"
                     ? "Derived short post ready for final judgment"
                     : "Revise derived short post before finalizing"}
-              </summary>
+                </h4>
+              </div>
               <p>{idea.derivedShortPostFinalReview.summary}</p>
               <section className="proofread-findings" aria-label="Derived short-post proofread and clarity findings">
                 <b>Proofread and clarity</b>
@@ -1873,7 +1971,7 @@ export function IdeaDetailView({
                   ))}
                 </div>
               ) : null}
-              <details>
+              <details className="review-checklist">
                 <summary>View this review’s checklist details</summary>
                 {idea.derivedShortPostFinalReview.reviews.map((review) => (
                   <article key={review.role}>
@@ -1883,7 +1981,7 @@ export function IdeaDetailView({
                   </article>
                 ))}
               </details>
-            </details>
+            </section>
           )}
         </section>
       )}
@@ -1910,10 +2008,10 @@ export function IdeaDetailView({
               </>
             ) : (
               <>
-                <VisualFlow visual={idea.visualCompanion} />
-                <button className="refresh-visual" disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual(visualTemplate)}>
-                  Refresh this visual
-                </button>
+                <VisualFlow
+                  visual={idea.visualCompanion}
+                  actions={<button className="refresh-visual" disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual(visualTemplate)}>Refresh this visual</button>}
+                />
               </>
             )}
           </div>
@@ -1983,10 +2081,12 @@ export function IdeaDetailView({
       {showPublish && primaryOutput && (
         <section className="finalize-panel">
           <div className="finalize-intro">
-            <p className="eyebrow">FINALIZE</p>
-            <h3>Preview the exact saved version, then record it when it is live.</h3>
-            <p>To change the words, return to Write. A saved revision makes this output’s review and voice check outdated.</p>
-            <Link className="quiet-button" href={`/ideas/${idea.id}/draft`}>Return to Write</Link>
+            <div>
+              <p className="eyebrow">FINALIZE</p>
+              <h3>Preview the exact saved version, then record it when it is live.</h3>
+              <p>To change the words, return to Write. A saved revision makes this output’s review and voice check outdated.</p>
+            </div>
+            <Link className="return-to-write" href={`/ideas/${idea.id}/draft`}>← Return to Write</Link>
           </div>
           {renderFinalizeOutput(
             primaryFormat === "short" ? "Short post" : "Article",

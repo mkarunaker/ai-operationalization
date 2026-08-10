@@ -105,8 +105,11 @@ function escapeXml(value: string) {
   })[character]!);
 }
 
-function wrapped(value: string, width = 26) {
-  const words = value.split(/\s+/).filter(Boolean);
+function wrapped(value: string, width = 26, maxLines = 4) {
+  const words = value
+    .split(/\s+/)
+    .filter(Boolean)
+    .flatMap((word) => word.match(new RegExp(`.{1,${width}}`, "g")) ?? []);
   const lines: string[] = [];
   let line = "";
   for (const word of words) {
@@ -117,49 +120,96 @@ function wrapped(value: string, width = 26) {
     } else line = candidate;
   }
   if (line) lines.push(line);
-  return lines.slice(0, 4);
+  if (lines.length <= maxLines) return lines;
+  const visible = lines.slice(0, maxLines);
+  const finalLine = visible.at(-1) ?? "";
+  return [...visible.slice(0, -1), `${finalLine.slice(0, Math.max(1, width - 1))}…`];
+}
+
+function fittedTextLength(value: string, renderedWidth: number, fontSize: number) {
+  // A full em per glyph is deliberately conservative for normal copy. The SVG
+  // textLength remains a hard upper bound even for wide or unusual glyphs.
+  return Math.min(renderedWidth, Math.max(fontSize, Array.from(value).length * fontSize));
+}
+
+function svgLines(value: string, x: number, wrapWidth: number, maxLines: number, lineHeight: number, renderedWidth: number, fontSize: number) {
+  return wrapped(value, wrapWidth, maxLines)
+    // `textLength` is a geometric SVG constraint, not a character heuristic:
+    // even an all-wide-glyph line is compressed to the available panel width.
+    .map((line, index) => `<tspan x="${x}" dy="${index ? lineHeight : 0}" textLength="${fittedTextLength(line, renderedWidth, fontSize)}" lengthAdjust="spacingAndGlyphs" data-bounded-text="true">${escapeXml(line)}</tspan>`)
+    .join("");
+}
+
+function svgSingleLine(value: string, x: number, wrapWidth: number, renderedWidth: number, fontSize: number) {
+  const line = wrapped(value, wrapWidth, 1)[0] ?? "";
+  return `<tspan x="${x}" textLength="${fittedTextLength(line, renderedWidth, fontSize)}" lengthAdjust="spacingAndGlyphs" data-bounded-text="true">${escapeXml(line)}</tspan>`;
+}
+
+function renderHeader(
+  visual: Pick<VisualCompanion, "eyebrow" | "title" | "subtitle">,
+  x = 104,
+  titleY = 188,
+  subtitleY = 358,
+) {
+  const title = svgLines(visual.title, x, 44, 3, 58, 1080 - 2 * x, 54);
+  const subtitle = svgLines(visual.subtitle, x, 68, 2, 31, 1080 - 2 * x, 26);
+  const eyebrow = svgSingleLine(visual.eyebrow, x, 44, 1080 - 2 * x, 19);
+  return `<text x="${x}" y="104" fill="#635bcb" font-family="Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="3">${eyebrow}</text><text x="${x}" y="${titleY}" fill="#1d2138" font-family="Georgia, serif" font-size="54">${title}</text><text x="${x}" y="${subtitleY}" fill="#626983" font-family="Arial, sans-serif" font-size="26">${subtitle}</text>`;
+}
+
+function footer(x = 104) {
+  return `<text x="${x}" y="1018" fill="#5a607b" font-family="Arial, sans-serif" font-size="22">AI Editorial Board · conceptual framework</text>`;
 }
 
 /** Generates a self-contained, escaped SVG for a locally stored visual companion. */
 function renderMaturityContrastSvg(visual: Pick<VisualCompanion, "eyebrow" | "title" | "subtitle" | "steps">) {
-  const title = wrapped(visual.title, 44).map((line, index) => `<tspan x="104" dy="${index ? 58 : 0}">${escapeXml(line)}</tspan>`).join("");
-  const subtitle = wrapped(visual.subtitle, 68).map((line, index) => `<tspan x="104" dy="${index ? 31 : 0}">${escapeXml(line)}</tspan>`).join("");
   const activity = visual.steps[0] ?? { title: "Visible activity", detail: "What is easy to count." };
   const discipline = visual.steps[1] ?? { title: "Operating discipline", detail: "What makes work dependable." };
   const maturity = visual.steps[2] ?? { title: "Maturity", detail: "What people can rely on." };
-  const disciplineLines = wrapped(discipline.detail, 44).map((line, index) => `<tspan x="540" dy="${index ? 27 : 0}">${escapeXml(line)}</tspan>`).join("");
-  const maturityLines = wrapped(maturity.detail, 44).map((line, index) => `<tspan x="540" dy="${index ? 27 : 0}">${escapeXml(line)}</tspan>`).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-label="${escapeXml(visual.title)}"><rect width="1080" height="1080" fill="#f7f7fb"/><text x="104" y="104" fill="#635bcb" font-family="Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="3">${escapeXml(visual.eyebrow)}</text><text x="104" y="188" fill="#1d2138" font-family="Georgia, serif" font-size="54">${title}</text><text x="104" y="358" fill="#626983" font-family="Arial, sans-serif" font-size="26">${subtitle}</text><text x="104" y="464" fill="#716bb4" font-family="Arial, sans-serif" font-size="17" font-weight="700" letter-spacing="2">VISIBLE ${escapeXml(activity.title).toUpperCase()}</text><text x="104" y="506" fill="#343956" font-family="Georgia, serif" font-size="31">Licenses · pilots · prompts · demos</text><path d="M0 550 C180 528 360 572 540 550 C720 528 900 572 1080 550 V1080 H0Z" fill="#eeedf9"/><path d="M0 550 C180 528 360 572 540 550 C720 528 900 572 1080 550" fill="none" stroke="#756ec8" stroke-width="4"/><path d="M330 570 L540 960 L750 570 Z" fill="#d8d5f2" stroke="#827bd0" stroke-width="3"/><path d="M330 570 L540 650 L750 570" fill="#e7e5f7"/><text x="540" y="696" text-anchor="middle" fill="#3f3b76" font-family="Arial, sans-serif" font-size="17" font-weight="700" letter-spacing="2">BELOW THE SURFACE</text><text x="540" y="756" text-anchor="middle" fill="#20243a" font-family="Georgia, serif" font-size="34">${escapeXml(discipline.title)}</text><text x="540" y="794" text-anchor="middle" fill="#565d7b" font-family="Arial, sans-serif" font-size="21">${disciplineLines}</text><text x="540" y="872" text-anchor="middle" fill="#20243a" font-family="Georgia, serif" font-size="30">${escapeXml(maturity.title)}</text><text x="540" y="908" text-anchor="middle" fill="#565d7b" font-family="Arial, sans-serif" font-size="21">${maturityLines}</text><text x="104" y="1018" fill="#5a607b" font-family="Arial, sans-serif" font-size="22">AI Editorial Board · conceptual framework</text></svg>`;
+  const disciplineLines = svgLines(discipline.detail, 540, 48, 3, 25, 520, 20);
+  const maturityLines = svgLines(maturity.detail, 540, 42, 2, 20, 320, 17);
+  const activityLabel = svgSingleLine(`VISIBLE ${activity.title.toUpperCase()}`, 104, 50, 872, 17);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-label="${escapeXml(visual.title)}"><rect width="1080" height="1080" fill="#f7f7fb"/>${renderHeader(visual)}<text x="104" y="464" fill="#716bb4" font-family="Arial, sans-serif" font-size="17" font-weight="700" letter-spacing="2">${activityLabel}</text><text x="104" y="506" fill="#343956" font-family="Georgia, serif" font-size="31">Licenses · pilots · prompts · demos</text><path d="M0 550 C180 528 360 572 540 550 C720 528 900 572 1080 550 V1080 H0Z" fill="#eeedf9"/><path d="M0 550 C180 528 360 572 540 550 C720 528 900 572 1080 550" fill="none" stroke="#756ec8" stroke-width="4"/><path d="M220 590 L540 976 L860 590 Z" fill="#d8d5f2" stroke="#827bd0" stroke-width="3"/><rect x="250" y="638" width="580" height="194" rx="18" fill="#f7f7fb" stroke="#827bd0" stroke-width="3"/><text x="540" y="686" text-anchor="middle" fill="#3f3b76" font-family="Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="2">BELOW THE SURFACE</text><text x="540" y="734" text-anchor="middle" fill="#20243a" font-family="Georgia, serif" font-size="34">${svgSingleLine(discipline.title, 540, 32, 520, 34)}</text><text x="540" y="776" text-anchor="middle" fill="#565d7b" font-family="Arial, sans-serif" font-size="20">${disciplineLines}</text><rect x="360" y="856" width="360" height="90" rx="45" fill="#e7e5f7" stroke="#827bd0" stroke-width="3"/><text x="540" y="892" text-anchor="middle" fill="#20243a" font-family="Georgia, serif" font-size="28">${svgSingleLine(maturity.title, 540, 24, 320, 28)}</text><text x="540" y="920" text-anchor="middle" fill="#565d7b" font-family="Arial, sans-serif" font-size="17">${maturityLines}</text>${footer()}</svg>`;
 }
 
 function renderVerticalPathSvg(visual: Pick<VisualCompanion, "eyebrow" | "title" | "subtitle" | "steps">) {
-  const title = wrapped(visual.title, 44).map((line, index) => `<tspan x="104" dy="${index ? 58 : 0}">${escapeXml(line)}</tspan>`).join("");
-  const subtitle = wrapped(visual.subtitle, 68).map((line, index) => `<tspan x="104" dy="${index ? 31 : 0}">${escapeXml(line)}</tspan>`).join("");
-  const stages = visual.steps.slice(0, 3).map((step, index) => { const y = 500 + index * 160; const detail = wrapped(step.detail, 58).map((line, lineIndex) => `<tspan x="202" dy="${lineIndex ? 26 : 0}">${escapeXml(line)}</tspan>`).join(""); return `<circle cx="142" cy="${y}" r="18" fill="${index === 1 ? "#6a63c7" : "#f7f7fb"}" stroke="#6a63c7" stroke-width="3"/><text x="142" y="${y + 6}" text-anchor="middle" fill="${index === 1 ? "#fff" : "#4e4899"}" font-family="Arial, sans-serif" font-size="15" font-weight="700">${index + 1}</text>${index < 2 ? `<path d="M142 ${y + 36} V${y + 124}" stroke="#a7a3d8" stroke-width="3"/>` : ""}<text x="202" y="${y - 2}" fill="#20243a" font-family="Georgia, serif" font-size="31">${escapeXml(step.title)}</text><text x="202" y="${y + 40}" fill="#626983" font-family="Arial, sans-serif" font-size="22">${detail}</text>`; }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-label="${escapeXml(visual.title)}"><rect width="1080" height="1080" fill="#f7f7fb"/><text x="104" y="104" fill="#635bcb" font-family="Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="3">${escapeXml(visual.eyebrow)}</text><text x="104" y="188" fill="#1d2138" font-family="Georgia, serif" font-size="54">${title}</text><text x="104" y="358" fill="#626983" font-family="Arial, sans-serif" font-size="26">${subtitle}</text><path d="M104 430 H976" stroke="#deddea" stroke-width="2"/>${stages}<text x="104" y="1018" fill="#5a607b" font-family="Arial, sans-serif" font-size="22">AI Editorial Board · conceptual framework</text></svg>`;
+  const stages = visual.steps.slice(0, 3).map((step, index) => {
+    const y = 464 + index * 150;
+    const detail = svgLines(step.detail, 202, 58, 2, 22, 730, 20);
+    const connector = index < 2 ? `<path d="M142 ${y + 126} V${y + 150}" stroke="#a7a3d8" stroke-width="3"/>` : "";
+    return `<rect x="104" y="${y}" width="872" height="126" rx="16" fill="${index === 1 ? "#eceaff" : "#ffffff"}" stroke="#d9d8e8"/><circle cx="142" cy="${y + 63}" r="18" fill="${index === 1 ? "#6a63c7" : "#f7f7fb"}" stroke="#6a63c7" stroke-width="3"/><text x="142" y="${y + 69}" text-anchor="middle" fill="${index === 1 ? "#fff" : "#4e4899"}" font-family="Arial, sans-serif" font-size="15" font-weight="700">${index + 1}</text><text x="202" y="${y + 45}" fill="#20243a" font-family="Georgia, serif" font-size="31">${svgSingleLine(step.title, 202, 42, 730, 31)}</text><text x="202" y="${y + 79}" fill="#626983" font-family="Arial, sans-serif" font-size="20">${detail}</text>${connector}`;
+  }).join("");
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-label="${escapeXml(visual.title)}"><rect width="1080" height="1080" fill="#f7f7fb"/>${renderHeader(visual)}<path d="M104 430 H976" stroke="#deddea" stroke-width="2"/>${stages}${footer()}</svg>`;
 }
 
 function renderDecisionForkSvg(visual: Pick<VisualCompanion, "eyebrow" | "title" | "subtitle" | "steps">) {
-  const title = wrapped(visual.title, 44).map((line, index) => `<tspan x="104" dy="${index ? 58 : 0}">${escapeXml(line)}</tspan>`).join("");
-  const subtitle = wrapped(visual.subtitle, 68).map((line, index) => `<tspan x="104" dy="${index ? 31 : 0}">${escapeXml(line)}</tspan>`).join("");
   const [activity, unmanaged, disciplined] = visual.steps;
-  const details = (step: VisualStep | undefined, x: number) => wrapped(step?.detail ?? "", 27).map((line, index) => `<tspan x="${x}" dy="${index ? 26 : 0}">${escapeXml(line)}</tspan>`).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-label="${escapeXml(visual.title)}"><rect width="1080" height="1080" fill="#f7f7fb"/><text x="104" y="104" fill="#635bcb" font-family="Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="3">${escapeXml(visual.eyebrow)}</text><text x="104" y="188" fill="#1d2138" font-family="Georgia, serif" font-size="54">${title}</text><text x="104" y="358" fill="#626983" font-family="Arial, sans-serif" font-size="26">${subtitle}</text><circle cx="540" cy="520" r="78" fill="#e7e5f7" stroke="#7770c8" stroke-width="3"/><text x="540" y="510" text-anchor="middle" fill="#27234e" font-family="Georgia, serif" font-size="31">${escapeXml(activity?.title ?? "AI activity")}</text><text x="540" y="546" text-anchor="middle" fill="#575d7d" font-family="Arial, sans-serif" font-size="18">pilots · prompts · experiments</text><path d="M488 580 C420 640 320 660 254 720" fill="none" stroke="#ad7457" stroke-width="4"/><path d="M592 580 C660 640 760 660 826 720" fill="none" stroke="#5f8e76" stroke-width="4"/><circle cx="220" cy="748" r="18" fill="#c97655"/><circle cx="860" cy="748" r="18" fill="#6fa181"/><text x="104" y="824" fill="#7d4937" font-family="Georgia, serif" font-size="35">${escapeXml(unmanaged?.title ?? "Unmanaged")}</text><text x="104" y="866" fill="#715d5a" font-family="Arial, sans-serif" font-size="21">${details(unmanaged, 104)}</text><text x="590" y="824" fill="#315e48" font-family="Georgia, serif" font-size="35">${escapeXml(disciplined?.title ?? "Disciplined")}</text><text x="590" y="866" fill="#52685d" font-family="Arial, sans-serif" font-size="21">${details(disciplined, 590)}</text><text x="104" y="1018" fill="#5a607b" font-family="Arial, sans-serif" font-size="22">AI Editorial Board · conceptual framework</text></svg>`;
+  const activityDetail = svgLines(activity?.detail ?? "Pilots, licenses, prompts, and experiments create a learning signal.", 540, 40, 2, 19, 332, 17);
+  const unmanagedDetails = svgLines(unmanaged?.detail ?? "", 140, 30, 3, 24, 318, 20);
+  const disciplinedDetails = svgLines(disciplined?.detail ?? "", 622, 30, 3, 24, 318, 20);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-label="${escapeXml(visual.title)}"><rect width="1080" height="1080" fill="#f7f7fb"/>${renderHeader(visual)}<rect x="354" y="454" width="372" height="126" rx="63" fill="#e7e5f7" stroke="#7770c8" stroke-width="3"/><text x="540" y="505" text-anchor="middle" fill="#27234e" font-family="Georgia, serif" font-size="31">${svgSingleLine(activity?.title ?? "AI activity", 540, 22, 332, 31)}</text><text x="540" y="537" text-anchor="middle" fill="#575d7d" font-family="Arial, sans-serif" font-size="17">${activityDetail}</text><path d="M420 580 C420 634 335 662 299 720" fill="none" stroke="#ad7457" stroke-width="4"/><path d="M660 580 C660 634 745 662 781 720" fill="none" stroke="#5f8e76" stroke-width="4"/><rect x="104" y="720" width="390" height="190" rx="18" fill="#fff7f3" stroke="#d6a48f" stroke-width="3"/><rect x="586" y="720" width="390" height="190" rx="18" fill="#f4faf5" stroke="#9fc6ae" stroke-width="3"/><text x="140" y="778" fill="#7d4937" font-family="Georgia, serif" font-size="35">${svgSingleLine(unmanaged?.title ?? "Unmanaged", 140, 20, 318, 35)}</text><text x="140" y="822" fill="#715d5a" font-family="Arial, sans-serif" font-size="20">${unmanagedDetails}</text><text x="622" y="778" fill="#315e48" font-family="Georgia, serif" font-size="35">${svgSingleLine(disciplined?.title ?? "Disciplined", 622, 20, 318, 35)}</text><text x="622" y="822" fill="#52685d" font-family="Arial, sans-serif" font-size="20">${disciplinedDetails}</text>${footer()}</svg>`;
 }
 
 export function renderVisualSvg(visual: Pick<VisualCompanion, "type" | "eyebrow" | "title" | "subtitle" | "steps">) {
   if (visual.type === "maturity_path") return renderVerticalPathSvg(visual);
   if (visual.type === "contrast") return renderMaturityContrastSvg(visual);
   if (visual.type === "decision_fork") return renderDecisionForkSvg(visual);
-  const cards = visual.steps.map((step, index) => {
+  const cards = visual.steps.slice(0, 3).map((step, index) => {
     const x = 54 + index * 330;
     const fill = index === 1 ? "#eceaff" : "#ffffff";
-    const titleLines = wrapped(step.title, 19).map((line, lineIndex) => `<tspan x="${x + 25}" dy="${lineIndex ? 34 : 0}">${escapeXml(line)}</tspan>`).join("");
-    const detailLines = wrapped(step.detail, 25).map((line, lineIndex) => `<tspan x="${x + 25}" dy="${lineIndex ? 28 : 0}">${escapeXml(line)}</tspan>`).join("");
+    const titleLines = svgLines(step.title, x + 25, 20, 2, 30, 230, 27);
+    const detailLines = svgLines(step.detail, x + 25, 25, 4, 24, 230, 19);
     const arrow = index < visual.steps.length - 1 ? `<path d="M${x + 280} 615 H${x + 310}" stroke="#7068d6" stroke-width="4"/><path d="M${x + 302} 605 L${x + 312} 615 L${x + 302} 625" fill="none" stroke="#7068d6" stroke-width="4"/>` : "";
-    return `<rect x="${x}" y="490" width="280" height="300" rx="22" fill="${fill}" stroke="#d9d8e8"/><text x="${x + 25}" y="550" fill="#20243a" font-family="Georgia, serif" font-size="30">${titleLines}</text><text x="${x + 25}" y="650" fill="#5a607b" font-family="Arial, sans-serif" font-size="22">${detailLines}</text>${arrow}`;
+    return `<rect x="${x}" y="480" width="280" height="280" rx="22" fill="${fill}" stroke="#d9d8e8"/><text x="${x + 25}" y="535" fill="#20243a" font-family="Georgia, serif" font-size="27">${titleLines}</text><text x="${x + 25}" y="630" fill="#5a607b" font-family="Arial, sans-serif" font-size="19">${detailLines}</text>${arrow}`;
   }).join("");
-  const title = wrapped(visual.title, 44).map((line, index) => `<tspan x="54" dy="${index ? 58 : 0}">${escapeXml(line)}</tspan>`).join("");
-  const subtitle = wrapped(visual.subtitle, 75).map((line, index) => `<tspan x="54" dy="${index ? 31 : 0}">${escapeXml(line)}</tspan>`).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-label="${escapeXml(visual.title)}"><rect width="1080" height="1080" fill="#f7f7fb"/><text x="54" y="86" fill="#635bcb" font-family="Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="3">${escapeXml(visual.eyebrow)}</text><text x="54" y="170" fill="#1d2138" font-family="Georgia, serif" font-size="54">${title}</text><text x="54" y="340" fill="#626983" font-family="Arial, sans-serif" font-size="26">${subtitle}</text><path d="M54 420 H1026" stroke="#deddea" stroke-width="2"/>${cards}<text x="54" y="955" fill="#5a607b" font-family="Arial, sans-serif" font-size="22">AI Editorial Board · conceptual framework</text></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-label="${escapeXml(visual.title)}"><rect width="1080" height="1080" fill="#f7f7fb"/>${renderHeader(visual, 54, 170, 340)}<path d="M54 420 H1026" stroke="#deddea" stroke-width="2"/>${cards}${footer(54)}</svg>`;
+}
+
+/**
+ * A display-safe data URL for the same escaped SVG that is saved and exported.
+ * Rendering this URL through an image element prevents the page preview from
+ * drifting into a second HTML/CSS interpretation of the visual.
+ */
+export function visualSvgDataUrl(visual: Pick<VisualCompanion, "type" | "eyebrow" | "title" | "subtitle" | "steps">) {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(renderVisualSvg(visual))}`;
 }

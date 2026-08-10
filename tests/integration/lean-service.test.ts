@@ -8,8 +8,10 @@ import {
   createApplicationResearchBrief,
   createDerivedShortPost,
   createIdea,
+  createVisualCompanion,
   deleteUnpublishedIdea,
   getIdea,
+  listIdeas,
   publishIdea,
   runFinalDraftReview,
   runLiveProofreadForExactReviewForTest,
@@ -25,11 +27,14 @@ import { migrateDatabase } from "@/persistence/migrations";
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "aeb-reader-output-"));
 const previousDatabasePath = process.env.DATABASE_PATH;
 const previousLowModel = process.env.OPENAI_LOW_MODEL;
+const previousVisualsPath = process.env.VISUALS_PATH;
+const visualsPath = path.join(root, "visuals");
 
 beforeAll(() => {
   process.env.OPENAI_LOW_MODEL = "synthetic-low-proofreader";
   const databasePath = path.join(root, "reader-output.sqlite");
   process.env.DATABASE_PATH = databasePath;
+  process.env.VISUALS_PATH = visualsPath;
   const database = openDatabase(databasePath);
   try {
     migrateDatabase(database, path.join(process.cwd(), "migrations"));
@@ -43,6 +48,8 @@ afterAll(() => {
   else process.env.DATABASE_PATH = previousDatabasePath;
   if (previousLowModel === undefined) delete process.env.OPENAI_LOW_MODEL;
   else process.env.OPENAI_LOW_MODEL = previousLowModel;
+  if (previousVisualsPath === undefined) delete process.env.VISUALS_PATH;
+  else process.env.VISUALS_PATH = previousVisualsPath;
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -97,6 +104,37 @@ function liveRequiredShortOutput(note: string) {
   return { ideaId: created.id, output };
 }
 
+describe("local visual asset storage", () => {
+  it("stores each new visual under the dedicated visual directory rather than beside application data", () => {
+    const created = createIdea({ title: "Signal clarity 2026", rawNotes: "A visual asset belongs in its dedicated local directory." });
+    const output = saveEditedDraft(created.id, "A clear owner and a measurable outcome make an initiative more dependable.", "short").shortPost!;
+
+    const visual = createVisualCompanion(created.id).visualCompanion!;
+    const storedPath = path.resolve(visualsPath, visual.filePath);
+    const legacyDataPath = path.resolve(path.dirname(process.env.DATABASE_PATH!), visual.filePath);
+
+    expect(visual.filePath).toMatch(/^signal-clarity-2026-[a-f0-9]{8}[\\/]draft_1_\d{8}T\d{9}Z\.svg$/i);
+    expect(path.relative(visualsPath, storedPath)).not.toMatch(/^\.\.(?:[\\/]|$)/);
+    expect(fs.existsSync(storedPath)).toBe(true);
+    expect(fs.existsSync(legacyDataPath)).toBe(false);
+    expect(fs.statSync(storedPath).mode & 0o777).toBe(0o600);
+    expect(visual.draftVersionId).toBe(output.id);
+
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      database.prepare("UPDATE visual_companions SET file_path = ? WHERE id = ?").run("legacy-title/draft_1_legacy.svg", visual.id);
+    } finally {
+      database.close();
+    }
+
+    const refreshed = createVisualCompanion(created.id, "flow").visualCompanion!;
+    expect(refreshed.id).toBe(visual.id);
+    expect(refreshed.type).toBe("flow");
+    expect(refreshed.filePath).toMatch(/^signal-clarity-2026-[a-f0-9]{8}[\\/]draft_1_\d{8}T\d{9}Z\.svg$/i);
+    expect(fs.existsSync(path.resolve(visualsPath, refreshed.filePath))).toBe(true);
+  });
+});
+
 function testProofreadInput(output: { id: string }, provider: ModelProvider, budgetCap = 0.05) {
   const route = routeFor("proofreader");
   return {
@@ -124,6 +162,22 @@ function proofreaderCalls(draftVersionId: string) {
 }
 
 describe("reader-output service contract", () => {
+  it("returns a privacy-safe per-idea run ledger for queue and workspace summaries", () => {
+    const created = createIdea({ rawNotes: "A run ledger should summarize local usage without returning prompts or source text." });
+    saveEditedDraft(created.id, "A clear owner and observable outcome make an AI initiative easier to govern.", "short");
+    review(created.id, "short");
+
+    const detailLedger = getIdea(created.id)!.runLedger;
+    const queueLedger = listIdeas().find((idea) => idea.id === created.id)?.runLedger;
+    expect(detailLedger).toMatchObject({ estimatedCost: 0 });
+    expect(detailLedger.attempts).toBeGreaterThan(0);
+    expect(detailLedger.totalTokens).toBeGreaterThan(0);
+    expect(queueLedger).toEqual(detailLedger);
+    expect(Object.keys(detailLedger).sort()).toEqual(["attempts", "estimatedCost", "totalTokens"]);
+    expect(detailLedger).not.toHaveProperty("prompt");
+    expect(detailLedger).not.toHaveProperty("sourceText");
+  });
+
   it("stores only the generic output shape and rejects the inactive platform-plan input", () => {
     const created = createIdea({ rawNotes: "Reader preferences should describe the reader and output, not a destination." });
     expect(created.outputShape).toBe("short");
@@ -315,6 +369,18 @@ describe("reader-output service contract", () => {
       expect(usage.maximumReservedCost).toBe(0.002);
       expect(call.estimated_total_cost).toBe(0.002);
     }
+  });
+
+  it("drops a no-op live proofreader finding so it cannot block Finalize", async () => {
+    const { ideaId, output } = liveRequiredShortOutput("A proofreader must not invent a material correction when text is unchanged.");
+    const fake = proofreadProvider([proofreadResponse({
+      structuredOutput: {
+        role: "proofreader",
+        findings: [{ category: "grammar", severity: "material", current: "The sentence is already clear.", suggestion: "The sentence is already clear.", rationale: "No change is needed." }],
+      },
+    })]);
+    const completed = await runLiveProofreadForExactReviewForTest(ideaId, testProofreadInput(output, fake.provider));
+    expect(completed.shortPostFinalReview).toMatchObject({ proofreadCompleted: true, proofreadStatus: "completed", proofreadFindings: [] });
   });
 
   it.each([

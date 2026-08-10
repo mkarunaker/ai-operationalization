@@ -665,7 +665,7 @@ export function IdeaWorkspaceClient({
             showDraft={mode === "draft"}
             showPublish={mode === "publish"}
             showProvenance={mode === "board"}
-            compactCapture={mode !== "develop"}
+            compactCapture
             showPriority={mode === "develop"}
             reviewHref={mode === "develop" ? `/ideas/${ideaId}/board` : undefined}
             voiceChecks={voiceChecks}

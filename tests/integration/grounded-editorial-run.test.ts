@@ -8,7 +8,7 @@ import { routeFor } from "@/ai/model-routing";
 import { refreshContent } from "@/content/loader";
 import { estimateDerivedShortDraft, retryDerivedShortDraftForTest, runGroundedEditorialRun, runSingleReviewer, scopedDerivedShortDraftRequestFor } from "@/editorial/grounded-run";
 import { liveRunPreview } from "@/editorial/live-run";
-import { createIdea, getIdea, proofreadRequestFor, runFinalDraftReview, runLiveProofreadForExactReviewForTest, saveEditedDraft, updateIdea } from "@/lean/service";
+import { createIdea, getIdea, listIdeas, proofreadRequestFor, runFinalDraftReview, runLiveProofreadForExactReviewForTest, saveEditedDraft, updateIdea } from "@/lean/service";
 import { openDatabase } from "@/persistence/database";
 import { migrateDatabase } from "@/persistence/migrations";
 
@@ -82,6 +82,25 @@ afterAll(() => {
 });
 
 describe("grounded reader-output boundaries", () => {
+  it("reports a deterministic Board only through the three local ledger fields", async () => {
+    const created = createIdea({ rawNotes: "A deterministic Board must remain visibly local in the usage ledger." });
+    await runGroundedEditorialRun(created.id);
+
+    const ledger = getIdea(created.id)!.runLedger;
+    const queuedLedger = listIdeas().find((idea) => idea.id === created.id)?.runLedger;
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      expect(database.prepare("SELECT DISTINCT provider FROM model_calls").all()).toContainEqual({ provider: "grounded-test" });
+    } finally {
+      database.close();
+    }
+    expect(ledger.attempts).toBeGreaterThan(0);
+    expect(ledger.totalTokens).toBeGreaterThan(0);
+    expect(ledger.estimatedCost).toBe(0);
+    expect(Object.keys(ledger).sort()).toEqual(["attempts", "estimatedCost", "totalTokens"]);
+    expect(queuedLedger).toEqual(ledger);
+  });
+
   it("uses adversarial reader notes and unmistakable ranges at every generic drafting and review boundary", async () => {
     const created = createIdea({ rawNotes: "A pilot needs an owner, controls, and an observable outcome." });
     updateIdea(created.id, {

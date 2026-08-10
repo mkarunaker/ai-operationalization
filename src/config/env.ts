@@ -3,6 +3,7 @@ import path from "node:path";
 export type AppConfig = {
   appBaseUrl: string;
   databasePath: string;
+  visualAssetsPath: string;
   bokPath: string;
   voiceSkillPath: string;
   editorialNotebookPath: string;
@@ -22,6 +23,9 @@ export function getAppConfig(): AppConfig {
   return {
     appBaseUrl: process.env.APP_BASE_URL ?? "http://127.0.0.1:3100",
     databasePath: resolveLocalPath(process.env.DATABASE_PATH ?? "./data/ai-editorial-board.sqlite"),
+    // Generated visual files can grow independently of transactional data. Keep
+    // them in their own local, ignored directory rather than beside SQLite.
+    visualAssetsPath: resolveLocalPath(process.env.VISUALS_PATH ?? "./visuals"),
     bokPath: resolveLocalPath(
       process.env.EAIO_BOK_PATH ?? "./content/knowledge/EAIO_Canonical_Knowledge_Base.md",
     ),

@@ -67,14 +67,68 @@ async function reviewAllDualOutputs(page: Page) {
 
 test("uses reader and output shape controls without naming a delivery platform", async ({ page }) => {
   await page.goto("/");
+  const captureBounds = await page.getByLabel("What are you thinking about?").boundingBox();
+  const saveBounds = await page.getByRole("button", { name: "Save to Inbox" }).boundingBox();
+  const addThemeBounds = await page.getByRole("button", { name: "Add theme" }).boundingBox();
+  expect(captureBounds).not.toBeNull();
+  expect(saveBounds).not.toBeNull();
+  expect(addThemeBounds).not.toBeNull();
+  expect(Math.abs((captureBounds!.x + captureBounds!.width) - (saveBounds!.x + saveBounds!.width))).toBeLessThanOrEqual(2);
+  expect(addThemeBounds!.width).toBeLessThanOrEqual(30);
+  expect(addThemeBounds!.height).toBeLessThanOrEqual(30);
   await page.getByLabel("What are you thinking about?").fill(`${marker("capture")}: Capture begins with the reader and the intended output, not a platform.`);
   await page.getByRole("button", { name: "Save to Inbox" }).click();
   await page.getByRole("button", { name: "Develop this idea →" }).click();
+  await expect(page.getByText("Who should this help?")).toBeVisible();
+  await expect(page.getByText("What should this Board run create?")).toBeVisible();
+  await expect(page.getByText("View original capture")).toBeVisible();
+  await expect(page.locator(".lifecycle-actions")).toContainText("Park this idea");
+  await expect(page.locator(".lifecycle-actions")).toContainText("Delete this idea");
+  const developmentSectionGap = await page.locator(".development-section").evaluateAll((sections) => {
+    const [first, second] = sections.map((section) => section.getBoundingClientRect());
+    return second.top - first.bottom;
+  });
+  expect(developmentSectionGap).toBeGreaterThanOrEqual(28);
+  await expect(page.locator("label.audience-note-field").getByLabel(/Audience note/)).toBeVisible();
   await expect(page.getByLabel("Output shape")).toHaveValue("short");
   await expect(page.getByLabel("Output shape").locator("option")).toHaveText(["Short post", "Article", "Article + derived short post"]);
   await expect(page.getByText(/LinkedIn|Medium|Substack/)).toHaveCount(0);
   await page.getByLabel("Output shape").selectOption("long_with_derived_short");
   await expect(page.getByText("When both are selected, the short output is derived from the exact long-form version.")).toBeVisible();
+  await expect(page.getByText("Optional research and evidence")).toBeVisible();
+  await page.getByText("Optional research and evidence").click();
+  await expect(page.getByText("Record sources I already have")).toBeVisible();
+  await expect(page.getByText("Prepare a local research brief")).toBeVisible();
+  const researchChoiceBounds = await page.locator(".research-mode-picker label").evaluateAll((choices) => choices.map((choice) => {
+    const box = choice.getBoundingClientRect();
+    return { top: box.top, bottom: box.bottom, left: box.left };
+  }));
+  expect(researchChoiceBounds).toHaveLength(2);
+  expect(researchChoiceBounds[1]!.top).toBeGreaterThan(researchChoiceBounds[0]!.bottom);
+  expect(Math.abs(researchChoiceBounds[1]!.left - researchChoiceBounds[0]!.left)).toBeLessThanOrEqual(2);
+  await expect(page.locator(".research-field-group").first()).toContainText("1. Frame the question");
+  await expect(page.locator(".research-field-group").nth(1)).toContainText("2. Preserve what you found");
+});
+
+test("deletes an unpublished idea directly from the Ideas list", async ({ page }) => {
+  const title = marker("queue-delete");
+  await page.goto("/");
+  await page.getByLabel(/Working title/).fill(title);
+  await page.getByLabel("What are you thinking about?").fill("An unpublished local capture can be removed from the queue without opening its workspace.");
+  await page.getByRole("button", { name: "Save to Inbox" }).click();
+  await page.goto("/");
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: `Delete ${title}` }).click();
+  await expect(page.locator(".idea-card").filter({ hasText: title })).toHaveCount(0);
+  await expect(page.getByRole("status")).toContainText("Deleted");
+});
+
+test("keeps the Knowledge sources page inside the shared application navigation", async ({ page }) => {
+  await page.goto("/content-status");
+  await expect(page.getByRole("navigation").getByRole("link", { name: "Ideas" })).toBeVisible();
+  await expect(page.getByRole("navigation").getByRole("link", { name: "Editorial Notebook" })).toBeVisible();
+  await expect(page.getByRole("navigation").getByRole("link", { name: "Knowledge sources" })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("heading", { name: "Content status" })).toBeVisible();
 });
 
 test("rejects incoherent reader-output updates atomically through the local route", async ({ page }) => {
@@ -152,29 +206,119 @@ test("creates generic article and derived-short outputs without a delivery chann
   await expect(page.getByText(/LinkedIn|Medium|Substack/)).toHaveCount(0);
 });
 
+test("organizes Write as one clear setup, matched output editors, and flat review surfaces", async ({ page }) => {
+  await createIdeaThroughWrite(page, { shape: "long_with_derived_short" });
+  await expect(page.getByRole("region", { name: "Writing setup" })).toContainText("Saved Board-run contract");
+  await expect(page.getByRole("region", { name: "Writing setup" })).toContainText("Current Develop preferences");
+  const localLedger = page.getByRole("region", { name: "Local run ledger" });
+  await expect(localLedger).toContainText("Tokens used");
+  await expect(localLedger).toContainText("$0.00 local");
+  await expect(localLedger).not.toContainText("est. $");
+  await expect(page.locator(".output-editor")).toHaveCount(2);
+  await expect(page.locator(".output-editor").nth(0)).toContainText("ARTICLE");
+  await expect(page.locator(".output-editor").nth(1)).toContainText("DERIVED SHORT POST");
+  await expect(page.locator(".output-editor").nth(0).getByRole("button", { name: "Run draft review" })).toBeVisible();
+  await expect(page.locator(".output-editor").nth(1).getByRole("button", { name: "Run derived short-post review" })).toBeVisible();
+  const editorContainment = await page.locator(".output-editor").evaluateAll((editors) => editors.map((editor) => {
+    const textarea = editor.querySelector("textarea");
+    const actions = editor.querySelector(".output-editor-actions");
+    return {
+      editorOverflows: editor.scrollWidth > editor.clientWidth,
+      textareaBoxSizing: textarea ? getComputedStyle(textarea).boxSizing : null,
+      textareaOverflowWrap: textarea ? getComputedStyle(textarea).overflowWrap : null,
+      actionRowWraps: actions ? getComputedStyle(actions).flexWrap : null,
+      actionRowOverflows: actions ? actions.scrollWidth > actions.clientWidth : null,
+    };
+  }));
+  expect(editorContainment).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      editorOverflows: false,
+      textareaBoxSizing: "border-box",
+      textareaOverflowWrap: "anywhere",
+      actionRowWraps: "wrap",
+      actionRowOverflows: false,
+    }),
+  ]));
+  await page.getByRole("button", { name: "Run draft review" }).click();
+  const reviewResult = page.locator(".final-review-result").first();
+  await expect(reviewResult).toBeVisible();
+  expect(await reviewResult.evaluate((element) => element.tagName)).toBe("SECTION");
+  await expect(reviewResult.locator("details")).toHaveCount(1);
+  await page.getByRole("navigation", { name: "Idea workflow stages" }).getByRole("link", { name: /Editorial Board/ }).click();
+  await expect(page.locator(".saved-run-status")).toContainText("Saved run status");
+});
+
+test("labels the short-post review with the exact short output", async ({ page }) => {
+  await createIdeaThroughWrite(page, { shape: "short" });
+  await expect(page.getByRole("heading", { name: "Short post review" })).toBeVisible();
+  await expect(page.getByText("The saved assessment stays connected to this exact short-post version.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Article review" })).toHaveCount(0);
+});
+
+test("renders the exact visual asset on the page and downloads it as PNG", async ({ page }) => {
+  await createIdeaThroughWrite(page);
+  await page.locator(".visual-companion > summary").click();
+  const templatePicker = page.locator(".visual-template-picker");
+  await expect(templatePicker.getByRole("radio")).toHaveCount(4);
+  const templateTopEdges = await templatePicker.locator("label").evaluateAll((labels) => labels.map((label) => Math.round(label.getBoundingClientRect().top)));
+  expect(new Set(templateTopEdges).size).toBe(1);
+  await page.getByRole("button", { name: "Create visual companion" }).click();
+  const visual = page.locator("img.visual-rendered-asset");
+  await expect(visual).toBeVisible();
+  await expect(visual).toHaveAttribute("src", /^data:image\/svg\+xml/);
+  await expect(page.locator(".visual-flow-actions")).toContainText("Refresh this visual");
+  await expect(page.locator(".visual-flow-actions")).toContainText("Download PNG");
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: "Download PNG" }).click(),
+  ]);
+  expect(download.suggestedFilename()).toMatch(/\.png$/);
+});
+
 test("exposes delivery channel only in Finalize and preserves article-first sequencing", async ({ page }) => {
   await createIdeaThroughWrite(page, { shape: "long_with_derived_short" });
+  await page.locator(".visual-companion > summary").click();
+  await page.getByRole("button", { name: "Create visual companion" }).click();
   await reviewAllDualOutputs(page);
   await page.getByRole("link", { name: "Continue to Finalize →" }).click();
   await expect(page.locator(".finalize-output")).toHaveCount(2);
+  const finalVisual = page.locator(".finalize-panel .visual-rendered-asset");
+  await expect(finalVisual).toBeVisible();
+  const finalVisualBounds = await finalVisual.boundingBox();
+  expect(finalVisualBounds?.width).toBeLessThanOrEqual(640);
+  await expect(page.getByRole("link", { name: "Return to Write" })).toHaveClass(/return-to-write/);
   await expect(page.locator(".finalize-output").nth(0)).toContainText("ARTICLE");
   await expect(page.locator(".finalize-output").nth(1)).toContainText("DERIVED SHORT POST");
   await expect(page.getByLabel("Delivery channel")).toHaveCount(2);
   await expect(page.getByLabel("Delivery channel").first().locator("option")).toHaveText(["LinkedIn", "Medium", "Substack"]);
   await page.getByLabel("Delivery channel").nth(0).selectOption("medium");
-  await page.getByLabel("Delivery channel").nth(1).selectOption("substack");
+  await page.getByLabel("Publication URL").nth(0).fill("https://example.test/article");
+  await page.getByLabel("Published date").nth(0).fill("2026-08-10T09:30");
   const voiceChecks = page.getByRole("button", { name: "Check final voice" });
   await voiceChecks.nth(0).click();
   await voiceChecks.nth(1).click();
   const publish = page.getByRole("button", { name: "Mark this version as published" });
   await expect(publish.nth(1)).toBeDisabled();
-  await expect(page.getByText(/Record the exact article publication first/)).toBeVisible();
+  await expect(page.getByText(/Publish the article before recording this derived short post/)).toBeVisible();
   await publish.nth(0).click();
   await expect(page.getByText("Published record saved locally.")).toBeVisible();
   // Publishing reloads the Finalize cards, so reacquire the remaining exact
   // output rather than retaining a detached locator from the old render.
+  await page.getByLabel("Delivery channel").selectOption("substack");
+  await page.getByLabel("Publication URL").fill("https://example.test/derived-short");
+  await page.getByLabel("Published date").fill("2026-08-10T10:15");
   await page.getByRole("button", { name: "Mark this version as published" }).click();
   await expect(page.getByText("Published record saved locally.")).toBeVisible();
+  const records = page.locator(".publication-record.published-record");
+  await expect(records).toHaveCount(2);
+  await expect(records.nth(0)).toContainText("Delivery channel");
+  await expect(records.nth(0)).toContainText("Medium");
+  await expect(records.nth(0)).toContainText("Publication URL");
+  await expect(records.nth(0)).toContainText("https://example.test/article");
+  await expect(records.nth(0)).toContainText("2026");
+  await expect(records.nth(1)).toContainText("Substack");
+  await expect(records.nth(1)).toContainText("https://example.test/derived-short");
+  await expect(records.nth(1)).toContainText("Published date");
   const ideaId = new URL(page.url()).pathname.match(/^\/ideas\/([^/]+)/)?.[1];
   expect(ideaId).toBeTruthy();
   const persisted = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: { publications: Array<{ channel: string; draftFormat: string }> } };
@@ -220,7 +364,9 @@ test("uses proofreader availability rather than Board availability for review co
     return route.continue();
   });
   await page.reload();
-  await expect(page.getByRole("button", { name: "Run draft review" })).toContainText("local deterministic proofread · $0.00 · no provider call");
+  const articleReviewActions = page.locator(".output-editor").first().locator(".output-editor-actions");
+  await expect(articleReviewActions.getByRole("button", { name: "Run draft review" })).toHaveText("Run draft review");
+  await expect(articleReviewActions.locator(".proofreader-disclosure")).toContainText("local deterministic proofread · $0.00 · no provider call");
   await page.getByRole("button", { name: "Run draft review" }).click();
   await expect.poll(() => actions.length).toBe(1);
   expect(actions[0]).toMatchObject({ action: "run_final_review", proofreadMode: "deterministic" });
@@ -228,7 +374,8 @@ test("uses proofreader availability rather than Board availability for review co
   actions.length = 0;
   currentPreview = preview({ available: false, proofreader: { ...preview().proofreader, available: true } });
   await page.reload();
-  await expect(page.getByRole("button", { name: "Run draft review" })).toContainText("test-proofreader-model proofread · est. $0.0020");
+  await expect(articleReviewActions.getByRole("button", { name: "Run draft review" })).toHaveText("Run draft review");
+  await expect(articleReviewActions.locator(".proofreader-disclosure")).toContainText("test-proofreader-model proofread · upper-bound reservation est. $0.0020");
   await page.getByRole("button", { name: "Run draft review" }).click();
   await expect.poll(() => actions.length).toBe(2);
   expect(actions).toEqual(expect.arrayContaining([
@@ -254,9 +401,9 @@ test("explains each exact-output Finalize proofread blocker without enabling pub
     await expect(page.getByText(message)).toBeVisible();
     await expect(page.getByRole("button", { name: "Mark this version as published" })).toBeDisabled();
   };
-  await expectBlocked(undefined, /Run the combined editorial assessment and proofread/);
-  await expectBlocked({ ...completed, proofreadCompleted: false, proofreadStatus: "not_run" }, /live-required proofread has not produced a validated result/);
-  await expectBlocked({ ...completed, proofreadCompleted: false, proofreadStatus: "failed" }, /low-cost proofread failed for this exact saved output/);
+  await expectBlocked(undefined, /Run this saved-output review in Write before publishing/);
+  await expectBlocked({ ...completed, proofreadCompleted: false, proofreadStatus: "not_run" }, /Live proofread is not complete for this saved output/);
+  await expectBlocked({ ...completed, proofreadCompleted: false, proofreadStatus: "failed" }, /Proofread failed for this saved output/);
   await expectBlocked({ ...completed, proofreadCompleted: true, proofreadStatus: "completed", proofreadFindings: [{ id: "material-proof", category: "clarity", severity: "material", current: "unclear wording", suggestion: "clear wording", rationale: "A reader needs a clearer sentence." }] }, /Resolve or explicitly dismiss every material Proofread and clarity finding/);
 });
 

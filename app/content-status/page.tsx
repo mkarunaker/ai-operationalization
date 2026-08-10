@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getContentStatus } from "../../src/content/loader";
+import { AppNav } from "../app-nav";
 import { ContentSearch } from "./content-search";
 
 export const dynamic = "force-dynamic";
@@ -21,7 +22,7 @@ function SourceCard({ name, source, detail }: { name: string; source: ReturnType
 
 export default function ContentStatusPage() {
   const status = getContentStatus();
-  return <main className="status-page">
+  return <main className="queue-shell"><AppNav /><section className="status-page">
     <header className="status-header"><Link href="/dashboard" className="back-link">← Workspace</Link><p className="eyebrow">Read-only source inspection</p><h1>Content status</h1><p>These source files remain on your machine. Refreshing validates and indexes them; it never edits, uploads, or replaces them.</p></header>
     <div className="source-grid">
       <SourceCard name="Canonical knowledge base" source={status.bok} detail="EAIO_BOK_PATH" />
@@ -29,5 +30,5 @@ export default function ContentStatusPage() {
     </div>
     <ContentSearch />
     <section className="refresh-guidance"><div><p className="eyebrow">Refresh from Terminal</p><h2>Update the local index when a source changes.</h2><p>Run <code>npm run content:index</code>. The last valid knowledge index is preserved if a refresh fails.</p></div><Link className="text-action" href="/api/content/status">View source status JSON <span>→</span></Link></section>
-  </main>;
+  </section></main>;
 }

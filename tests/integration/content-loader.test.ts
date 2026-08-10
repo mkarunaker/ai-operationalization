@@ -23,7 +23,7 @@ function fixture() {
   } finally {
     database.close();
   }
-  return { root, bok, voiceDirectory, config: { appBaseUrl: "http://127.0.0.1:3100", databasePath, bokPath: bok, voiceSkillPath: voiceDirectory, editorialNotebookPath: path.join(root, "EDITORIAL_NOTEBOOK.md") } };
+  return { root, bok, voiceDirectory, config: { appBaseUrl: "http://127.0.0.1:3100", databasePath, visualAssetsPath: path.join(root, "visuals"), bokPath: bok, voiceSkillPath: voiceDirectory, editorialNotebookPath: path.join(root, "EDITORIAL_NOTEBOOK.md") } };
 }
 
 afterEach(() => { for (const directory of temporaryDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true }); });

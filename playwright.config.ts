@@ -19,6 +19,7 @@ export default defineConfig({
     reuseExistingServer: false,
     env: {
       DATABASE_PATH: path.join(e2eRoot, "editorial.sqlite"),
+      VISUALS_PATH: path.join(e2eRoot, "visuals"),
       EDITORIAL_NOTEBOOK_PATH: path.join(e2eRoot, "EDITORIAL_NOTEBOOK.md"),
       EAIO_BOK_PATH: path.join(fixtureRoot, "synthetic-bok.md"),
       KK_VOICE_SKILL_PATH: path.join(fixtureRoot, "synthetic-voice"),

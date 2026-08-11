@@ -670,12 +670,24 @@ export function IdeaWorkspaceClient({
             reviewHref={mode === "develop" ? `/ideas/${ideaId}/board` : undefined}
             voiceChecks={voiceChecks}
             checkVoice={checkVoice}
-            createVisual={(template) =>
+            createVisual={(visualAction) =>
               run(async () => {
-                await request({ action: "create_visual_companion", template });
-                setMessage("Visual companion saved locally for this draft version.");
+                if (visualAction.operation === "recommend") {
+                  await request({ action: "recommend_visual_brief", template: visualAction.template, placement: visualAction.placement, format: visualAction.format });
+                  setMessage("Visual brief saved. Review the rationale, then approve it before rendering.");
+                } else if (visualAction.operation === "approve" && visualAction.briefId) {
+                  await request({ action: "approve_visual_brief", briefId: visualAction.briefId });
+                  setMessage("Visual brief approved for this exact saved output. Render when ready.");
+                } else {
+                  await request({ action: "create_visual_companion", briefId: visualAction.briefId, format: visualAction.format });
+                  setMessage("Visual companion saved locally for this draft version.");
+                }
               })
             }
+            updateVisualBrief={(input) => run(async () => {
+              await request({ action: "update_visual_brief", ...input });
+              setMessage("Visual brief edits saved for this exact output.");
+            })}
             derivedShortDraft={derivedShortDraft}
             setDerivedShortDraft={(body) => {
               derivedShortEditorRef.current = { ...derivedShortEditorRef.current, body };

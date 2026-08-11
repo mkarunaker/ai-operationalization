@@ -2,7 +2,7 @@
 
 ## Milestone 6.2 handoff — 2026-08-09
 
-Status: **approved by independent Sol read-only audit on 2026-08-09.** Milestone 5.1 remains independently approved.
+Status: **complete — independently approved by Sol on 2026-08-09.** Milestone 5.1 is likewise complete and independently approved.
 
 ### Post-approval UX closure — approved by independent Sol read-only audit on 2026-08-10
 
@@ -31,7 +31,7 @@ Status: **approved by independent Sol read-only audit on 2026-08-09.** Milestone
 
 ## Milestone 5.1 handoff — 2026-08-09
 
-Status: **approved by independent Sol read-only audit on 2026-08-09.**
+Status: **complete — independently approved by Sol on 2026-08-09.**
 
 ## Audit interruption checkpoint — 2026-08-09
 
@@ -54,9 +54,46 @@ Status: **approved by independent Sol read-only audit on 2026-08-09.**
 - Latest remediation makes `readerContract` a strict minimal manifest object and rejects malformed persisted contracts; computes and renders proofreader reservation by exact output; suppresses live-model/cost disclosure when the route is unavailable; resolves the proofreader adapter, route, pricing, and cap entirely inside the production boundary while retaining a test-only injection seam; and persists attempted provider/model identity separately from response-reported identity. Direct no-network regressions prove a matching-metadata malicious adapter is ignored, cap rejection is independent, incoherent/no-output manifests are rejected, and a mismatched response model remains response-only telemetry.
 - Do not apply migration 017 to meaningful local data without the existing owner-only backup and restore verification. Do not begin a later milestone before the Milestone 5.1 independent audit passes.
 
+## Milestone 7 start — 2026-08-10
+
+- Milestone 6.2’s post-approval UX closure is committed and pushed as `b4d01e7`; the independent Sol audit approved it with no blockers. The untracked local PDF, archive, and PNG assets remain outside the commit.
+- Milestone 7 begins with `docs/MILESTONE_7_BLOCKER_MATRIX.md`: the visual-brief contract, author-approval lifecycle, exact-output provenance, claim validation, placement limits, and direct failing regressions are defined before implementation. The approved configured `visuals/` root supersedes the stale database-adjacent visual-path wording in the original roadmap.
+- The first Milestone 7 implementation remains deterministic and local-only. No image-generation provider, private source, or meaningful local-data migration will be used; any later generative-image capability requires a separate server-owned route and independent audit.
+
+### Milestone 7 visual-brief checkpoint — complete and independently approved by Sol, 2026-08-10
+
+- `019_visual_brief_approval.sql` is additive and validate-only. It persists an exact saved-output visual brief, reader/output snapshot, author direction, traceable claims, labels, caption, alt text, placement, approval state, revision, and an optional rendered-asset link. It has not been applied to meaningful local data.
+- The author begins with an automatic recommendation and no visual type selected. A text-only output can receive `no_visual`; an explicit explanatory-shape choice may request a visual. The author can state what the visual should help the reader see, edit bounded brief fields, approve the exact revision, then render a local deterministic SVG. Refresh remains limited to the same exact rendered brief.
+- The service enforces one lead plus two supporting approved assets per exact output. Each asset remains below the configured ignored visual root, with the existing readable title-prefix, exact draft-number, timestamp, path-containment, and owner-only protections. No chart/data grammar or image provider exists in this checkpoint.
+- Cost is shown truthfully as `$0.00 local` for the deterministic renderer. The roadmap records `gpt-image-2` only as a future optional illustration candidate; no route, credential, provider request, or price configuration exists or was called in this work.
+- The first audit’s five bounded lifecycle defects are remediated: the route strips the action envelope before strict service parsing; rendering/refresh take template and every variable text element only from the approved brief; `<desc>` and `aria-label` use approved caption/alt text in the saved SVG itself; supporting and derived-short output lifecycles are independently projected into Write; placement edits recheck one-lead/two-support limits atomically; and `vertical_path` is now the canonical persisted author identifier while legacy rendered assets retain their own compatibility read path.
+- Direct regressions added before remediation cover the real route envelope, malicious post-approval template injection, approved claim/direction/caption/alt fidelity, atomic placement mutation, vertical-path persistence/reload/rendering, immutable reader-contract provenance after later Develop changes, and exact derived-short targeting. The browser flow proves an article lead, a supporting asset, and a separate derived-short asset can each be approved and rendered without changing the approved grammar.
+- Earlier local validation is superseded by the fourth-audit remediation results below.
+- No `.env` file, secret, BOK, voice, Notebook, private source, database, backup, provider request body, provider, staging, commit, or push was accessed or changed. Tests used only temporary synthetic databases and synthetic source fixtures.
+
+#### Second independent-audit remediation — 2026-08-10
+
+- The current audit found four bounded failures. The derived-short Write surface now has its own shape selector and a no-visual escape path; every deterministic approval/render path shows `$0.00 local` beside its control; visual placement limits are enforced by the writer transaction and database index/triggers; and visual operations check publication state only for their exact output, so an unpublished current derived short remains available after its article has been recorded.
+- Direct regressions were added before implementation: `local visual asset storage > enforces lead and supporting limits in the database even when a caller bypasses the service count`, `local visual asset storage > allows an unpublished derived-short visual lifecycle after its article has been recorded`, Playwright `lets an author replace a derived-short no-visual recommendation with its own selected shape`, and Playwright `keeps a saved derived short post independently editable and reviewable after article publication`.
+- The direct regressions were observed failing before implementation, then passed: focused `lean-service` plus migration validation (2 files / 34 tests) and the targeted deterministic browser lifecycle. That second-remediation gate is superseded by the third-remediation evidence below.
+
+#### Third independent-audit remediation — 2026-08-10
+
+- The third audit found three bounded defects: refresh controls did not carry the deterministic cost next to their action, a supporting-only record could be projected as a lead, and migration 019 still allowed `maturity_path` in new visual-brief rows. Refresh rows now disclose `$0.00 local`; supporting recommendation requires an active lead brief and supporting rendering requires its rendered lead asset; the detail projection exposes only an actual lead as `visualCompanion` while retaining any legacy support only in the supporting collection; and migration 019 permits only `vertical_path` as a stored vertical grammar.
+- Direct regressions added before remediation failed as expected: Playwright `keeps approved visual grammar immutable while exposing article support and derived-short visual lifecycles` received `Refresh this visualDownload PNG` with no cost; `local visual asset storage > requires a lead visual brief before a supporting brief can be requested`, `never projects a stored supporting-only asset as the lead visual`, and `rejects the legacy maturity_path value in visual-brief persistence` all failed; migration-schema inspection also found the forbidden value. The additional direct `requires the rendered lead asset before a supporting asset can render` regression proves the asset-level ordering guard.
+- The third-remediation command evidence is superseded by the fourth remediation below.
+
+#### Fourth independent-audit remediation — 2026-08-10
+
+- The fourth audit found one compatibility defect: migration 019 intentionally leaves pre-Milestone-7 assets with `visual_brief_id = NULL`, but the lead-brief projection then hid them. The detail loader now has a deliberately narrow null-link fallback for an actual legacy primary asset. It never falls back to a modern supporting asset, and it never grants a legacy asset current brief authority. Write and Finalize retain the asset as a read-only downloadable record; they do not offer a broken refresh action without an approved linked brief.
+- Direct regressions were added before remediation and failed as expected: `local visual asset storage > retains a pre-brief visual through the real detail route for Write and Finalize` initially received no `visualCompanion`; the populated migration regression now creates the asset before 019 runs and proves its retained null link and fields; and Playwright `keeps a legacy unlinked visual readable in Write and Finalize` proves the client renders the compatibility record without a refresh control in both stages.
+- Command-derived local validation after this remediation passed: `npm run typecheck`; `npm run lint`; `npm test -- --run` (24 files / 110 tests); `npm run db:validate` (19 migration files, validate-only); `npm run build`; `npm run test:e2e -- --reporter=list` (19 deterministic production-mode flows); `npm run security:secrets` (132 source/documentation files); `npm run security:audit` (0 vulnerabilities); `git diff --check`; and `git diff --cached --check`. The scanner’s temporary `tsx` IPC was sandbox-blocked and then rerun unchanged through approved local execution. No provider was called and no meaningful local database migration was applied.
+
+- Sol independently approved the complete Milestone 7 current diff after its fourth read-only remediation audit. The approval includes exact-output visual briefs, immutable reader contracts, local-only cost disclosure, SVG/PNG fidelity and physical text containment, lead/support cardinality and legacy compatibility, derived-short independence, Finalize preservation, safe local routes, and no-provider guarantees. The audit did not run suites, migrations, providers, or inspect private sources.
+
 ## Current checkpoint
 
-**Milestones 0–5, the publication UX closure work, Capture-to-Develop, and the historical manual-first research capability are complete. Milestones 5.1 and 6.2 are independently approved. `BUILD_ROADMAP.md` is the active plan. No Git staging, commit, or push has occurred.**
+**Milestones 0–5, the publication UX closure work, Capture-to-Develop, and the historical manual-first research capability are complete. Milestones 5.1, 6.2, and 7 are independently approved. `BUILD_ROADMAP.md` is the active plan. At the end of validation, no Git staging, commit, or push had occurred.**
 
 ### Current delivery snapshot — 2026-08-08
 
@@ -70,8 +107,8 @@ Status: **approved by independent Sol read-only audit on 2026-08-09.**
 | Capture-to-Develop UX checkpoint | Complete | Optional title, generated fallback title, direct transition to Develop, and regression coverage are complete. |
 | Milestone 6 — research and evidence | Complete | Manual evidence, separate interpretation, source records, epistemic labels, injection signals, and explicit zero-cost local research briefs are test-ready. |
 | Board and companion truthfulness closure | Complete | Run-status truth, exact companion-stage identity, scoped recovery route/cost, run-scoped provenance, editor refresh, visual disclosure, and provider-disabled Playwright are implemented. |
-| Milestone 5.1 — reader-first output contract | Approved | Audience and long/short format contract; integrated exact-version proofread, conservative reservation, and direct boundary/browser regressions passed independent Sol read-only audit. |
-| Milestone 6 visual-brief follow-on | Deferred | An approved, claim-bound visual recommendation step will precede rendering; it does not require image generation. |
+| Milestone 5.1 — reader-first output contract | Complete — Sol approved | Audience and long/short format contract; integrated exact-version proofread, conservative reservation, and direct boundary/browser regressions passed independent Sol read-only audit. |
+| Milestone 7 — visual companions | Complete — Sol approved | Sol approved the local deterministic visual-brief lifecycle, exact-output assets, and Finalize preservation after four remediation audits. |
 | Git release preparation | Intentionally open | No files were staged, committed, or pushed during this checkpoint. |
 
 ### Board and companion truthfulness closure — implementation complete, audit pending

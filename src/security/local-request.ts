@@ -96,6 +96,17 @@ export function safeRouteError(error: unknown) {
     /^A current draft format is required/,
     /^A saved Editorial Board reader contract is required for a live proofread/,
     /^The saved Editorial Board reader contract is invalid\. Run the Editorial Board again before a live proofread/,
+    /^An approved visual brief fixes its explanatory template\./,
+    /^Approve a visual brief for this exact saved output before rendering\./,
+    /^Visual brief not found for this idea\./,
+    /^This saved output has no recommended visual to approve\./,
+    /^Request a visual recommendation before editing a visual brief\./,
+    /^This exact saved output already has (a lead visual brief|two supporting visual briefs)\./,
+    /^Prepare a lead visual brief for this exact saved output before requesting a supporting visual\./,
+    /^Render the lead visual for this exact saved output before rendering a supporting visual\./,
+    /^Each visual claim and label must be traceable to this exact saved output\./,
+    /^Create a new visual brief before changing an approved or rendered brief\./,
+    /^Save the current selected output before requesting a visual brief\./,
   ];
   return safePatterns.some((pattern) => pattern.test(message))
     ? message

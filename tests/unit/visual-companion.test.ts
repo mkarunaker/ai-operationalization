@@ -8,7 +8,7 @@ describe("visual companion selection", () => {
     expect(visual.title).toBe("Activity is not AI maturity");
     expect(visual.steps.map((step) => step.title)).toEqual(["Activity", "Operating discipline", "Maturity"]);
     const svg = renderVisualSvg(visual);
-    expect(svg).toContain('Licenses · pilots · prompts · demos');
+    expect(svg).toContain("Licenses, prompts, pilots, and demos show");
     expect(svg).toContain('M220 590 L540 976 L860 590 Z');
     expect(svg).not.toContain('width="280" height="300"');
   });

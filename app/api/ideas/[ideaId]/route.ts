@@ -3,6 +3,9 @@ import {
   deleteUnpublishedIdea,
   createDerivedShortPost,
   createVisualCompanion,
+  approveVisualBrief,
+  recommendVisualBrief,
+  updateVisualBrief,
   saveDerivedShortPost,
   getIdea,
   moveIdea,
@@ -167,10 +170,26 @@ export async function POST(
     if (body.action === "save_derived_short")
       return Response.json({ idea: saveDerivedShortPost(ideaId, String(body.body ?? "")) });
     if (body.action === "create_visual_companion") {
+      // An approved brief is the single render authority. A template in this
+      // request would let the browser silently replace its approved grammar.
+      if (body.template !== undefined) throw new Error("An approved visual brief fixes its explanatory template. Create a new brief to change it.");
+      const format = body.format === "short" || body.format === "article" || body.format === "derived_short" ? body.format : undefined;
+      return Response.json({ idea: createVisualCompanion(ideaId, typeof body.briefId === "string" ? body.briefId : undefined, format) });
+    }
+    if (body.action === "recommend_visual_brief") {
       const template = body.template === "contrast" || body.template === "decision_fork" || body.template === "flow" || body.template === "vertical_path"
         ? body.template
         : undefined;
-      return Response.json({ idea: createVisualCompanion(ideaId, template) });
+      const placement = body.placement === "supporting" ? "supporting" : "lead";
+      const format = body.format === "short" || body.format === "article" || body.format === "derived_short" ? body.format : undefined;
+      return Response.json({ idea: recommendVisualBrief(ideaId, template, placement, format) });
+    }
+    if (body.action === "approve_visual_brief")
+      return Response.json({ idea: approveVisualBrief(ideaId, String(body.briefId ?? "")) });
+    if (body.action === "update_visual_brief") {
+      const visualBrief = { ...body };
+      delete visualBrief.action;
+      return Response.json({ idea: updateVisualBrief(ideaId, visualBrief) });
     }
     if (body.action === "publish")
       return Response.json({ idea: publishIdea(ideaId, body) });

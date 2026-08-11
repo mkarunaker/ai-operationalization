@@ -257,12 +257,18 @@ test("labels the short-post review with the exact short output", async ({ page }
 
 test("renders the exact visual asset on the page and downloads it as PNG", async ({ page }) => {
   await createIdeaThroughWrite(page);
-  await page.locator(".visual-companion > summary").click();
+  await page.locator(".visual-companion > summary").first().click();
   const templatePicker = page.locator(".visual-template-picker");
   await expect(templatePicker.getByRole("radio")).toHaveCount(4);
   const templateTopEdges = await templatePicker.locator("label").evaluateAll((labels) => labels.map((label) => Math.round(label.getBoundingClientRect().top)));
   expect(new Set(templateTopEdges).size).toBe(1);
-  await page.getByRole("button", { name: "Create visual companion" }).click();
+  await expect(templatePicker.getByRole("radio", { name: /Three-step flow/ })).not.toBeChecked();
+  await page.getByRole("button", { name: "Prepare visual brief" }).click();
+  await expect(page.getByText("What should this visual help the reader see?")).toBeVisible();
+  await expect(page.getByText("Rendering cost:").locator("..")).toContainText("$0.00 local");
+  await expect(page.getByRole("button", { name: "Approve visual brief" })).toBeVisible();
+  await page.getByRole("button", { name: "Approve visual brief" }).click();
+  await page.getByRole("button", { name: "Render approved visual" }).click();
   const visual = page.locator("img.visual-rendered-asset");
   await expect(visual).toBeVisible();
   await expect(visual).toHaveAttribute("src", /^data:image\/svg\+xml/);
@@ -275,10 +281,108 @@ test("renders the exact visual asset on the page and downloads it as PNG", async
   expect(download.suggestedFilename()).toMatch(/\.png$/);
 });
 
+test("keeps a legacy unlinked visual readable in Write and Finalize", async ({ page }) => {
+  const ideaId = await createIdeaThroughWrite(page);
+  const legacyVisual = {
+    id: "legacy_unlinked_visual",
+    draftVersionId: "legacy-output-version",
+    type: "flow",
+    eyebrow: "A SIMPLE DIAGNOSTIC",
+    title: "Preserved legacy visual",
+    subtitle: "Saved before visual briefs",
+    steps: [],
+    altText: "Legacy visual description",
+    caption: "Legacy visual caption",
+    filePath: "legacy/asset.svg",
+    createdAt: "2026-08-10T00:00:00.000Z",
+  };
+  await page.route(`**/api/ideas/${ideaId}`, async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json() as { idea?: Record<string, unknown> };
+    if (route.request().method() !== "GET" || !payload.idea) {
+      await route.fulfill({ response });
+      return;
+    }
+    await route.fulfill({
+      response,
+      json: {
+        ...payload,
+        idea: {
+          ...payload.idea,
+          visualCompanion: legacyVisual,
+          visualBrief: undefined,
+          visualBriefs: [],
+          supportingVisualCompanions: [],
+        },
+      },
+    });
+  });
+
+  await page.reload();
+  const writeVisual = page.locator(".visual-companion").first();
+  await expect(writeVisual.locator("img.visual-rendered-asset")).toBeVisible();
+  await expect(writeVisual).toContainText("Saved before visual briefs were introduced");
+  await expect(writeVisual.getByRole("button", { name: "Refresh this visual" })).toHaveCount(0);
+
+  await page.goto(`/ideas/${ideaId}/publish`);
+  const finalizeVisual = page.locator(".finalize-panel .visual-companion");
+  await expect(finalizeVisual.locator("img.visual-rendered-asset")).toBeVisible();
+  await expect(finalizeVisual).toContainText("Legacy visual caption");
+});
+
+test("keeps approved visual grammar immutable while exposing article support and derived-short visual lifecycles", async ({ page }) => {
+  await createIdeaThroughWrite(page, { shape: "long_with_derived_short" });
+  await page.locator(".visual-companion > summary").first().click();
+  await page.getByRole("radio", { name: /Three-step flow/ }).check();
+  await page.getByRole("button", { name: "Prepare visual brief" }).click();
+  await page.getByRole("button", { name: "Approve visual brief" }).click();
+  await expect(page.locator(".visual-template-picker").getByRole("radio", { name: /Iceberg contrast/ })).toBeDisabled();
+  await page.getByRole("button", { name: "Render approved visual" }).click();
+  await expect(page.locator(".visual-companion").first().locator(".visual-flow-actions")).toContainText("$0.00 local");
+  await expect(page.getByRole("button", { name: "Prepare supporting visual brief" })).toBeVisible();
+  await page.getByRole("button", { name: "Prepare supporting visual brief" }).click();
+  await expect(page.getByText("Supporting visual · recommended")).toBeVisible();
+  await expect(page.locator(".supporting-visual")).toContainText("Rendering cost:");
+  await page.getByRole("button", { name: "Approve supporting brief" }).click();
+  await page.getByRole("button", { name: "Render supporting visual" }).click();
+
+  await page.locator(".derived-short-visual > summary").click();
+  await expect(page.getByText(/Separate optional asset for exact derived short-post version/)).toBeVisible();
+  await page.locator(".derived-short-visual").getByRole("radio", { name: /Three-step flow/ }).check();
+  await page.getByRole("button", { name: "Prepare derived short visual brief" }).click();
+  await expect(page.locator(".derived-short-visual")).toContainText("Rendering cost:");
+  await page.getByRole("button", { name: "Approve derived short visual brief" }).click();
+  await page.getByRole("button", { name: "Render approved derived short visual" }).click();
+  await expect(page.locator(".derived-short-visual .visual-flow-actions")).toContainText("$0.00 local");
+  await expect(page.locator("img.visual-rendered-asset")).toHaveCount(3);
+});
+
+test("lets an author replace a derived-short no-visual recommendation with its own selected shape", async ({ page }) => {
+  await createIdeaThroughWrite(page, { shape: "long_with_derived_short" });
+  await page.locator(".visual-companion").first().locator("summary").click();
+  await page.locator(".visual-companion").first().getByRole("radio", { name: /Iceberg contrast/ }).check();
+  const derived = page.getByLabel("Derived short post draft");
+  await derived.fill("This short reflection offers one practical point for a reader to consider.");
+  await page.getByRole("button", { name: "Save derived short version" }).click();
+  await page.locator(".derived-short-visual > summary").click();
+  const panel = page.locator(".derived-short-visual");
+  await expect(panel.getByRole("radio")).toHaveCount(4);
+  await expect(panel.getByRole("radio", { name: /Iceberg contrast/ })).not.toBeChecked();
+  await page.getByRole("button", { name: "Prepare derived short visual brief" }).click();
+  await expect(panel.getByText(/No visual recommended for this exact derived short post/)).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Request selected derived short visual" })).toHaveCount(0);
+  await panel.getByRole("radio", { name: /Decision fork/ }).check();
+  await page.getByRole("button", { name: "Request selected derived short visual" }).click();
+  await expect(panel).toContainText("Rendering cost:");
+  await expect(page.getByRole("button", { name: "Approve derived short visual brief" })).toBeVisible();
+});
+
 test("exposes delivery channel only in Finalize and preserves article-first sequencing", async ({ page }) => {
   await createIdeaThroughWrite(page, { shape: "long_with_derived_short" });
-  await page.locator(".visual-companion > summary").click();
-  await page.getByRole("button", { name: "Create visual companion" }).click();
+  await page.locator(".visual-companion > summary").first().click();
+  await page.getByRole("button", { name: "Prepare visual brief" }).click();
+  await page.getByRole("button", { name: "Approve visual brief" }).click();
+  await page.getByRole("button", { name: "Render approved visual" }).click();
   await reviewAllDualOutputs(page);
   await page.getByRole("link", { name: "Continue to Finalize →" }).click();
   await expect(page.locator(".finalize-output")).toHaveCount(2);
@@ -343,6 +447,12 @@ test("keeps a saved derived short post independently editable and reviewable aft
   await page.getByRole("button", { name: "Save derived short version" }).click();
   await page.getByRole("button", { name: "Run derived short-post review" }).click();
   await expect(page.getByText(/Derived short post ready for final judgment|Revise derived short post before finalizing/)).toBeVisible();
+  await page.locator(".derived-short-visual > summary").click();
+  const visualPanel = page.locator(".derived-short-visual");
+  await visualPanel.getByRole("radio", { name: /Three-step flow/ }).check();
+  await page.getByRole("button", { name: "Prepare derived short visual brief" }).click();
+  await expect(visualPanel).toContainText("Rendering cost:");
+  await expect(page.getByRole("button", { name: "Approve derived short visual brief" })).toBeVisible();
 });
 
 test("uses proofreader availability rather than Board availability for review controls", async ({ page }) => {

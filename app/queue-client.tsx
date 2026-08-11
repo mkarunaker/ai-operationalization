@@ -16,6 +16,60 @@ export type Status =
   | "published"
   | "parked";
 export type Theme = { id: string; name: string };
+type VisualFormat = "short" | "article" | "derived_short";
+type VisualTemplate = "flow" | "vertical_path" | "contrast" | "decision_fork";
+type VisualCompanionView = {
+  id: string;
+  draftVersionId: string;
+  visualBriefId?: string;
+  type: "flow" | "maturity_path" | "contrast" | "decision_fork";
+  eyebrow: string;
+  title: string;
+  subtitle: string;
+  steps: Array<{ title: string; detail: string }>;
+  altText: string;
+  caption: string;
+  filePath: string;
+  createdAt: string;
+};
+type VisualBriefView = {
+  id: string;
+  draftVersionId: string;
+  outputFormat: VisualFormat;
+  recommendation: "no_visual" | "visual";
+  rationale: string;
+  status: "recommended" | "approved" | "dismissed" | "rendered";
+  template?: VisualTemplate;
+  sourceDraftText: string;
+  readerContract: { outputShape: "short" | "long" | "long_with_derived_short"; audienceProfile: "professional" | "executive" | "practitioner" | "general" };
+  authorDirection: string;
+  claims: string[];
+  labels: string[];
+  caption: string;
+  altText: string;
+  placement?: "lead" | "supporting";
+  revisionNumber: number;
+};
+
+function savedVisualTemplate(
+  visual?: VisualCompanionView,
+  brief?: VisualBriefView,
+): VisualTemplate | undefined {
+  if (brief?.template) return brief.template;
+  if (visual?.type === "decision_fork") return "decision_fork";
+  if (visual?.type === "maturity_path") return "vertical_path";
+  if (visual?.type === "flow") return "flow";
+  if (visual?.type === "contrast") return "contrast";
+  return undefined;
+}
+
+type VisualAction = {
+  operation: "recommend" | "approve" | "render";
+  format: VisualFormat;
+  placement?: "lead" | "supporting";
+  template?: VisualTemplate;
+  briefId?: string;
+};
 export type Idea = {
   id: string;
   title: string;
@@ -133,19 +187,14 @@ export type Detail = Idea & {
     publishedAt: string;
     url?: string;
   }>;
-  visualCompanion?: {
-    id: string;
-    draftVersionId: string;
-    type: "flow" | "maturity_path" | "contrast" | "decision_fork";
-    eyebrow: string;
-    title: string;
-    subtitle: string;
-    steps: Array<{ title: string; detail: string }>;
-    altText: string;
-    caption: string;
-    filePath: string;
-    createdAt: string;
-  };
+  visualCompanion?: VisualCompanionView;
+  supportingVisualCompanions: VisualCompanionView[];
+  visualBrief?: VisualBriefView;
+  visualBriefs: VisualBriefView[];
+  derivedShortVisualCompanion?: VisualCompanionView;
+  derivedShortSupportingVisualCompanions: VisualCompanionView[];
+  derivedShortVisualBrief?: VisualBriefView;
+  derivedShortVisualBriefs: VisualBriefView[];
   derivedShortRecovery?: {
     id: string;
     status: "completed" | "failed";
@@ -542,6 +591,7 @@ export function IdeaDetailView({
   voiceChecks,
   checkVoice,
   createVisual,
+  updateVisualBrief,
   derivedShortDraft,
   setDerivedShortDraft,
   saveDerivedShort,
@@ -614,7 +664,8 @@ export function IdeaDetailView({
   reviewHref?: string;
   voiceChecks?: Partial<Record<"short" | "article" | "derived_short", VoiceCheckResult>>;
   checkVoice?: (format: "short" | "article" | "derived_short") => Promise<void>;
-  createVisual?: (template: "flow" | "vertical_path" | "contrast" | "decision_fork") => Promise<void>;
+  createVisual?: (action: VisualAction) => Promise<void>;
+  updateVisualBrief?: (input: { briefId: string; claims: string[]; labels: string[]; caption: string; altText: string; authorDirection?: string; template: VisualTemplate; placement: "lead" | "supporting" }) => Promise<void>;
   derivedShortDraft?: string;
   setDerivedShortDraft?: (value: string) => void;
   saveDerivedShort?: () => Promise<void>;
@@ -641,9 +692,31 @@ export function IdeaDetailView({
   const [researchEvidence, setResearchEvidence] = useState("");
   const [researchInterpretation, setResearchInterpretation] = useState("");
   const [researchSources, setResearchSources] = useState("");
-  const [visualTemplate, setVisualTemplate] = useState<"flow" | "vertical_path" | "contrast" | "decision_fork">(
-    idea.visualCompanion?.type === "decision_fork" ? "decision_fork" : idea.visualCompanion?.type === "maturity_path" ? "vertical_path" : idea.visualCompanion?.type === "flow" ? "flow" : "contrast",
-  );
+  const [visualTemplate, setVisualTemplate] = useState<VisualTemplate | undefined>(() => savedVisualTemplate(idea.visualCompanion, idea.visualBrief));
+  // A derived short output has its own brief and grammar. It must never borrow
+  // the article selector merely because both outputs appear on one Write page.
+  const [derivedVisualTemplate, setDerivedVisualTemplate] = useState<VisualTemplate | undefined>(() => savedVisualTemplate(idea.derivedShortVisualCompanion, idea.derivedShortVisualBrief));
+  const [visualClaim, setVisualClaim] = useState("");
+  const [visualLabel, setVisualLabel] = useState("");
+  const [visualCaption, setVisualCaption] = useState("");
+  const [visualAltText, setVisualAltText] = useState("");
+  const [visualDirection, setVisualDirection] = useState("");
+  const visualBriefEditor = (brief: VisualBriefView, selectedTemplate: VisualTemplate | undefined = visualTemplate) => {
+    const template = selectedTemplate ?? brief.template;
+    return (
+      <div className="visual-brief-editor">
+        <label>What should this visual help the reader see?<textarea value={visualDirection} placeholder={brief.authorDirection || "For example: make the trade-off between speed and operating discipline clear."} onChange={(event) => setVisualDirection(event.target.value)} /></label>
+        <label>Claim from this exact saved output<textarea value={visualClaim} placeholder={brief.sourceDraftText.slice(0, 180) || "Enter an exact claim from the saved output"} onChange={(event) => setVisualClaim(event.target.value)} /></label>
+        <label>Label<input value={visualLabel} placeholder="A concise phrase from that saved output" onChange={(event) => setVisualLabel(event.target.value)} /></label>
+        <label>Caption<textarea value={visualCaption} placeholder={brief.caption} onChange={(event) => setVisualCaption(event.target.value)} /></label>
+        <label>Alt text<textarea value={visualAltText} placeholder={brief.altText} onChange={(event) => setVisualAltText(event.target.value)} /></label>
+        <button disabled={busy || !visualClaim.trim() || !template} onClick={() => {
+          if (!template) return;
+          void updateVisualBrief?.({ briefId: brief.id, claims: [visualClaim.trim()], labels: [visualLabel.trim() || visualClaim.trim()], caption: visualCaption.trim() || brief.caption, altText: visualAltText.trim() || brief.altText, authorDirection: visualDirection.trim(), template, placement: brief.placement ?? "lead" });
+        }}>Save visual brief edits</button>
+      </div>
+    );
+  };
   const liveBudget = liveBudgetOverride ?? livePreview?.budgetCap ?? 0.5;
   const includesDerivedShort = idea.outputShape === "long_with_derived_short";
   const failedBoardRoles = idea.editorialBrief?.runFailures ?? [];
@@ -825,7 +898,20 @@ export function IdeaDetailView({
   const primaryOutput = idea.shortPost ?? idea.article;
   const primaryOutputLabel = primaryFormat === "short" ? "Short post" : "Article";
   const primaryOutputVersionLabel = primaryFormat === "short" ? "short-post" : "article";
+  const primaryVisualHasLinkedLead = Boolean(
+    idea.visualCompanion?.visualBriefId
+      && idea.visualCompanion.visualBriefId === idea.visualBrief?.id,
+  );
+  const derivedShortVisualHasLinkedLead = Boolean(
+    idea.derivedShortVisualCompanion?.visualBriefId
+      && idea.derivedShortVisualCompanion.visualBriefId === idea.derivedShortVisualBrief?.id,
+  );
   const primaryReview = primaryFormat === "short" ? idea.shortPostFinalReview : idea.articleFinalReview;
+  const visualCostDisclosure = (outputLabel: string) => (
+    <p className="visual-cost-disclosure">
+      <b>Rendering cost:</b> $0.00 local for this exact {outputLabel.toLowerCase()} deterministic diagram. No provider call is made.
+    </p>
+  );
   const articlePublished = Boolean(
     idea.article && idea.publications.some((publication) => publication.draftVersionId === idea.article!.id),
   );
@@ -1989,10 +2075,10 @@ export function IdeaDetailView({
         <details className="visual-companion" open={Boolean(idea.visualCompanion)}>
           <summary>
             <span>Visual companion</span>
-            <small>Optional mutable draft asset</small>
+            <small>Optional local asset for this exact {primaryOutputLabel.toLowerCase()} version</small>
           </summary>
           <div className="visual-companion-content">
-            <fieldset className="visual-template-picker" disabled={busy || draftDirty || primaryPublished}>
+            <fieldset className="visual-template-picker" disabled={busy || draftDirty || primaryPublished || ["approved", "rendered"].includes(idea.visualBrief?.status ?? "")}>
               <legend>Choose the explanatory shape</legend>
               <label><input type="radio" name="visual-template" checked={visualTemplate === "decision_fork"} onChange={() => setVisualTemplate("decision_fork")} /><span><b>Decision fork</b><small>One starting point, then unmanaged activity or disciplined capability.</small></span></label>
               <label><input type="radio" name="visual-template" checked={visualTemplate === "contrast"} onChange={() => setVisualTemplate("contrast")} /><span><b>Iceberg contrast</b><small>Visible activity above the surface; operating maturity beneath it.</small></span></label>
@@ -2001,18 +2087,89 @@ export function IdeaDetailView({
             </fieldset>
             {!idea.visualCompanion ? (
               <>
-                <p>Create a mutable local SVG for this exact saved article. It does not change the post text; choose only a structure that the post supports. Visual revision history and publication-artifact selection are planned follow-on work.</p>
-                <button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual(visualTemplate)}>
-                  Create visual companion
-                </button>
+                <p>{idea.visualBrief?.rationale ?? "Ask for a local visual brief first. It will recommend a visual only when the exact saved output supports one."}</p>
+                {idea.visualBrief && <p><b>Saved reader contract:</b> {idea.visualBrief.readerContract.audienceProfile} · {idea.visualBrief.readerContract.outputShape.replaceAll("_", " ")}.</p>}
+                {idea.visualBrief?.status === "recommended" && idea.visualBrief.recommendation === "visual" && updateVisualBrief && (
+                  visualBriefEditor(idea.visualBrief)
+                )}
+                {idea.visualBrief?.recommendation === "no_visual" ? (
+                  <><p><b>No visual recommended for this exact output.</b> Choose an explanatory shape only if you still believe a visual will materially help the reader.</p>{visualTemplate && <button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual({ operation: "recommend", format: primaryFormat, placement: "lead", template: visualTemplate })}>Request selected visual</button>}</>
+                ) : (
+                  <>{visualCostDisclosure(primaryOutputLabel)}<button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual(
+                    !idea.visualBrief
+                      ? { operation: "recommend", format: primaryFormat, placement: "lead", template: visualTemplate }
+                      : idea.visualBrief.status === "recommended"
+                        ? { operation: "approve", format: primaryFormat, briefId: idea.visualBrief.id }
+                        : { operation: "render", format: primaryFormat, briefId: idea.visualBrief.id },
+                  )}>
+                    {!idea.visualBrief ? "Prepare visual brief" : idea.visualBrief.status === "recommended" ? "Approve visual brief" : "Render approved visual"}
+                  </button></>
+                )}
               </>
             ) : (
-              <>
-                <VisualFlow
-                  visual={idea.visualCompanion}
-                  actions={<button className="refresh-visual" disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual(visualTemplate)}>Refresh this visual</button>}
-                />
-              </>
+              <VisualFlow
+                visual={idea.visualCompanion}
+                actions={primaryVisualHasLinkedLead
+                  ? <>{visualCostDisclosure(primaryOutputLabel)}<button className="refresh-visual" disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual({ operation: "render", format: primaryFormat, briefId: idea.visualBrief?.id })}>Refresh this visual</button></>
+                  : <p className="legacy-visual-note">Saved before visual briefs were introduced. This retained local asset is read-only and can still be downloaded.</p>}
+              />
+            )}
+            {primaryVisualHasLinkedLead && (
+              <section className="supporting-visuals" aria-label="Supporting visuals for this exact output">
+                <h3>Supporting visuals</h3>
+                <p>Optional supporting visuals stay attached to this same saved {primaryOutputLabel.toLowerCase()} version. One lead and up to two supporting assets are allowed.</p>
+                {visualCostDisclosure(`supporting ${primaryOutputLabel}`)}
+                <button disabled={busy || draftDirty || primaryPublished || idea.visualBriefs.filter((brief) => brief.placement === "supporting" && brief.status !== "dismissed").length >= 2} onClick={() => void createVisual({ operation: "recommend", format: primaryFormat, placement: "supporting", template: visualTemplate })}>Prepare supporting visual brief</button>
+                {idea.visualBriefs.filter((brief) => brief.placement === "supporting").map((brief) => {
+                  const visual = idea.supportingVisualCompanions.find((asset) => asset.visualBriefId === brief.id);
+                  return <article className="supporting-visual" key={brief.id}>
+                    <b>Supporting visual · {brief.status}</b>
+                    <p>{brief.rationale}</p>
+                    {brief.status === "recommended" && brief.recommendation === "visual" && updateVisualBrief && visualBriefEditor(brief)}
+                    {!visual && <>{visualCostDisclosure(`supporting ${primaryOutputLabel}`)}<button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual(brief.status === "recommended" ? { operation: "approve", format: primaryFormat, briefId: brief.id } : { operation: "render", format: primaryFormat, briefId: brief.id })}>{brief.status === "recommended" ? "Approve supporting brief" : "Render supporting visual"}</button></>}
+                    {visual && <VisualFlow visual={visual} actions={<>{visualCostDisclosure(`supporting ${primaryOutputLabel}`)}<button className="refresh-visual" disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual({ operation: "render", format: primaryFormat, briefId: brief.id })}>Refresh this visual</button></>} />}
+                  </article>;
+                })}
+              </section>
+            )}
+          </div>
+        </details>
+      )}
+      {showDraft && includesDerivedShort && idea.derivedShortPost && createVisual && (
+        <details className="visual-companion derived-short-visual" open={Boolean(idea.derivedShortVisualCompanion)}>
+          <summary><span>Derived short-post visual companion</span><small>Separate optional asset for exact derived short-post version {idea.derivedShortPost.version}</small></summary>
+          <div className="visual-companion-content">
+            <p>{idea.derivedShortVisualBrief?.rationale ?? "This is a separate visual decision for the current derived short post; it does not reuse the article visual."}</p>
+            <fieldset className="visual-template-picker derived-visual-template-picker" disabled={busy || derivedShortDirty || derivedShortPublished || ["approved", "rendered"].includes(idea.derivedShortVisualBrief?.status ?? "")}>
+              <legend>Choose the derived short-post explanatory shape</legend>
+              <label><input type="radio" name="derived-visual-template" checked={derivedVisualTemplate === "decision_fork"} onChange={() => setDerivedVisualTemplate("decision_fork")} /><span><b>Decision fork</b><small>One starting point, then unmanaged activity or disciplined capability.</small></span></label>
+              <label><input type="radio" name="derived-visual-template" checked={derivedVisualTemplate === "contrast"} onChange={() => setDerivedVisualTemplate("contrast")} /><span><b>Iceberg contrast</b><small>Visible activity above the surface; operating maturity beneath it.</small></span></label>
+              <label><input type="radio" name="derived-visual-template" checked={derivedVisualTemplate === "vertical_path"} onChange={() => setDerivedVisualTemplate("vertical_path")} /><span><b>Vertical path</b><small>A compact upward progression through three stages.</small></span></label>
+              <label><input type="radio" name="derived-visual-template" checked={derivedVisualTemplate === "flow"} onChange={() => setDerivedVisualTemplate("flow")} /><span><b>Three-step flow</b><small>Three connected cards; use only when sequence is the actual point.</small></span></label>
+            </fieldset>
+            {idea.derivedShortVisualBrief?.status === "recommended" && idea.derivedShortVisualBrief.recommendation === "visual" && updateVisualBrief && visualBriefEditor(idea.derivedShortVisualBrief, derivedVisualTemplate)}
+            {!idea.derivedShortVisualCompanion ? (
+              idea.derivedShortVisualBrief?.recommendation === "no_visual" ? (
+                <>
+                  <p><b>No visual recommended for this exact derived short post.</b> Choose an explanatory shape only if you still believe a visual will materially help the reader.</p>
+                  {derivedVisualTemplate && <button disabled={busy || derivedShortDirty || derivedShortPublished} onClick={() => void createVisual({ operation: "recommend", format: "derived_short", placement: "lead", template: derivedVisualTemplate })}>Request selected derived short visual</button>}
+                </>
+              ) : (
+                <>
+                  {visualCostDisclosure("derived short post")}
+                  <button disabled={busy || derivedShortDirty || derivedShortPublished} onClick={() => void createVisual(
+                    !idea.derivedShortVisualBrief
+                      ? { operation: "recommend", format: "derived_short", placement: "lead", template: derivedVisualTemplate }
+                      : idea.derivedShortVisualBrief.status === "recommended"
+                        ? { operation: "approve", format: "derived_short", briefId: idea.derivedShortVisualBrief.id }
+                        : { operation: "render", format: "derived_short", briefId: idea.derivedShortVisualBrief.id },
+                  )}>{!idea.derivedShortVisualBrief ? "Prepare derived short visual brief" : idea.derivedShortVisualBrief.status === "recommended" ? "Approve derived short visual brief" : "Render approved derived short visual"}</button>
+                </>
+              )
+            ) : (
+              <VisualFlow visual={idea.derivedShortVisualCompanion} actions={derivedShortVisualHasLinkedLead
+                ? <>{visualCostDisclosure("derived short post")}<button className="refresh-visual" disabled={busy || derivedShortDirty || derivedShortPublished} onClick={() => void createVisual({ operation: "render", format: "derived_short", briefId: idea.derivedShortVisualBrief?.id })}>Refresh this visual</button></>
+                : <p className="legacy-visual-note">Saved before visual briefs were introduced. This retained local asset is read-only and can still be downloaded.</p>} />
             )}
           </div>
         </details>
@@ -2104,7 +2261,7 @@ export function IdeaDetailView({
           )}
           {idea.visualCompanion && (
             <details className="visual-companion" open>
-              <summary><span>Visual companion</span><small>Draft asset for this article version</small></summary>
+              <summary><span>Visual companion</span><small>Draft asset for this {primaryOutputLabel.toLowerCase()} version</small></summary>
               <div className="visual-companion-content"><VisualFlow visual={idea.visualCompanion} /></div>
             </details>
           )}

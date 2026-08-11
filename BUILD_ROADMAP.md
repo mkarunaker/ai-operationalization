@@ -37,10 +37,10 @@ The dates below are planning targets, not promises: each milestone still stops f
 | Publication: Milestone 5 + publication UX audit-gap checkpoint | Complete | 2026-08-08 | LinkedIn-only and canonical-plus-companion flows, immutable published outputs |
 | Capture-to-Develop UX checkpoint | Complete | 2026-08-08 | Optional author title at capture, concise suggested title on Develop, and automatic transition into the new idea |
 | Board and companion truthfulness closure checkpoint | Complete | 2026-08-09 | Truthful saved Board state, exact companion-stage identity, scoped provenance, governed LinkedIn recovery, and isolated deterministic E2E |
-| Reader-first output contract and integrated quality gate: Milestone 5.1 | Approved | 2026-08-09 | Independent Sol read-only audit found no blocking findings after the direct-regression and complete-local-validation gate |
+| Reader-first output contract and integrated quality gate: Milestone 5.1 | Complete — Sol approved | 2026-08-09 | Independent Sol read-only audit found no blocking findings after the direct-regression and complete-local-validation gate |
 | Research and evidence: Milestone 6 | Complete (manual-first) | 2026-08-08 | Manual evidence workflow, explicit zero-cost planning brief, citations, injection tests |
-| Reader-first distribution-neutral reset: Milestone 6.2 | Independently approved | 2026-08-09 | Sol approved the reader/output contract, immutable proofread and scoped boundaries, compatibility migration, and Finalize lifecycle after read-only review |
-| Full visual companions: Milestone 7 | Planned | 2026-08-14 | Approved, traceable visuals; any delivery-channel choice remains a Finalize concern |
+| Reader-first distribution-neutral reset: Milestone 6.2 | Complete — Sol approved | 2026-08-09 | Sol approved the reader/output contract, immutable proofread and scoped boundaries, compatibility migration, and Finalize lifecycle after read-only review |
+| Full visual companions: Milestone 7 | Complete — Sol approved | 2026-08-10 | Approved, traceable visuals; any delivery-channel choice remains a Finalize concern |
 | Learning loop: Milestone 8 | Planned | 2026-08-16 | Manual feedback, follow-up ideas, and Notebook history; no Notebook-to-Inbox flow in current scope |
 | Local configuration and settings: Milestone 9 | Planned | 2026-08-19 | One safe home for themes, non-secret model/cost policy, source readiness, and other local configuration; no authoring-workflow coupling |
 | Local personal MVP release gate: Milestone 10 | Planned | 2026-08-22 | Security, recovery, production-mode validation, and honest technical-debt handoff |
@@ -641,10 +641,12 @@ Create memorable visuals only when they materially improve understanding.
 - Use generative imagery only when illustration adds value.
 - Persist the visual brief, exact source draft, BOK/research claims, prompt, provider/model, cost, generated asset, and publication relationship.
 - Never invent quantitative chart data.
-- Save local visual artifacts as `data/<title-name>/draft_<number>_<datetime>.svg`; reuse the title directory instead of creating a directory per version.
+- Save local visual artifacts beneath the configured ignored `visuals/<title-prefix>-<idea-suffix>/` root, not beside SQLite data. Reuse the readable title directory per idea; filenames retain the exact draft number and timestamp.
 - Use the same recognizable draft-and-timestamp naming convention for downloaded assets.
 - Allow an article to have a lead visual and up to two supporting visuals when useful; its optional derived short post may use a separate output-appropriate visual.
-- Provide editable visual suggestions for labels, caption, alt text, structure, and platform use before rendering.
+- Provide editable visual suggestions for labels, caption, alt text, structure, and output use before rendering. Delivery channel remains a Finalize concern.
+- In the visual brief, let the author state what the visual should help the reader see and revise it before approval. Always disclose the deterministic local cost or the server-reserved upper-bound cost of any optional future raster render beside its approval action; never hide a paid estimate in a prompt or button label.
+- If a later author-approved raster illustration is enabled, begin with the server-owned `gpt-image-2` route. It is an optional illustration renderer, never a substitute for the deterministic factual-diagram renderer; its model, dimensions, quality, exact upper-bound reservation, actual per-attempt telemetry, and generated asset must be persisted and independently audited before it can be enabled.
 
 ### Acceptance criteria
 
@@ -658,6 +660,10 @@ Create memorable visuals only when they materially improve understanding.
 ### Checkpoint report
 
 Demonstrate one diagram-worthy post and one text-only post, provenance, approval, accessibility, and cost. Stop.
+
+### Local audit handoff — independently approved, 2026-08-10
+
+The first independent audit found five bounded lifecycle defects in the deterministic visual-brief checkpoint. Its remediation remained confined to the real route envelope, approved-brief render authority, exact output/placement lifecycle, and vertical-template compatibility. A second audit then identified four further closure defects: an unselectable derived-short replacement after `no_visual`, missing local-cost disclosure beside supporting and derived approval/render controls, non-atomic placement cardinality, and an idea-wide publication lock that stranded an unpublished derived short after article publication. A third audit found refresh-cost disclosure outside the action row, supporting-only lead projection, and a compatibility-only grammar still writable by migration 019. The fourth audit found that a genuine pre-brief asset with a null optional link was hidden by the newer lead-brief projection. It now has a narrow read-only compatibility path that cannot promote a modern support to lead or enable legacy refresh. Each finding received a direct regression before its fix and the full command-derived gate passed. Sol independently approved the complete Milestone 7 current diff on 2026-08-10. `gpt-image-2` remains documented only as a future optional illustration route, not an enabled provider.
 
 ---
 

@@ -15,6 +15,21 @@ describe("persisted Board and derived-short status", () => {
     })).toBe(true);
   });
 
+  it("allows only an explicitly linked scoped reviewer recovery to resolve that reviewer failure", () => {
+    expect(isBoardReviewIncomplete({
+      runStatus: "partially_completed",
+      failures: [{ role: "skeptic" }],
+      finalDrafterRecovered: true,
+      reviewerRecoveredRoles: ["skeptic"],
+    })).toBe(false);
+    expect(isBoardReviewIncomplete({
+      runStatus: "partially_completed",
+      failures: [{ role: "skeptic" }],
+      finalDrafterRecovered: true,
+      reviewerRecoveredRoles: [],
+    })).toBe(true);
+  });
+
   it("updates the controlled derived short post only when an action replaced it and the author has no unsaved edits", () => {
     expect(shouldResetDerivedShortEditor("refresh_live_derived_short", false)).toBe(true);
     expect(shouldResetDerivedShortEditor("retry_live_derived_short", true)).toBe(false);

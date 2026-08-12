@@ -30,6 +30,18 @@ The independent 2026-08-07 completeness audit is recorded in `AUDIT_2026-08-07.m
 
 The dates below are planning targets, not promises: each milestone still stops for its acceptance criteria, local validation, and a user checkpoint. A scope change or a failed audit moves later targets rather than silently compressing quality work.
 
+### Delivery and review pattern
+
+Use one short-lived branch for one bounded intent. Make small commits that each present one reviewer-readable intent and one safety argument; this is deliberately **not** a line-count rule. Split unrelated work, but keep the implementation, direct regression, migration (when applicable), and documentation together when they collectively prove that one safety boundary.
+
+1. Start a short-lived, descriptively named branch before implementation.
+2. Commit in intent/risk-sized slices. Each commit message and handoff must state the behavior changed, the principal risk controlled, and the direct evidence that protects it.
+3. Before opening a pull request, obtain an independent read-only agent review of the complete branch diff, its direct regressions, and the validation record. Remediate concrete findings and repeat the review as necessary; the reviewer must not access private content, call providers, or mutate project state.
+4. Open one pull request only after that review is clear. CI supplies the repository gate; the human owner makes the merge decision.
+5. The PR handoff must name its intent, safety argument, validation commands/results, migration or compatibility implications, expected reviewer focus, and any known limitation or manual follow-up.
+
+For additive schema work, the migration and its direct compatibility regression belong in the same reviewable safety slice, and the migration must be visible in the branch/PR diff. Do not use this process to force cosmetic or unrelated cleanup into a safety-critical change.
+
 | Phase | Status on 2026-08-08 | Target completion | Exit condition |
 |---|---|---:|---|
 | Foundation: Milestones 0–2 | Complete | 2026-08-07 | Lean contract, queue, grounded deterministic writing path |
@@ -41,6 +53,7 @@ The dates below are planning targets, not promises: each milestone still stops f
 | Research and evidence: Milestone 6 | Complete (manual-first) | 2026-08-08 | Manual evidence workflow, explicit zero-cost planning brief, citations, injection tests |
 | Reader-first distribution-neutral reset: Milestone 6.2 | Complete — Sol approved | 2026-08-09 | Sol approved the reader/output contract, immutable proofread and scoped boundaries, compatibility migration, and Finalize lifecycle after read-only review |
 | Full visual companions: Milestone 7 | Complete — Sol approved | 2026-08-10 | Approved, traceable visuals; any delivery-channel choice remains a Finalize concern |
+| Post-Milestone 7.1 authoring and visual-revision hardening | Complete — Sol approved | 2026-08-11 | Independent read-only approval after provenance, failure-projection, unique visual-version, and asset-history regressions |
 | Learning loop: Milestone 8 | Planned | 2026-08-16 | Manual feedback, follow-up ideas, and Notebook history; no Notebook-to-Inbox flow in current scope |
 | Local configuration and settings: Milestone 9 | Planned | 2026-08-19 | One safe home for themes, non-secret model/cost policy, source readiness, and other local configuration; no authoring-workflow coupling |
 | Local personal MVP release gate: Milestone 10 | Planned | 2026-08-22 | Security, recovery, production-mode validation, and honest technical-debt handoff |
@@ -664,6 +677,75 @@ Demonstrate one diagram-worthy post and one text-only post, provenance, approval
 ### Local audit handoff — independently approved, 2026-08-10
 
 The first independent audit found five bounded lifecycle defects in the deterministic visual-brief checkpoint. Its remediation remained confined to the real route envelope, approved-brief render authority, exact output/placement lifecycle, and vertical-template compatibility. A second audit then identified four further closure defects: an unselectable derived-short replacement after `no_visual`, missing local-cost disclosure beside supporting and derived approval/render controls, non-atomic placement cardinality, and an idea-wide publication lock that stranded an unpublished derived short after article publication. A third audit found refresh-cost disclosure outside the action row, supporting-only lead projection, and a compatibility-only grammar still writable by migration 019. The fourth audit found that a genuine pre-brief asset with a null optional link was hidden by the newer lead-brief projection. It now has a narrow read-only compatibility path that cannot promote a modern support to lead or enable legacy refresh. Each finding received a direct regression before its fix and the full command-derived gate passed. Sol independently approved the complete Milestone 7 current diff on 2026-08-10. `gpt-image-2` remains documented only as a future optional illustration route, not an enabled provider.
+
+---
+
+## Milestone 7.1 — Authoring and visual-revision hardening
+
+### Objective
+
+Close reader-facing reliability gaps found during post-Milestone-7 manual use without reopening the approved visual-brief safety contract or silently changing a saved output.
+
+### Scope
+
+- Enforce the selected saved reader contract at the generated-output boundary. A draft outside its selected long/short range must not appear as a successful current output without an explicit, actionable contract result.
+- Keep original capture and BOK/reference material as bounded context only. Reader-facing draft text must never leak source labels, prompt scaffolding, truncated capture fragments, or internal phrases such as `selected BOK material` or `The following themes`.
+- Let the author state a bounded visual idea before recommendation—for example, a conceptual building metaphor. The Board/local planner may recommend one supported deterministic grammar only when it faithfully fits. Otherwise it stores an honest `custom illustration may help` concept without rendering, provider dispatch, price, or a misleading approval action.
+- Make failed or unattempted exact-output proofread visibly actionable: name the safe classified state and expose only the allowed retry/recovery action. Do not collapse it into a generic “not validated” message.
+- Make live reviewer truncation recovery honest and usable. Preserve the failed attempt, never make an automatic paid retry or hidden output-limit increase, and show the permitted explicit rerun/escalation route with its cap and upper-bound cost. Durable role output-limit policy belongs in Milestone 9 Settings.
+- Defer supporting-visual authoring. The active product should offer one lead visual per exact output, with versioned replacement rather than extra diagrams. Existing supporting records remain readable history, but 7.1 removes new supporting-visual creation from the normal authoring flow.
+- Add versioned lead-visual revisions. An author can prepare a new lead version from the same exact saved output, choose a different grammar, palette, labels, claims, or bounded direction, approve and render it, and deliberately select the active lead. Earlier approved/rendered assets remain immutable, downloadable history.
+- Move the primary Visual companion entry point nearer its saved-output editor so it is discoverable before a long review result. Preserve the current exact-output and publication locks.
+
+### Acceptance criteria
+
+- A deliberately under-range generated article/short output is saved as an explicit contract failure or recovery state, never silently presented as a successful output; a compliant output remains current and retains its exact reader contract.
+- Adversarial capture/reference fixtures cannot appear in reader-facing draft text as prompt labels, truncated capture, or internal BOK scaffolding. The source remains available only through its explicitly labelled context/provenance display.
+- A custom visual direction remains visible and versioned as author intent. It is either reflected in the approved supported visual brief or reported as an unrenderable custom-illustration concept; it never silently selects an unrelated template or claims an image was generated.
+- Browser-visible proofread and reviewer failure states distinguish unavailable, unattempted, refusal, truncation, malformed output, repair exhaustion, and provider failure using safe recognized explanations and an honest allowed next action.
+- A simulated Skeptic truncation creates one persisted failed attempt, no automatic second dispatch, and a visible bounded-cost explicit recovery path. The selected server route remains authoritative.
+- Visual Version 1 and Version 2 for one exact output remain separately stored and downloadable; rendering Version 2 never overwrites Version 1; active-lead selection is explicit; and only the active lead appears in Write and Finalize. A color change is an approved, persisted local palette change on the new version, never a hidden rewrite of an older asset. No normal authoring control creates a supporting visual, while existing supporting records remain readable history. Saving a new output version makes prior visual versions historical rather than current.
+- Browser coverage proves the Visual companion entry point is discoverable beside/before the primary output editor, while all existing review, proofread, Finalize, provenance, publication, and visual safety gates remain intact.
+
+### Required evidence and audit gate
+
+- Before implementation, add a blocker-to-regression matrix with each invariant, exact boundary, adversarial fixture, direct regression name, and observed prior failure.
+- Use non-default reader ranges, injection-shaped capture/reference text, simulated classified provider outcomes, a no-dispatch assertion, and two distinct visual grammars for the same exact saved output.
+- Treat author visual direction as untrusted bounded data. A later optional illustration provider requires a separate explicit design, server-owned route, model/cost reservation, per-attempt telemetry, and independent audit; this milestone must not configure or call one.
+- Do not call providers, read private sources, or apply migrations to meaningful local data. Any schema change is additive, temporary-database validated, and owner-applied only after backup.
+- Run the established complete gate: typecheck, lint, full unit/integration suite, validate-only migrations, production build, deterministic production-mode Playwright, secret scan, dependency audit, and both diff checks. Obtain a new independent read-only Sol audit before calling Milestone 7.1 complete.
+
+### Audit remediation — 2026-08-11
+
+The latest independent read-only audit found three narrow boundaries not directly proven by the prior local gate: the untracked schema/handoff artifacts were absent from its audited Git patch; two concurrent Initial Drafter recovery requests could pass eligibility before either persisted an attempt; and capture-fragment scanning sampled only every sixth word. The remediation began with a fresh-table/upgrade regression, a latched-provider concurrency regression, and compliant-range unaligned 12-word capture fixtures for initial, same-run derived, and scoped-derived recovery output. Each failed against the audited implementation and now passes.
+
+A follow-up read-only audit found one remaining capture-guard gap: it discarded normalized one-character words, so a copied fragment containing `a` or `I` could still evade matching. The direct fixtures were strengthened first with an unaligned 12-word `alpha a bridge I …` fragment at all three output-save boundaries and failed against the prior code. `capturedFragments()` now retains every non-empty normalized token.
+
+The implementation must use an additive unique retry-claim record inserted only after no-dispatch cost preflight and immediately before provider execution. The claim must survive failure so exactly one paid retry is possible; a cap rejection must not consume it. The prose guard must inspect every contiguous 12-word normalized capture window. Rerun the complete no-provider gate after these direct regressions pass, then update the validation record.
+
+The complete no-provider gate passed again after the one-character-token remediation: `npm run typecheck`; `npm run lint`; `npm test` (**24 files / 133 tests**); `npm run db:validate` (**22 migrations, validate-only**); `npm run build`; `npm run test:e2e -- --reporter=line` (**29 deterministic production-mode browser flows**); `npm run security:secrets` (**132 source/documentation files**); `npm run security:audit` (**0 vulnerabilities**); `git diff --check`; and `git diff --cached --check`. The additive `020_visual_lead_revision_selection.sql`, `021_visual_version_color_schemes.sql`, and `022_initial_drafter_recovery_claim.sql` files plus the matrix and audit prompt are staged for the independent audit, so `git diff HEAD` is schema-complete. This is not an approval or a completed milestone until the independent audit occurs.
+
+### Latest audit remediation — 2026-08-11
+
+Sol's read-only audit returned `DO NOT APPROVE` with four narrow blockers. Each received a direct regression and narrow fix: Initial Drafter recovery now rejects saved-voice checksum drift before availability, estimation, or dispatch; `023_visual_asset_version_sequence.sql` separates immutable asset version order from mutable pre-approval brief edits; visual directions use positive supported-grammar mapping so an unlisted bridge metaphor remains an honest no-render concept even beside diagram keywords; and safe persisted Initial Drafter failure categories produce browser guidance specific to reader-range or prose-scaffolding failure rather than falsely claiming an output limit.
+
+The complete no-provider gate passed after this remediation: typecheck, lint, 24 test files / 135 tests, 23 validate-only migrations, production build, 31 deterministic production-mode Playwright flows, 132-file secret scan, zero-vulnerability dependency audit, and both diff checks. `023` is staged with the existing audit artifacts, so the current `git diff HEAD` is schema-complete for a fresh independent read-only Sol audit. That audit remains required before any completion or approval claim.
+
+### Follow-up audit evidence remediation — 2026-08-11
+
+Sol found two remaining direct-evidence gaps, not a conflicting implementation: Version 2’s claim field had not actually changed in the service or browser flow, and browser scaffolding guidance had received a hand-supplied category. The strengthened Version 2 tests now save a different traceable claim with the forest palette and prove immutable asset version 2, advanced mutable brief revision, Version 2 of 2, and distinct assets. The hostile Initial Drafter test now proves the real saved `reader_prose_scaffolding_failed` category; the browser flow creates that failure through the local deterministic fixture and mocks only recovery availability. The complete no-provider gate passed again with 32 deterministic browser flows. A fresh independent read-only Sol audit remains required.
+
+### Latest visual-version remediation — 2026-08-11
+
+Sol then found two concrete visual-version defects. New asset file names now include immutable visual version and brief identity, not only a draft version and millisecond timestamp; a frozen-clock regression proves V1/V2 paths and files remain distinct and V1 remains unchanged after V2 renders. The browser now calculates next and total version labels from complete immutable visual history, including a dismissed no-render concept, while arrow navigation remains between rendered assets. The browser regression follows V1 → dismissed V2 custom concept → rendered V3 and verifies the upcoming V3 disclosure plus “Version 3 of 3.” The complete no-provider gate passed again with 32 deterministic browser flows. A fresh independent read-only Sol audit remains required.
+
+### Unique custom-concept sequence remediation — 2026-08-11
+
+Sol found one adjacent sequence collision: an initial literal custom concept and a later explicit supported alternative could each receive the migration-default Version 1. The alternative transaction now deliberately dismisses the pending literal concept and allocates the next immutable version; a generic no-visual recommendation remains an in-place promotion because it is not author-concept history. Direct service and browser coverage proves V1 dismissed bridge concept → V2 decision-fork diagram → truthful “Version 2 of 2,” with no actionable duplicate V1. The complete no-provider gate passed again with 136 tests and 32 deterministic browser flows. A fresh independent read-only Sol audit remains required.
+
+### Milestone 7.1 approval — 2026-08-11
+
+Sol independently approved the complete Milestone 7.1 diff after its final read-only audit. The approval specifically covers saved-voice recovery provenance; immutable visual asset sequence versus mutable brief edits; positive supported-grammar mapping; truthful classified Initial Drafter recovery guidance; safe same-millisecond visual asset paths; full-history version numbering; and the custom-concept V1 to selected-diagram V2 transition. The audit made no changes and did not run suites or migrations, call providers, or access private/untracked data.
 
 ---
 

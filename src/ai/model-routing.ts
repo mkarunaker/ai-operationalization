@@ -115,7 +115,12 @@ export function routeFor(role: AgentRole, override?: ModelTier): ModelRoute {
 
 export function routeForProviderTier(provider: LiveProviderName, tier: ModelTier): ModelRoute {
   const routes = provider === "openai" ? openaiRoutes : provider === "anthropic" ? anthropicRoutes : zenmuxRoutes;
-  return routes[tier];
+  const route = routes[tier];
+  // Models are operator configuration rather than source constants. Resolve
+  // the selected model at the server boundary so a restarted local process
+  // and deterministic tests see the same route that dispatch and recovery
+  // comparison enforce. Pricing remains the explicit route assumption.
+  return { ...route, model: process.env[modelEnvironmentVariable(route)] ?? "" };
 }
 
 export function modelEnvironmentVariable(route: ModelRoute) {

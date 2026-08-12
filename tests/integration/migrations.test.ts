@@ -21,6 +21,9 @@ describe("foundation migration", () => {
     const triggerNames = database.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all() as Array<{ name: string }>;
     const visualBriefSql = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'visual_briefs'").get() as { sql: string };
     const visualBriefMigration = database.prepare("SELECT id FROM schema_migrations WHERE id = '019_visual_brief_approval.sql'").get();
+    const recoveryClaimMigration = database.prepare("SELECT id FROM schema_migrations WHERE id = '022_initial_drafter_recovery_claim.sql'").get();
+    const visualVersionMigration = database.prepare("SELECT id FROM schema_migrations WHERE id = '023_visual_asset_version_sequence.sql'").get();
+    const visualBriefColumns = database.prepare("PRAGMA table_info(visual_briefs)").all() as Array<{ name: string }>;
     database.close();
 
     const tables = new Set(names.map((row) => row.name));
@@ -32,9 +35,15 @@ describe("foundation migration", () => {
     expect(tables).toContain("idea_themes");
     expect(tables).toContain("research_items");
     expect(tables).toContain("visual_briefs");
+    expect(tables).toContain("visual_lead_selections");
+    expect(tables).toContain("initial_drafter_recovery_claims");
     expect(visualBriefMigration).toBeTruthy();
+    expect(recoveryClaimMigration).toBeTruthy();
+    expect(visualVersionMigration).toBeTruthy();
+    expect(visualBriefColumns.map((column) => column.name)).toContain("visual_version_number");
     expect(visualBriefSql.sql).toContain("vertical_path");
     expect(visualBriefSql.sql).not.toContain("'maturity_path'");
+    expect(visualBriefSql.sql).toContain("color_scheme");
     expect(triggerNames.map((trigger) => trigger.name)).toEqual(expect.arrayContaining([
       "visual_briefs_limit_before_insert",
       "visual_briefs_limit_before_update",
@@ -69,6 +78,10 @@ describe("foundation migration", () => {
     fs.cpSync(path.join(process.cwd(), "migrations"), legacyMigrations, { recursive: true });
     fs.rmSync(path.join(legacyMigrations, "018_reader_first_distribution_neutral.sql"));
     fs.rmSync(path.join(legacyMigrations, "019_visual_brief_approval.sql"));
+    fs.rmSync(path.join(legacyMigrations, "020_visual_lead_revision_selection.sql"));
+    fs.rmSync(path.join(legacyMigrations, "021_visual_version_color_schemes.sql"));
+    fs.rmSync(path.join(legacyMigrations, "022_initial_drafter_recovery_claim.sql"));
+    fs.rmSync(path.join(legacyMigrations, "023_visual_asset_version_sequence.sql"));
     migrateDatabase(database, legacyMigrations);
 
     database.prepare("INSERT INTO users (id, name, email) VALUES ('user', 'Synthetic owner', 'owner@example.test')").run();
@@ -139,6 +152,7 @@ describe("foundation migration", () => {
     expect(database.prepare("SELECT id FROM feedback_items WHERE publication_id = 'publication'").get()).toEqual({ id: "feedback" });
     expect(database.prepare("SELECT id FROM retrospectives WHERE publication_id = 'publication'").get()).toEqual({ id: "retrospective" });
     expect(database.prepare("SELECT publication_id FROM publication_provenance WHERE publication_id = 'publication'").get()).toEqual({ publication_id: "publication" });
+    expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'initial_drafter_recovery_claims'").get()).toEqual({ name: "initial_drafter_recovery_claims" });
     expect(database.prepare("SELECT id, draft_version_id, visual_brief_id, title, file_path FROM visual_companions WHERE id = 'legacy-visual'").get()).toEqual({
       id: "legacy-visual", draft_version_id: "article", visual_brief_id: null, title: "Legacy visual", file_path: "legacy/asset.svg",
     });

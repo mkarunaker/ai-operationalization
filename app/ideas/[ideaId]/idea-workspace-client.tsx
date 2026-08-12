@@ -41,6 +41,7 @@ export function IdeaWorkspaceClient({
       medium: { provider: string; model: string; tier: "medium"; estimatedCost: number; available: boolean };
       high: { provider: string; model: string; tier: "high"; estimatedCost: number; available: boolean };
     };
+    initialDrafterRecovery: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean; unavailableReason?: string };
     derivedShortRefresh: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
     derivedShortEscalation: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
     proofreader?: { provider: string; model: string; tier: "low" | "medium" | "high"; estimates: { short: number; article: number; derived_short: number }; available: boolean };
@@ -578,6 +579,40 @@ export function IdeaWorkspaceClient({
                 }
               })
             }
+            retryInitialDrafter={(budgetCap) =>
+              run(async () => {
+                const retryStages: EditorialRunProgress["stages"] = [
+                  { id: "context", label: "Load the saved Board synthesis and source selection", status: "running" },
+                  { id: "draft", label: "Create the voice-aligned working draft", status: "waiting" },
+                  { id: "provenance", label: "Save working-draft provenance", status: "waiting" },
+                ];
+                setRunProgress({ kind: "initial_drafter_recovery", status: "running", stages: retryStages });
+                setEditorialRunLabel("Retrying only the working-draft stage");
+                try {
+                  await request({ action: "retry_live_initial_drafter", budgetCap });
+                  setRunProgress({
+                    kind: "initial_drafter_recovery",
+                    status: "completed",
+                    stages: retryStages.map((stage) => ({ ...stage, status: "completed" })),
+                  });
+                  setMessage("Working draft created from the saved Board synthesis. The original failed attempt remains in provenance; reviews and synthesis were not rerun.");
+                } catch (error) {
+                  setRunProgress({
+                    kind: "initial_drafter_recovery",
+                    recoveryFailure: "pre_dispatch_rejection",
+                    status: "failed",
+                    stages: retryStages.map((stage) => ({
+                      ...stage,
+                      label: stage.id === "context" ? "Validate saved recovery inputs, route, and budget" : stage.label,
+                      status: stage.id === "context" ? "failed" : "not_run",
+                    })),
+                  });
+                  throw error;
+                } finally {
+                  setEditorialRunLabel(undefined);
+                }
+              })
+            }
             rerunReviewer={(role, budgetCap, tier) =>
               run(async () => {
                 setEditorialRunLabel(`Rerunning only the ${role} review`);
@@ -673,8 +708,17 @@ export function IdeaWorkspaceClient({
             createVisual={(visualAction) =>
               run(async () => {
                 if (visualAction.operation === "recommend") {
-                  await request({ action: "recommend_visual_brief", template: visualAction.template, placement: visualAction.placement, format: visualAction.format });
+                  await request({ action: "recommend_visual_brief", template: visualAction.template, placement: visualAction.placement, format: visualAction.format, authorDirection: visualAction.authorDirection });
                   setMessage("Visual brief saved. Review the rationale, then approve it before rendering.");
+                } else if (visualAction.operation === "start_revision") {
+                  await request({ action: "start_visual_lead_revision", template: visualAction.template, format: visualAction.format, authorDirection: visualAction.authorDirection });
+                  setMessage("A new visual version is ready to review. The current rendered version remains active until this one is rendered.");
+                } else if (visualAction.operation === "select_revision" && visualAction.briefId) {
+                  await request({ action: "select_visual_lead_revision", briefId: visualAction.briefId, format: visualAction.format });
+                  setMessage("Selected visual version is now active for this exact saved output.");
+                } else if (visualAction.operation === "dismiss" && visualAction.briefId) {
+                  await request({ action: "dismiss_visual_brief", briefId: visualAction.briefId });
+                  setMessage("The unrendered visual concept was retained as dismissed history. Your active visual is unchanged.");
                 } else if (visualAction.operation === "approve" && visualAction.briefId) {
                   await request({ action: "approve_visual_brief", briefId: visualAction.briefId });
                   setMessage("Visual brief approved for this exact saved output. Render when ready.");

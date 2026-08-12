@@ -2,7 +2,7 @@ import { defaultRunBudgetUsd, estimateRouteCost, maximumRunBudgetUsd, modelEnvir
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
 import { ZenMuxChatCompletionsProvider } from "@/ai/zenmux-provider";
-import { assertDerivedShortRecoveryPolicy, estimateDerivedShortDraft, estimateGroundedEditorialRun, estimateSingleReviewerRun, hasSavedBoardReaderContract, plannedRolesForIdea, retryDerivedShortDraft, runGroundedEditorialRun, runSingleReviewer, type GroundedRunResult } from "@/editorial/grounded-run";
+import { assertDerivedShortRecoveryPolicy, estimateDerivedShortDraft, estimateGroundedEditorialRun, estimateInitialDrafterRecovery, estimateSingleReviewerRun, hasSavedBoardReaderContract, initialDrafterRecoveryAvailability, plannedRolesForIdea, retryDerivedShortDraft, retryInitialDrafterDraft, runGroundedEditorialRun, runSingleReviewer, type GroundedRunResult } from "@/editorial/grounded-run";
 import type { ModelProvider, ModelRequest, ModelResponse, TokenUsage, CostEstimate } from "@/ai/provider";
 import type { AgentRole } from "@/domain/roles";
 import { assertPublishedWorkflowUnlocked, getIdea, proofreadRequestFor, runLiveProofreadForExactReview, type DraftFormat, type ReaderOutputContract } from "@/lean/service";
@@ -148,6 +148,17 @@ export function liveRunPreview(ideaId: string) {
         derivedShortEscalationRoute.tier,
       )
     : 0;
+  const initialDrafterRecoveryRoute = routeForPlannedRole("initial_drafter");
+  const initialDrafterRecovery = initialDrafterRecoveryAvailability(ideaId);
+  const initialDrafterRecoveryEstimatedCost = initialDrafterRecovery.available
+    ? estimateInitialDrafterRecovery(
+        ideaId,
+        routedLiveProvider,
+        initialDrafterRecoveryRoute.model,
+        initialDrafterRecoveryRoute.provider,
+        initialDrafterRecoveryRoute.tier,
+      )
+    : undefined;
   const plannedRoutes = plannedRolesForIdea(ideaId);
   const proofreaderRoute = routeFor("proofreader");
   const previewIdea = getIdea(ideaId);
@@ -205,6 +216,21 @@ export function liveRunPreview(ideaId: string) {
         estimatedCost: highReviewerRerunEstimatedCost,
         available: hasSavedBoardContract && bokReady && providerAvailable(reviewerRerunRoutes.high.provider) && Boolean(reviewerRerunRoutes.high.model),
       },
+    },
+    initialDrafterRecovery: {
+      provider: initialDrafterRecoveryRoute.provider,
+      model: initialDrafterRecoveryRoute.model || "Model configuration required",
+      tier: initialDrafterRecoveryRoute.tier,
+      estimatedCost: initialDrafterRecoveryEstimatedCost ?? 0,
+      available: initialDrafterRecovery.available
+        && initialDrafterRecoveryEstimatedCost !== undefined
+        && providerAvailable(initialDrafterRecoveryRoute.provider)
+        && Boolean(initialDrafterRecoveryRoute.model),
+      unavailableReason: initialDrafterRecovery.available
+        ? (!providerAvailable(initialDrafterRecoveryRoute.provider) || !initialDrafterRecoveryRoute.model
+          ? "The configured Initial Drafter provider route is unavailable. Start a new Board run after configuration is restored."
+          : undefined)
+        : initialDrafterRecovery.reason,
     },
     derivedShortRefresh: {
       provider: derivedShortRefreshRoute.provider,
@@ -297,6 +323,18 @@ export async function retryLiveDerivedShort(
     recoveryKind: recovery.recoveryKind,
     escalationReason: recovery.escalationReason,
   });
+}
+
+/** Retries only a failed Initial Drafter stage through its original server-owned route. */
+export async function retryLiveInitialDrafter(ideaId: string, input: { budgetCap?: number } = {}) {
+  const route = routeForPlannedRole("initial_drafter");
+  requireConfiguredModel(route, modelEnvironmentVariable(route));
+  const budgetCap = input.budgetCap ?? defaultRunBudgetUsd();
+  if (!Number.isFinite(budgetCap) || budgetCap <= 0)
+    throw new Error("A positive per-run budget cap is required for the working-draft retry.");
+  if (budgetCap > maximumRunBudgetUsd())
+    throw new Error(`The working-draft retry cap cannot exceed $${maximumRunBudgetUsd().toFixed(2)}.`);
+  return retryInitialDrafterDraft(ideaId, { budgetCap });
 }
 
 export async function runLiveProofreadReview(ideaId: string, input: { draftVersionId: string; format: DraftFormat; budgetCap?: number }) {

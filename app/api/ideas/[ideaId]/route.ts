@@ -4,7 +4,10 @@ import {
   createDerivedShortPost,
   createVisualCompanion,
   approveVisualBrief,
+  dismissVisualBrief,
   recommendVisualBrief,
+  selectVisualLeadRevision,
+  startVisualLeadRevision,
   updateVisualBrief,
   saveDerivedShortPost,
   getIdea,
@@ -21,7 +24,7 @@ import {
   updateIdea,
 } from "@/lean/service";
 import { runGroundedEditorialRun } from "@/editorial/grounded-run";
-import { liveRunPreview, rerunLiveReviewer, retryLiveDerivedShort, runLiveEditorialRun, runLiveProofreadReview } from "@/editorial/live-run";
+import { liveRunPreview, rerunLiveReviewer, retryLiveDerivedShort, retryLiveInitialDrafter, runLiveEditorialRun, runLiveProofreadReview } from "@/editorial/live-run";
 import { requireLocalJsonMutation, safeRouteError } from "@/security/local-request";
 import { getLiveEditorialProgress } from "@/editorial/run-progress";
 
@@ -76,6 +79,14 @@ export async function POST(
       await runLiveEditorialRun(ideaId, { budgetCap });
       const idea = getIdea(ideaId);
       if (!idea) throw new Error("Idea not found after live editorial run.");
+      return Response.json({ idea });
+    }
+    if (body.action === "retry_live_initial_drafter") {
+      if (["provider", "model", "tier", "pricingAssumption", "maxOutputTokens"].some((field) => field in body))
+        throw new Error("Working-draft provider, model, tier, pricing, and output allowance are resolved only by the server route.");
+      await retryLiveInitialDrafter(ideaId, { budgetCap: Number(body.budgetCap) });
+      const idea = getIdea(ideaId);
+      if (!idea) throw new Error("Idea not found after working-draft retry.");
       return Response.json({ idea });
     }
     if (body.action === "retry_live_derived_short" || body.action === "refresh_live_derived_short" || body.action === "escalate_live_derived_short") {
@@ -180,10 +191,33 @@ export async function POST(
       const template = body.template === "contrast" || body.template === "decision_fork" || body.template === "flow" || body.template === "vertical_path"
         ? body.template
         : undefined;
-      const placement = body.placement === "supporting" ? "supporting" : "lead";
+      if (body.placement === "supporting")
+        throw new Error("New supporting visual authoring is deferred while this workflow focuses on one versioned lead visual. Earlier supporting assets remain read-only history.");
+      const placement = "lead";
       const format = body.format === "short" || body.format === "article" || body.format === "derived_short" ? body.format : undefined;
-      return Response.json({ idea: recommendVisualBrief(ideaId, template, placement, format) });
+      return Response.json({
+        idea: recommendVisualBrief(ideaId, template, placement, format, {
+          authorDirection: typeof body.authorDirection === "string" ? body.authorDirection : undefined,
+        }),
+      });
     }
+    if (body.action === "start_visual_lead_revision") {
+      const template = body.template === "contrast" || body.template === "decision_fork" || body.template === "flow" || body.template === "vertical_path"
+        ? body.template
+        : undefined;
+      const format = body.format === "short" || body.format === "article" || body.format === "derived_short" ? body.format : undefined;
+      return Response.json({
+        idea: startVisualLeadRevision(ideaId, template, format, {
+          authorDirection: typeof body.authorDirection === "string" ? body.authorDirection : undefined,
+        }),
+      });
+    }
+    if (body.action === "select_visual_lead_revision") {
+      const format = body.format === "short" || body.format === "article" || body.format === "derived_short" ? body.format : undefined;
+      return Response.json({ idea: selectVisualLeadRevision(ideaId, String(body.briefId ?? ""), format) });
+    }
+    if (body.action === "dismiss_visual_brief")
+      return Response.json({ idea: dismissVisualBrief(ideaId, String(body.briefId ?? "")) });
     if (body.action === "approve_visual_brief")
       return Response.json({ idea: approveVisualBrief(ideaId, String(body.briefId ?? "")) });
     if (body.action === "update_visual_brief") {

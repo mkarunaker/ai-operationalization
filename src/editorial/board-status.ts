@@ -24,10 +24,18 @@ export function isBoardReviewIncomplete(input: {
   runStatus: BoardRunStatus;
   failures: Array<{ role: string }>;
   finalDrafterRecovered: boolean;
+  reviewerRecoveredRoles?: readonly string[];
 }) {
-  if (input.runStatus === "failed") return true;
-  if (input.runStatus !== "partially_completed") return false;
-  return input.failures.some((failure) => failure.role !== "final_drafter") || !input.finalDrafterRecovered;
+  if (input.runStatus === "completed") return false;
+  const recoveredRoles = new Set(input.reviewerRecoveredRoles ?? []);
+  const unresolved = input.failures.some((failure) =>
+    failure.role === "final_drafter"
+      ? !input.finalDrafterRecovered
+      : ["strategist", "skeptic", "editor"].includes(failure.role)
+        ? !recoveredRoles.has(failure.role)
+        : true,
+  );
+  return input.runStatus === "failed" ? unresolved : unresolved || !input.finalDrafterRecovered;
 }
 
 export function shouldResetDerivedShortEditor(action: string | undefined, hasUnsavedEdits: boolean) {

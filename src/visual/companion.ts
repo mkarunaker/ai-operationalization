@@ -1,5 +1,6 @@
 export type VisualStep = { title: string; detail: string };
 export type VisualTemplate = "flow" | "vertical_path" | "contrast" | "decision_fork";
+export type VisualColorScheme = "violet" | "forest" | "copper";
 export type VisualCompanionType = VisualTemplate | "maturity_path";
 export type VisualCompanion = {
   id: string;
@@ -7,6 +8,7 @@ export type VisualCompanion = {
   /** Optional immutable brief that authorized this rendered local asset. */
   visualBriefId?: string;
   type: VisualCompanionType;
+  colorScheme?: VisualColorScheme;
   eyebrow: string;
   title: string;
   subtitle: string;
@@ -165,6 +167,14 @@ function footer(x = 104) {
 
 type RenderableVisual = Pick<VisualCompanion, "type" | "eyebrow" | "title" | "subtitle" | "steps"> & Partial<Pick<VisualCompanion, "altText" | "caption">>;
 
+function applyColorScheme(svg: string, colorScheme: VisualColorScheme | undefined) {
+  if (!colorScheme || colorScheme === "violet") return svg;
+  const accents = colorScheme === "forest"
+    ? { "#635bcb": "#2d6a4f", "#716bb4": "#4d806a", "#756ec8": "#3f7a5d", "#827bd0": "#5b9474", "#6a63c7": "#397058", "#4e4899": "#315f4b", "#a7a3d8": "#a7cbb8", "#d9d8e8": "#d5e4db", "#eceaff": "#e4f0e9", "#e7e5f7": "#e2f0e8", "#d8d5f2": "#cfe4d7", "#eeedf9": "#edf5f0" }
+    : { "#635bcb": "#a45f3b", "#716bb4": "#a06e4e", "#756ec8": "#a96743", "#827bd0": "#bd7d58", "#6a63c7": "#9b593b", "#4e4899": "#7e472f", "#a7a3d8": "#dfc0af", "#d9d8e8": "#ead9cf", "#eceaff": "#f6ebe4", "#e7e5f7": "#f3e5dd", "#d8d5f2": "#ead1c3", "#eeedf9": "#f8f0ec" };
+  return Object.entries(accents).reduce((current, [from, to]) => current.replaceAll(from, to), svg);
+}
+
 function svgOpen(visual: RenderableVisual) {
   // Alt text and caption are authored and approved with the brief.  Include
   // both in the actual SVG—not only in surrounding HTML—so saved SVG, preview,
@@ -204,10 +214,10 @@ function renderDecisionForkSvg(visual: RenderableVisual) {
   return `${svgOpen(visual)}<rect width="1080" height="1080" fill="#f7f7fb"/>${renderHeader(visual)}<rect x="354" y="454" width="372" height="126" rx="63" fill="#e7e5f7" stroke="#7770c8" stroke-width="3"/><text x="540" y="505" text-anchor="middle" fill="#27234e" font-family="Georgia, serif" font-size="31">${svgSingleLine(activity?.title ?? "AI activity", 540, 22, 332, 31)}</text><text x="540" y="537" text-anchor="middle" fill="#575d7d" font-family="Arial, sans-serif" font-size="17">${activityDetail}</text><path d="M420 580 C420 634 335 662 299 720" fill="none" stroke="#ad7457" stroke-width="4"/><path d="M660 580 C660 634 745 662 781 720" fill="none" stroke="#5f8e76" stroke-width="4"/><rect x="104" y="720" width="390" height="190" rx="18" fill="#fff7f3" stroke="#d6a48f" stroke-width="3"/><rect x="586" y="720" width="390" height="190" rx="18" fill="#f4faf5" stroke="#9fc6ae" stroke-width="3"/><text x="140" y="778" fill="#7d4937" font-family="Georgia, serif" font-size="35">${svgSingleLine(unmanaged?.title ?? "Unmanaged", 140, 20, 318, 35)}</text><text x="140" y="822" fill="#715d5a" font-family="Arial, sans-serif" font-size="20">${unmanagedDetails}</text><text x="622" y="778" fill="#315e48" font-family="Georgia, serif" font-size="35">${svgSingleLine(disciplined?.title ?? "Disciplined", 622, 20, 318, 35)}</text><text x="622" y="822" fill="#52685d" font-family="Arial, sans-serif" font-size="20">${disciplinedDetails}</text>${footer()}</svg>`;
 }
 
-export function renderVisualSvg(visual: RenderableVisual) {
-  if (visual.type === "maturity_path") return renderVerticalPathSvg(visual);
-  if (visual.type === "contrast") return renderMaturityContrastSvg(visual);
-  if (visual.type === "decision_fork") return renderDecisionForkSvg(visual);
+export function renderVisualSvg(visual: RenderableVisual & Partial<Pick<VisualCompanion, "colorScheme">>) {
+  if (visual.type === "maturity_path") return applyColorScheme(renderVerticalPathSvg(visual), visual.colorScheme);
+  if (visual.type === "contrast") return applyColorScheme(renderMaturityContrastSvg(visual), visual.colorScheme);
+  if (visual.type === "decision_fork") return applyColorScheme(renderDecisionForkSvg(visual), visual.colorScheme);
   const cards = visual.steps.slice(0, 3).map((step, index) => {
     const x = 54 + index * 330;
     const fill = index === 1 ? "#eceaff" : "#ffffff";
@@ -216,7 +226,7 @@ export function renderVisualSvg(visual: RenderableVisual) {
     const arrow = index < visual.steps.length - 1 ? `<path d="M${x + 280} 615 H${x + 310}" stroke="#7068d6" stroke-width="4"/><path d="M${x + 302} 605 L${x + 312} 615 L${x + 302} 625" fill="none" stroke="#7068d6" stroke-width="4"/>` : "";
     return `<rect x="${x}" y="480" width="280" height="280" rx="22" fill="${fill}" stroke="#d9d8e8"/><text x="${x + 25}" y="535" fill="#20243a" font-family="Georgia, serif" font-size="27">${titleLines}</text><text x="${x + 25}" y="630" fill="#5a607b" font-family="Arial, sans-serif" font-size="19">${detailLines}</text>${arrow}`;
   }).join("");
-  return `${svgOpen(visual)}<rect width="1080" height="1080" fill="#f7f7fb"/>${renderHeader(visual, 54, 170, 340)}<path d="M54 420 H1026" stroke="#deddea" stroke-width="2"/>${cards}${footer(54)}</svg>`;
+  return applyColorScheme(`${svgOpen(visual)}<rect width="1080" height="1080" fill="#f7f7fb"/>${renderHeader(visual, 54, 170, 340)}<path d="M54 420 H1026" stroke="#deddea" stroke-width="2"/>${cards}${footer(54)}</svg>`, visual.colorScheme);
 }
 
 /**
@@ -224,6 +234,6 @@ export function renderVisualSvg(visual: RenderableVisual) {
  * Rendering this URL through an image element prevents the page preview from
  * drifting into a second HTML/CSS interpretation of the visual.
  */
-export function visualSvgDataUrl(visual: RenderableVisual) {
+export function visualSvgDataUrl(visual: RenderableVisual & Partial<Pick<VisualCompanion, "colorScheme">>) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(renderVisualSvg(visual))}`;
 }

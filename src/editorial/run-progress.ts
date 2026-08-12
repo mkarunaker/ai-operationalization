@@ -5,7 +5,7 @@ import { boardRoleStageStatus } from "@/editorial/board-status";
 export type EditorialStageStatus = "waiting" | "running" | "completed" | "failed" | "not_run";
 export type EditorialRunProgress = {
   runId?: string;
-  kind?: "board" | "derived_short_recovery";
+  kind?: "board" | "derived_short_recovery" | "initial_drafter_recovery";
   recoveryFailure?: "persisted_provider_failure" | "pre_dispatch_rejection";
   status: "waiting" | "running" | "completed" | "partially_completed" | "failed";
   stages: Array<{

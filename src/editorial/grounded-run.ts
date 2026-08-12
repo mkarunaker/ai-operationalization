@@ -3,7 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { GroundedTestProvider } from "@/ai/grounded-test-provider";
-import { maximumRunBudgetUsd, routeFor } from "@/ai/model-routing";
+import { estimateRouteCost, maximumRunBudgetUsd, routeFor } from "@/ai/model-routing";
+import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
+import { OpenAIResponsesProvider } from "@/ai/openai-provider";
+import { ZenMuxChatCompletionsProvider } from "@/ai/zenmux-provider";
 import type { CostEstimate, ModelProvider, ModelRequest, ModelResponse, TokenUsage } from "@/ai/provider";
 import { createUntrustedContextBlock, TRUSTED_INSTRUCTION_BOUNDARY } from "@/ai/prompt-boundary";
 import {
@@ -73,6 +76,31 @@ export type ScopedDerivedShortRequestInput = {
   model: string;
   tier?: ModelTier;
 };
+export type ScopedInitialDrafterRequestInput = {
+  originalCapture: string;
+  notes: Array<{ id: string; body: string }>;
+  answers: Array<{ question: string; answer: string; choice: string }>;
+  selected: KnowledgeSearchResult[];
+  synthesis: GroundedSynthesisOutput;
+  outputShape: "short" | "long" | "long_with_derived_short";
+  audienceProfile: string;
+  audienceNotes?: string;
+  longForm?: { min: number; max: number };
+  shortForm?: { min: number; max: number; derived: boolean };
+  voiceText: string;
+  provider: string;
+  model: string;
+  tier?: ModelTier;
+};
+type InitialDrafterRecoveryInput = {
+  model: string;
+  providerName: string;
+  tier: ModelTier;
+  budgetCap: number;
+  pricingAssumption: string;
+};
+type InjectedInitialDrafterRecoveryInput = InitialDrafterRecoveryInput & { provider: ModelProvider };
+type ProductionInitialDrafterRecoveryInput = Pick<InitialDrafterRecoveryInput, "budgetCap">;
 
 const identifier = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
 const timestamp = () => new Date().toISOString();
@@ -113,7 +141,7 @@ function publicExecutionError(error: unknown) {
   if (/^(Anthropic|OpenAI|ZenMux) request failed \(\d+; [a-zA-Z0-9_.-]+\)\.$/i.test(message))
     return `${message} No validated output was returned. Confirm the selected provider and model configuration before retrying.`;
   if (/^(Anthropic|OpenAI|ZenMux) response reached its output limit\.$/i.test(message))
-    return `${message} Increase only this role's bounded output allowance or select a model that can complete the response.`;
+    return `${message} No affected stage completed. Retry only that stage if this may have been temporary. If it happens again, an administrator must adjust that role's configured output allowance or route before a new Board run.`;
   if (/^(Anthropic|OpenAI|ZenMux) response contained no (text )?output\.$/i.test(message))
     return `${message} No draft was saved; retry only after confirming the selected model supports structured text output.`;
   // These are application-authored categories only. Do not surface provider
@@ -124,6 +152,10 @@ function publicExecutionError(error: unknown) {
     return "The generated publication text did not satisfy the required voice rule. No affected draft was saved; revise the role instruction or retry that role only.";
   if (/^Publication text must be plain prose/.test(message))
     return "The generated text contained Markdown formatting, which publication outputs do not allow. No affected draft was saved; retry the affected role only.";
+  if (/^Generated (draft|derived short post) was outside its saved reader range/.test(message))
+    return `${message} No affected draft was saved; retry only the affected stage or change the reader range before a new Board run.`;
+  if (/^Generated (publication text included internal source or prompt scaffolding|publication text repeated a long captured-idea fragment)/.test(message))
+    return "The generated text exposed internal source or capture scaffolding. No affected draft was saved; retry only the affected stage.";
   if (/^Live-run budget/.test(message)) return `${message} Increase the cap only if you explicitly accept the projected cost.`;
   if (/^(Anthropic|OpenAI|ZenMux|grounded-test) refused the editorial request\.$/i.test(message))
     return "The configured model declined the editorial request. No validated output was saved; retry the affected role with a compatible configured model.";
@@ -145,6 +177,10 @@ function publicDerivedShortDrafterError(error: unknown) {
     return "The configured model declined the structured derived-short drafting request. The article and completed Board review were saved; no derived short post was created.";
   if (/response reached its output limit/.test(detail))
     return "The derived-short drafter reached its output limit before producing a validated post. The article and completed Board review were saved.";
+  if (/outside its saved reader range/.test(detail))
+    return `${detail} The article and completed Board review were saved; no derived short post was created.`;
+  if (/exposed internal source or capture scaffolding/.test(detail))
+    return "The derived-short drafter exposed internal source or capture scaffolding. The article and completed Board review were saved; no derived short post was created.";
   if (/required structured format/.test(detail))
     return "The derived-short drafter returned an invalid structured response after one bounded repair. The article and completed Board review were saved.";
   if (/^The derived-short drafter completed, but/.test(detail)) return detail;
@@ -159,6 +195,46 @@ function publicDerivedShortDrafterError(error: unknown) {
  */
 function normalizePublicationPunctuation(body: string) {
   return body.replace(/\s*—\s*/g, ", ").trim();
+}
+
+function publicationWordCount(body: string) {
+  return body.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function normalizedReaderFacingText(value: string) {
+  return value.toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function capturedFragments(value: string) {
+  // Keep every normalized token. Reader-facing normalization retains
+  // one-character words such as “a” and “I”; dropping them here creates
+  // fragments that cannot match an otherwise copied normalized body.
+  const words = normalizedReaderFacingText(value).split(" ").filter(Boolean);
+  const fragments: string[] = [];
+  // Check every contiguous window. Sampling overlapping starts leaves a
+  // simple bypass: a copied 12-word fragment can begin between samples.
+  for (let start = 0; start + 11 < words.length; start += 1)
+    fragments.push(words.slice(start, start + 12).join(" "));
+  return fragments;
+}
+
+/** Final deterministic guard before model prose becomes a saved output. */
+function assertReaderFacingGeneratedOutput(input: {
+  body: string;
+  format: "short" | "article" | "derived_short";
+  readerContract: Pick<SnapshotInput, "longForm" | "shortForm">;
+  originalCapture?: string;
+}) {
+  const range = input.format === "article" ? input.readerContract.longForm : input.readerContract.shortForm;
+  if (!range) throw new Error("Generated output did not match the saved reader contract.");
+  const words = publicationWordCount(input.body);
+  if (words < range.min || words > range.max)
+    throw new Error(`Generated ${input.format === "article" ? "draft" : "derived short post"} was outside its saved reader range (${words} words; target ${range.min}-${range.max}).`);
+  const normalized = normalizedReaderFacingText(input.body);
+  if (/\b(selected bok|book of knowledge|the following themes|grounding marker|untrusted context|validated editorial synthesis|captured idea|configured kk spoken voice|drafting process)\b/i.test(normalized))
+    throw new Error("Generated publication text included internal source or prompt scaffolding.");
+  if (input.originalCapture && capturedFragments(input.originalCapture).some((fragment) => normalized.includes(fragment)))
+    throw new Error("Generated publication text repeated a long captured-idea fragment instead of writing reader-facing prose.");
 }
 
 /** Durable developer diagnostics: structured and redacted by design. */
@@ -194,17 +270,21 @@ function failureDiagnostic(message: string, response?: ModelResponse) {
     ? "provider_request_rejected"
     : /output limit/i.test(message)
       ? "output_limit"
-      : /structured format|structured output|invalid structured response/i.test(message)
-        ? "structured_output_invalid"
-        : /Markdown/i.test(message)
-          ? "plain_text_contract_failed"
-          : /voice rule|em dash/i.test(message)
-            ? "voice_contract_failed"
-            : /declined|refused/i.test(message)
-              ? "provider_refusal"
-              : /could not be saved/i.test(message)
-                ? "persistence_failed"
-                : "unclassified_execution_failure";
+      : /outside its saved reader range/i.test(message)
+        ? "reader_range_contract_failed"
+        : /internal source or prompt scaffolding|exposed internal source or capture scaffolding|long captured-idea fragment/i.test(message)
+          ? "reader_prose_scaffolding_failed"
+          : /structured format|structured output|invalid structured response/i.test(message)
+            ? "structured_output_invalid"
+            : /Markdown/i.test(message)
+              ? "plain_text_contract_failed"
+              : /voice rule|em dash/i.test(message)
+                ? "voice_contract_failed"
+                : /declined|refused/i.test(message)
+                  ? "provider_refusal"
+                  : /could not be saved/i.test(message)
+                    ? "persistence_failed"
+                    : "unclassified_execution_failure";
   return {
     schemaVersion: 1,
     failureCode,
@@ -298,7 +378,80 @@ export function scopedDerivedShortDraftRequestFor(input: ScopedDerivedShortReque
       maxOutputTokens: derivedShortOutputTokens,
       reasoningEffort: "low" as const,
       responseFormat: { type: "json_schema" as const },
-      metadata: { agentRole: "final_drafter" as const, task: "draft", retryStage: "derived_short", modelTier: input.tier, publicationTarget: "derived_short", sourceFingerprint: checksum(boundary.contextBlock).slice(0, 10) },
+      metadata: { agentRole: "final_drafter" as const, task: "draft", retryStage: "derived_short", modelTier: input.tier, publicationTarget: "derived_short", targetWordRange: input.shortForm ? { min: input.shortForm.min, max: input.shortForm.max } : undefined, sourceFingerprint: checksum(boundary.contextBlock).slice(0, 10) },
+    },
+  };
+}
+
+/**
+ * The initial-draft retry deliberately rebuilds the same bounded request from
+ * the persisted Board snapshot. Reader notes, the capture, selected source
+ * passages, and synthesis are all untrusted context; only the saved reader
+ * contract is trusted instruction. This helper is shared by the original
+ * Board run and the explicit recovery path so a retry cannot quietly widen
+ * scope or substitute current Develop preferences.
+ */
+export function scopedInitialDrafterRequestFor(input: ScopedInitialDrafterRequestInput) {
+  const prompt = readPrompt(promptFile("initial_drafter"));
+  const shared = readSharedPrompts();
+  const boundary = createUntrustedContextBlock([
+    { source: "captured idea", text: input.originalCapture },
+    ...(input.audienceNotes ? [{ source: "author reader note", text: input.audienceNotes }] : []),
+    ...input.notes.map((note) => ({ source: `user note ${note.id}`, text: note.body })),
+    ...input.selected.map((section) => ({ source: `selected BOK: ${section.headingPath} (${section.sourceLocation})`, text: section.text })),
+  ]);
+  const voiceBoundary = createUntrustedContextBlock([
+    { source: "configured kk-spoken-voice style reference", text: input.voiceText },
+  ]);
+  const synthesisBoundary = createUntrustedContextBlock([
+    { source: "validated editorial synthesis", text: JSON.stringify(input.synthesis) },
+  ]);
+  const articleInstruction = input.outputShape === "short"
+    ? `Trusted reader contract: write for ${input.audienceProfile}. Create one standalone short post of ${input.shortForm?.min ?? 180}-${input.shortForm?.max ?? 300} words.`
+    : `Trusted reader contract: write for ${input.audienceProfile}. Create an article of ${input.longForm?.min ?? 800}-${input.longForm?.max ?? 1100} words. ${input.shortForm?.derived ? `A separate derived short post will later use ${input.shortForm.min}-${input.shortForm.max} words; do not create it yet.` : ""}`;
+  return {
+    boundary,
+    voiceBoundary,
+    synthesisBoundary,
+    promptChecksum: prompt.checksum,
+    request: {
+      provider: input.provider,
+      model: input.model,
+      systemPrompt: `${trustedSystemPrompt(prompt, shared, voiceBoundary.contextBlock)}\n\n${articleInstruction}`,
+      messages: [
+        { role: "user" as const, content: boundary.contextBlock },
+        { role: "user" as const, content: synthesisBoundary.contextBlock },
+      ],
+      maxOutputTokens: draftOutputTokens,
+      responseFormat: { type: "json_schema" as const },
+      metadata: {
+        agentRole: "initial_drafter" as const,
+        task: "draft",
+        retryStage: "initial_drafter",
+        modelTier: input.tier,
+        draftSeed: safeDraftSeed({
+          ideaId: "saved-board-snapshot",
+          contentItemId: "saved-board-snapshot",
+          title: "saved-board-snapshot",
+          originalCapture: input.originalCapture,
+          notes: input.notes.map((note) => ({ ...note, createdAt: "" })),
+          answers: input.answers,
+          themes: [],
+          outputShape: input.outputShape,
+          audienceProfile: input.audienceProfile,
+          audienceNotes: input.audienceNotes,
+          longForm: input.longForm,
+          shortForm: input.shortForm,
+        }, boundary.injectionSignals),
+        bokHeading: input.selected[0]?.headingPath,
+        bokFocus: safeBokFocus(input.selected, boundary.injectionSignals),
+        sourceFingerprint: checksum(`${boundary.contextBlock}:${JSON.stringify(input.synthesis)}`).slice(0, 10),
+        factualGaps: [input.synthesis.evidence_needed],
+        publicationTarget: input.outputShape === "short" ? "short" : "article",
+        targetWordRange: input.outputShape === "short"
+          ? input.shortForm ? { min: input.shortForm.min, max: input.shortForm.max } : undefined
+          : input.longForm ? { min: input.longForm.min, max: input.longForm.max } : undefined,
+      },
     },
   };
 }
@@ -468,21 +621,25 @@ function loadSnapshot(database: Database, ideaId: string): SnapshotInput {
  * the Board actually used. Current Develop preferences remain editable, but
  * are never a substitute for that immutable provenance after a Board run.
  */
-function loadImmutableReaderContract(database: Database | ReturnType<typeof readDb>, ideaId: string): ImmutableReaderContract {
+function savedBoardReaderSnapshot(database: Database | ReturnType<typeof readDb>, ideaId: string) {
   const stored = database
     .prepare(
-      "SELECT snapshot.prompt_manifest FROM editorial_run_snapshots snapshot JOIN review_runs run ON run.id = snapshot.review_run_id WHERE snapshot.idea_id = ? AND run.review_type = 'editorial' AND run.status IN ('completed', 'partially_completed') AND snapshot.generated_draft_version_id IS NOT NULL ORDER BY run.completed_at DESC, run.rowid DESC LIMIT 1",
+      "SELECT snapshot.prompt_manifest, snapshot.original_capture FROM editorial_run_snapshots snapshot JOIN review_runs run ON run.id = snapshot.review_run_id WHERE snapshot.idea_id = ? AND run.review_type = 'editorial' AND run.status IN ('completed', 'partially_completed') AND snapshot.generated_draft_version_id IS NOT NULL ORDER BY run.completed_at DESC, run.rowid DESC LIMIT 1",
     )
-    .get(ideaId) as { prompt_manifest: string } | undefined;
+    .get(ideaId) as { prompt_manifest: string; original_capture: string } | undefined;
   if (!stored) throw new Error("The saved Editorial Board reader contract is unavailable. Run the Editorial Board again before this scoped action.");
   try {
     const parsed = immutableReaderContractSchema.safeParse(JSON.parse(stored.prompt_manifest).readerContract);
-    if (parsed.success) return parsed.data;
+    if (parsed.success) return { readerContract: parsed.data, originalCapture: stored.original_capture };
   } catch {
     // Use the same safe message below. Persisted provenance is data, not a
     // reason to fall back to mutable preferences or disclose parser details.
   }
   throw new Error("The saved Editorial Board reader contract is invalid. Run the Editorial Board again before this scoped action.");
+}
+
+function loadImmutableReaderContract(database: Database | ReturnType<typeof readDb>, ideaId: string): ImmutableReaderContract {
+  return savedBoardReaderSnapshot(database, ideaId).readerContract;
 }
 
 /**
@@ -537,7 +694,7 @@ function selectKnowledge(snapshot: SnapshotInput) {
 function sourceManifest(
   shared: PromptSource[],
   rolePrompts: Record<ReviewerRole | "synthesizer" | "initial_drafter" | "final_drafter", PromptSource>,
-  providerInfo: { name: string; modelForRole: (role: AgentRole) => string; providerForRole?: (role: AgentRole) => string; pricingAssumption: string; pricingAssumptionForRole?: (role: AgentRole) => string },
+  providerInfo: { name: string; modelForRole: (role: AgentRole) => string; providerForRole?: (role: AgentRole) => string; tierForRole?: (role: AgentRole) => ModelTier; pricingAssumption: string; pricingAssumptionForRole?: (role: AgentRole) => string },
   readerContract?: Pick<SnapshotInput, "outputShape" | "audienceProfile" | "audienceNotes" | "longForm" | "shortForm">,
 ) {
   // A provenance reader contract is intentionally smaller than SnapshotInput.
@@ -559,7 +716,9 @@ function sourceManifest(
         ["strategist", "skeptic", "editor", "synthesizer", "initial_drafter", "final_drafter"].map((role) => [role, {
           provider: providerInfo.providerForRole?.(role as AgentRole) ?? providerInfo.name,
           model: providerInfo.modelForRole(role as AgentRole),
+          tier: providerInfo.tierForRole?.(role as AgentRole) ?? "low",
           pricingAssumption: providerInfo.pricingAssumptionForRole?.(role as AgentRole) ?? providerInfo.pricingAssumption,
+          ...(role === "initial_drafter" ? { maxOutputTokens: draftOutputTokens } : {}),
         }]),
       ),
       pricingAssumption: providerInfo.pricingAssumption,
@@ -658,6 +817,7 @@ function persistModelCall(
     attemptNumber?: number;
     reviewRunId?: string;
     recoveryKind?: DerivedShortRecoveryKind;
+    recoveryOfReviewRunId?: string;
     escalationReason?: string;
     diagnostic?: ReturnType<typeof failureDiagnostic>;
   },
@@ -709,6 +869,7 @@ function persistModelCall(
         attemptNumber: input.attemptNumber ?? 1,
         reviewRunId: input.reviewRunId ?? null,
         recoveryKind: input.recoveryKind ?? null,
+        recoveryOfReviewRunId: input.recoveryOfReviewRunId ?? null,
         escalationReason: input.escalationReason ?? null,
         pricingAssumption: input.pricingAssumption ?? "Deterministic local test provider; estimated and actual cost are USD 0.00.",
         failureDiagnostic: input.failure ? (input.diagnostic ?? failureDiagnostic(input.failure)) : null,
@@ -734,6 +895,7 @@ export function persistAttempts(
     reviewRunId?: string;
     recoveryKind?: "refresh" | "retry" | "escalation";
     escalationReason?: string;
+    recoveryOfReviewRunId?: string;
   },
 ) {
   return attempts.map((attempt, index) => {
@@ -793,6 +955,7 @@ export function persistAttempts(
       reviewRunId: input.reviewRunId,
       recoveryKind: input.recoveryKind,
       escalationReason: input.escalationReason,
+      recoveryOfReviewRunId: input.recoveryOfReviewRunId,
       diagnostic,
     });
   });
@@ -1192,7 +1355,7 @@ export async function runGroundedEditorialRun(
           voice.id,
           voice.version,
           voice.checksum,
-          sourceManifest(shared, prompts, { name: provider.name, modelForRole, providerForRole, pricingAssumption, pricingAssumptionForRole }, snapshot),
+          sourceManifest(shared, prompts, { name: provider.name, modelForRole, providerForRole, tierForRole: (role) => tierForRole(role) ?? "low", pricingAssumption, pricingAssumptionForRole }, snapshot),
         );
       persistRetrieval(database, snapshotDraftId, selected, runId);
       database.exec("COMMIT");
@@ -1356,52 +1519,42 @@ export async function runGroundedEditorialRun(
       throw new Error(failureMessage);
     }
 
-    const draftBoundary = createUntrustedContextBlock([
-      { source: "captured idea", text: snapshot.originalCapture },
-      ...(snapshot.audienceNotes ? [{ source: "author reader note", text: snapshot.audienceNotes }] : []),
-      ...snapshot.notes.map((note) => ({ source: `user note ${note.id}`, text: note.body })),
-      ...selected.map((section) => ({ source: `selected BOK: ${section.headingPath} (${section.sourceLocation})`, text: section.text })),
-    ]);
-    const voiceBoundary = createUntrustedContextBlock([
-      { source: "configured kk-spoken-voice style reference", text: voiceText },
-    ]);
-    const draftSynthesisBoundary = createUntrustedContextBlock([
-      { source: "validated editorial synthesis", text: JSON.stringify(synthesis) },
-    ]);
+    const initialDraftRequest = scopedInitialDrafterRequestFor({
+      originalCapture: snapshot.originalCapture,
+      notes: snapshot.notes,
+      answers: snapshot.answers,
+      selected,
+      synthesis,
+      outputShape: snapshot.outputShape,
+      audienceProfile: snapshot.audienceProfile,
+      audienceNotes: snapshot.audienceNotes,
+      longForm: snapshot.longForm,
+      shortForm: snapshot.shortForm,
+      voiceText,
+      provider: providerForRole("initial_drafter"),
+      model: modelForRole("initial_drafter"),
+      tier: tierForRole("initial_drafter"),
+    });
+    const draftBoundary = initialDraftRequest.boundary;
+    const voiceBoundary = initialDraftRequest.voiceBoundary;
+    const draftSynthesisBoundary = initialDraftRequest.synthesisBoundary;
     const draftAttemptStart = meteredProvider.attempts.length;
     try {
       const draftGenerated = await generateStructured(
         meteredProvider,
-        {
-          provider: providerForRole("initial_drafter"),
-          model: modelForRole("initial_drafter"),
-          systemPrompt: `${trustedSystemPrompt(prompts.initial_drafter, shared, voiceBoundary.contextBlock)}\n\n${snapshot.outputShape === "short"
-            ? `Trusted reader contract: write for ${snapshot.audienceProfile}. Create one standalone short post of ${snapshot.shortForm?.min ?? 180}-${snapshot.shortForm?.max ?? 300} words.`
-            : `Trusted reader contract: write for ${snapshot.audienceProfile}. Create an article of ${snapshot.longForm?.min ?? 800}-${snapshot.longForm?.max ?? 1100} words. ${snapshot.shortForm?.derived ? `A separate derived short post will later use ${snapshot.shortForm.min}-${snapshot.shortForm.max} words; do not create it yet.` : ""}`}`,
-          messages: [
-            { role: "user", content: draftBoundary.contextBlock },
-            { role: "user", content: draftSynthesisBoundary.contextBlock },
-          ],
-          maxOutputTokens: draftOutputTokens,
-          responseFormat: { type: "json_schema" },
-          metadata: {
-            agentRole: "initial_drafter",
-            task: "draft",
-            modelTier: tierForRole("initial_drafter"),
-            draftSeed: safeDraftSeed(snapshot, draftBoundary.injectionSignals),
-            bokHeading,
-            bokFocus: safeBokFocus(selected, draftBoundary.injectionSignals),
-            sourceFingerprint: checksum(`${draftBoundary.contextBlock}:${JSON.stringify(synthesis)}`).slice(0, 10),
-            factualGaps: [synthesis.evidence_needed],
-            publicationTarget: snapshot.outputShape === "short" ? "short" : "article",
-          },
-        },
+        initialDraftRequest.request,
         initialDraftOutputSchema,
       );
       const normalizedDraftBody = normalizePublicationPunctuation(draftGenerated.output.body);
       const voiceCheck = checkHumanVoice(normalizedDraftBody);
       if (normalizedDraftBody.includes("—") || voiceCheck.findings.some((finding) => finding.id === "em_dash"))
         throw new Error("Generated draft did not satisfy the no-em-dash voice rule.");
+      assertReaderFacingGeneratedOutput({
+        body: normalizedDraftBody,
+        format: snapshot.outputShape === "short" ? "short" : "article",
+        readerContract: snapshot,
+        originalCapture: snapshot.originalCapture,
+      });
       let status: GroundedRunResult["status"] = reviews.some((review) => review.status === "failed") ? "partially_completed" : "completed";
       const draftVersionId = identifier("draft");
       database.exec("BEGIN IMMEDIATE");
@@ -1481,6 +1634,7 @@ export async function runGroundedEditorialRun(
               draftSeed: normalizedDraftBody,
               sourceFingerprint: checksum(companionBoundary.contextBlock).slice(0, 10),
               publicationTarget: "derived_short",
+              targetWordRange: snapshot.shortForm ? { min: snapshot.shortForm.min, max: snapshot.shortForm.max } : undefined,
               factualGaps: [synthesis.evidence_needed],
             },
           },
@@ -1490,6 +1644,7 @@ export async function runGroundedEditorialRun(
         const companionVoiceCheck = checkHumanVoice(normalizedCompanionBody);
         if (normalizedCompanionBody.includes("—") || companionVoiceCheck.findings.some((finding) => finding.id === "em_dash"))
           throw new Error("Generated derived short post did not satisfy the no-em-dash voice rule.");
+        assertReaderFacingGeneratedOutput({ body: normalizedCompanionBody, format: "derived_short", readerContract: snapshot, originalCapture: snapshot.originalCapture });
         const companionDraftVersionId = identifier("draft");
         database.exec("BEGIN IMMEDIATE");
         try {
@@ -1642,9 +1797,10 @@ async function executeDerivedShortDraft(
   const database = db();
   try {
     const mutableSnapshot = loadSnapshot(database, ideaId);
+    const savedBoard = savedBoardReaderSnapshot(database, ideaId);
     const snapshot = snapshotWithImmutableReaderContract(
       mutableSnapshot,
-      loadImmutableReaderContract(database, ideaId),
+      savedBoard.readerContract,
     );
     if (!hasDerivedShortOutput(snapshot.outputShape)) throw new Error("Derived-short recovery is available only when the saved Editorial Board reader contract includes a derived short post.");
     const article = database.prepare("SELECT id, body FROM draft_versions WHERE content_item_id = ? AND publication_format = 'article' ORDER BY version_number DESC LIMIT 1").get(snapshot.contentItemId) as { id: string; body: string } | undefined;
@@ -1671,6 +1827,7 @@ async function executeDerivedShortDraft(
       const body = normalizePublicationPunctuation(generated.output.body);
       const voiceCheck = checkHumanVoice(body);
       if (body.includes("—") || voiceCheck.findings.some((finding) => finding.id === "em_dash")) throw new Error("Generated derived short post did not satisfy the no-em-dash voice rule.");
+      assertReaderFacingGeneratedOutput({ body, format: "derived_short", readerContract: snapshot, originalCapture: savedBoard.originalCapture });
       const derivedShortId = identifier("draft");
       database.exec("BEGIN IMMEDIATE");
       try {
@@ -1692,6 +1849,519 @@ async function executeDerivedShortDraft(
       throw new Error(publicDerivedShortDrafterError(error));
     }
   } finally { database.close(); }
+}
+
+function initialDrafterRecoverySnapshot(database: Database, ideaId: string) {
+  const run = database.prepare(
+    `SELECT run.id AS run_id, run.draft_version_id AS snapshot_draft_id, run.execution_mode,
+            snapshot.content_item_id,
+            snapshot.original_capture, snapshot.notes_json, snapshot.clarification_answers_json,
+            snapshot.output_shape, snapshot.voice_skill_version_id, snapshot.voice_skill_checksum, snapshot.prompt_manifest
+       FROM review_runs run
+       JOIN editorial_run_snapshots snapshot ON snapshot.review_run_id = run.id
+      WHERE snapshot.idea_id = ?
+        AND run.review_type = 'editorial'
+        AND run.status = 'failed'
+        AND snapshot.generated_draft_version_id IS NULL
+        AND EXISTS (
+          SELECT 1 FROM agent_reviews review
+          WHERE review.review_run_id = run.id
+            AND review.role_id = 'role_synthesizer'
+            AND review.status = 'completed'
+            AND review.structured_output IS NOT NULL
+        )
+        AND EXISTS (
+          SELECT 1 FROM agent_reviews review
+          WHERE review.review_run_id = run.id
+            AND review.role_id = 'role_initial_drafter'
+            AND review.status = 'failed'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM model_calls call
+           WHERE call.agent_role = 'initial_drafter'
+             AND json_extract(COALESCE(call.raw_usage, '{}'), '$.reviewRunId') = run.id
+             AND json_extract(COALESCE(call.raw_usage, '{}'), '$.recoveryKind') = 'retry'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM initial_drafter_recovery_claims claim
+           WHERE claim.review_run_id = run.id
+        )
+      ORDER BY run.completed_at DESC, run.rowid DESC
+      LIMIT 1`,
+  ).get(ideaId) as {
+    run_id: string;
+    snapshot_draft_id: string;
+    execution_mode: "grounded_test" | "live";
+    content_item_id: string;
+    original_capture: string;
+    notes_json: string;
+    clarification_answers_json: string;
+    output_shape: "short" | "long" | "long_with_derived_short";
+    voice_skill_version_id: string;
+    voice_skill_checksum: string;
+    prompt_manifest: string;
+  } | undefined;
+  if (!run) {
+    const consumedRetry = database.prepare(
+      `SELECT 1
+         FROM review_runs run
+         JOIN editorial_run_snapshots snapshot ON snapshot.review_run_id = run.id
+        WHERE snapshot.idea_id = ?
+          AND run.review_type = 'editorial'
+          AND run.status = 'failed'
+          AND snapshot.generated_draft_version_id IS NULL
+          AND (
+            EXISTS (
+              SELECT 1 FROM model_calls call
+               WHERE json_extract(COALESCE(call.raw_usage, '{}'), '$.reviewRunId') = run.id
+                 AND call.agent_role = 'initial_drafter'
+                 AND json_extract(COALESCE(call.raw_usage, '{}'), '$.recoveryKind') = 'retry'
+            )
+            OR EXISTS (
+              SELECT 1 FROM initial_drafter_recovery_claims claim
+               WHERE claim.review_run_id = run.id
+            )
+          )
+        ORDER BY run.completed_at DESC, run.rowid DESC
+        LIMIT 1`,
+    ).get(ideaId);
+    if (consumedRetry)
+      throw new Error("Only one working-draft retry is permitted for a saved Editorial Board run. Start a new Board run after adjusting the configured route or output allowance.");
+    throw new Error("A failed working-draft stage with a saved Editorial Board synthesis is required before retrying this stage.");
+  }
+
+  const stored = z.object({
+    notes: z.array(z.object({ id: z.string(), body: z.string(), createdAt: z.string().optional() }).strict()).max(100),
+    answers: z.array(z.object({ question: z.string(), answer: z.string(), choice: z.string() }).strict()).max(10),
+    readerContract: immutableReaderContractSchema,
+    initialDrafterRoute: z.object({
+      provider: z.enum(["anthropic", "openai", "zenmux"]),
+      model: z.string().trim().min(1),
+      tier: z.enum(["low", "medium", "high"]),
+      pricingAssumption: z.string().trim().min(1),
+      maxOutputTokens: z.number().int().positive().max(10_000),
+    }).strict(),
+  }).strict();
+  let persisted: z.infer<typeof stored>;
+  try {
+    persisted = stored.parse({
+      notes: JSON.parse(run.notes_json),
+      answers: JSON.parse(run.clarification_answers_json),
+      readerContract: JSON.parse(run.prompt_manifest).readerContract,
+      initialDrafterRoute: JSON.parse(run.prompt_manifest).provider?.roleAssignments?.initial_drafter,
+    });
+  } catch {
+    throw new Error("The saved Editorial Board recovery snapshot is invalid. Run the Editorial Board again before retrying the draft stage.");
+  }
+  if (persisted.readerContract.outputShape !== run.output_shape)
+    throw new Error("The saved Editorial Board recovery snapshot is invalid. Run the Editorial Board again before retrying the draft stage.");
+
+  const synthesisRow = database.prepare(
+    `SELECT review.structured_output
+       FROM agent_reviews review
+      WHERE review.review_run_id = ?
+        AND review.role_id = 'role_synthesizer'
+        AND review.status = 'completed'
+      ORDER BY review.rowid DESC
+      LIMIT 1`,
+  ).get(run.run_id) as { structured_output: string } | undefined;
+  let synthesis: ReturnType<typeof groundedSynthesisOutputSchema.safeParse> | undefined;
+  try {
+    synthesis = synthesisRow
+      ? groundedSynthesisOutputSchema.safeParse(JSON.parse(synthesisRow.structured_output))
+      : undefined;
+  } catch {
+    synthesis = undefined;
+  }
+  if (!synthesis?.success)
+    throw new Error("The saved Editorial Board synthesis is unavailable. Run the Editorial Board again before retrying the draft stage.");
+
+  const selected = database.prepare(
+    `SELECT section.heading_path, section.text, section.sequence, section.metadata,
+            document.title, document.version, retrieval.relevance_score, retrieval.retrieval_method
+       FROM retrieval_records retrieval
+       JOIN model_calls call ON call.id = retrieval.model_call_id
+       JOIN knowledge_sections section ON section.id = retrieval.knowledge_section_id
+       JOIN knowledge_documents document ON document.id = section.document_id
+      WHERE call.draft_version_id = ?
+        AND call.agent_role = 'retrieval'
+      ORDER BY retrieval.rank ASC`,
+  ).all(run.snapshot_draft_id) as Array<{
+    heading_path: string;
+    text: string;
+    sequence: number;
+    metadata: string;
+    title: string;
+    version: string;
+    relevance_score: number;
+    retrieval_method: "fts5";
+  }>;
+  const selectedSections = selected.flatMap((section) => {
+    try {
+      const metadata = z.object({ sourceLocation: z.string().min(1) }).passthrough().parse(JSON.parse(section.metadata));
+      return [{
+        headingPath: section.heading_path,
+        text: section.text,
+        sequence: section.sequence,
+        sourceLocation: metadata.sourceLocation,
+        documentTitle: section.title,
+        version: section.version,
+        score: section.relevance_score,
+        retrievalMethod: section.retrieval_method,
+      } satisfies KnowledgeSearchResult];
+    } catch {
+      return [];
+    }
+  });
+  // An empty persisted selection is valid when the original bounded query had
+  // no matching passages. Recovery must reproduce that exact no-context
+  // state, rather than quietly searching the current index or blocking the
+  // author behind a requirement the original Board run did not have.
+
+  const voice = database.prepare(
+    "SELECT id, source_path, checksum FROM voice_skill_versions WHERE id = ? AND status = 'ready'",
+  ).get(run.voice_skill_version_id) as { id: string; source_path: string; checksum: string } | undefined;
+  if (!voice)
+    throw new Error("The saved voice reference is unavailable. Index the configured source, then run the Editorial Board again before retrying the draft stage.");
+  return { run, persisted, synthesis: synthesis.data, selected: selectedSections, voice };
+}
+
+/** Recovery must reproduce the Board's saved voice input exactly. */
+function readSavedInitialDrafterVoice(saved: ReturnType<typeof initialDrafterRecoverySnapshot>) {
+  const voiceText = fs.readFileSync(/* turbopackIgnore: true */ saved.voice.source_path, "utf8");
+  if (saved.voice.checksum !== saved.run.voice_skill_checksum || checksum(voiceText) !== saved.run.voice_skill_checksum)
+    throw new Error("The saved voice reference has changed since this Board run. Index the configured source, then run the Editorial Board again before retrying the draft stage.");
+  return voiceText;
+}
+
+function assertInitialDrafterRecoveryPolicy(input: InitialDrafterRecoveryInput) {
+  if (!Number.isFinite(input.budgetCap) || input.budgetCap <= 0)
+    throw new Error("A positive per-run budget cap is required for the working-draft retry.");
+  if (input.budgetCap > maximumRunBudgetUsd())
+    throw new Error(`The working-draft retry cap cannot exceed $${maximumRunBudgetUsd().toFixed(2)}.`);
+  const route = routeFor("initial_drafter");
+  if (input.providerName !== route.provider || input.model !== route.model || input.tier !== route.tier || input.pricingAssumption !== route.pricingAssumption)
+    throw new Error("Working-draft recovery must use the configured Initial Drafter route and pricing assumption.");
+}
+
+function assertSavedInitialDrafterRoute(saved: ReturnType<typeof initialDrafterRecoverySnapshot>["persisted"]["initialDrafterRoute"]) {
+  const route = routeFor("initial_drafter");
+  if (
+    saved.provider !== route.provider
+    || saved.model !== route.model
+    || saved.tier !== route.tier
+    || saved.pricingAssumption !== route.pricingAssumption
+    || saved.maxOutputTokens !== draftOutputTokens
+  )
+    throw new Error("The configured Initial Drafter route has changed since this Board run. Run the Editorial Board again before retrying the working draft.");
+}
+
+function assertExternalInitialDrafterDispatchEnabled() {
+  if (process.env.EDITORIAL_TEST_DISABLE_PROVIDER_CALLS === "1")
+    throw new Error("External provider calls are disabled for deterministic test execution.");
+}
+
+/**
+ * The production recovery adapter is server-owned. It is intentionally
+ * separate from the test seam below so neither an API caller nor a future
+ * internal caller can supply a matching-looking adapter, model, tier, or
+ * pricing record.
+ */
+class ServerResolvedInitialDrafterProvider implements ModelProvider {
+  readonly name = "server-resolved-initial-drafter";
+
+  async generate(request: ModelRequest): Promise<ModelResponse> {
+    const route = routeFor("initial_drafter");
+    if (request.provider !== route.provider || request.model !== route.model || request.metadata?.modelTier !== route.tier)
+      throw new Error("Working-draft recovery must use the configured Initial Drafter route.");
+    assertExternalInitialDrafterDispatchEnabled();
+    if (route.provider === "anthropic") return new AnthropicMessagesProvider().generate(request);
+    if (route.provider === "openai") return new OpenAIResponsesProvider().generate(request);
+    return new ZenMuxChatCompletionsProvider().generate(request);
+  }
+
+  estimateCost(usage: TokenUsage, model: string, context?: { provider?: string; tier?: ModelTier }): CostEstimate {
+    const route = routeFor("initial_drafter");
+    if (model !== route.model || context?.provider !== route.provider || context?.tier !== route.tier)
+      throw new Error("Working-draft recovery must use the configured Initial Drafter route.");
+    return estimateRouteCost(route, usage);
+  }
+}
+
+const serverResolvedInitialDrafterProvider = new ServerResolvedInitialDrafterProvider();
+
+function serverResolvedInitialDrafterRecoveryInput(input: ProductionInitialDrafterRecoveryInput): InjectedInitialDrafterRecoveryInput {
+  const route = routeFor("initial_drafter");
+  const model = route.model.trim();
+  if (!model) throw new Error("A configured Initial Drafter model is required.");
+  if (!Number.isFinite(input.budgetCap) || input.budgetCap <= 0 || input.budgetCap > maximumRunBudgetUsd())
+    throw new Error("A valid working-draft retry budget cap is required.");
+  return {
+    provider: serverResolvedInitialDrafterProvider,
+    providerName: route.provider,
+    model,
+    tier: route.tier,
+    budgetCap: input.budgetCap,
+    pricingAssumption: route.pricingAssumption,
+  };
+}
+
+/** Read-only preflight used by the live preview; it never refreshes sources. */
+export function initialDrafterRecoveryAvailability(ideaId: string) {
+  const database = readDb();
+  try {
+    const saved = initialDrafterRecoverySnapshot(database, ideaId);
+    assertSavedInitialDrafterRoute(saved.persisted.initialDrafterRoute);
+    readSavedInitialDrafterVoice(saved);
+    return { available: true as const };
+  } catch (error) {
+    // Every branch above produces a bounded application-authored message. Do
+    // not leak persisted source, provider, or parser details into preview UI.
+    return {
+      available: false as const,
+      reason: error instanceof Error && (
+        error.message.startsWith("Only one working-draft retry")
+        || error.message.startsWith("The configured Initial Drafter route has changed")
+        || error.message.startsWith("The saved voice reference has changed")
+      ) ? error.message : "Working-draft retry is unavailable until the saved Board recovery inputs are valid and available.",
+    };
+  } finally {
+    database.close();
+  }
+}
+
+export function hasRecoverableInitialDrafterFailure(ideaId: string) {
+  return initialDrafterRecoveryAvailability(ideaId).available;
+}
+
+/**
+ * The displayed recovery reservation uses the exact saved Board request and
+ * reserves a possible same-route structured-output repair. Missing or stale
+ * saved inputs simply make this scoped action unavailable; they never fall
+ * back to mutable Develop preferences or a fresh BOK search.
+ */
+export function estimateInitialDrafterRecovery(
+  ideaId: string,
+  provider: ModelProvider,
+  model: string,
+  providerName: string,
+  tier: ModelTier = "low",
+) {
+  const database = readDb();
+  try {
+    const saved = initialDrafterRecoverySnapshot(database, ideaId);
+    assertSavedInitialDrafterRoute(saved.persisted.initialDrafterRoute);
+    const voiceText = readSavedInitialDrafterVoice(saved);
+    const scoped = scopedInitialDrafterRequestFor({
+      originalCapture: saved.run.original_capture,
+      notes: saved.persisted.notes.map((note) => ({ id: note.id, body: note.body })),
+      answers: saved.persisted.answers,
+      selected: saved.selected,
+      synthesis: saved.synthesis,
+      voiceText,
+      provider: providerName,
+      model,
+      tier,
+      ...saved.persisted.readerContract,
+    });
+    const oneAttempt = provider.estimateCost?.(
+      requestMaximumUsage(scoped.request),
+      model,
+      { provider: providerName, tier },
+    ).totalCost ?? 0;
+    return oneAttempt * 2;
+  } catch {
+    return undefined;
+  } finally {
+    database.close();
+  }
+}
+
+function assertTestOnlyInitialDrafterRecovery(input: InitialDrafterRecoveryInput) {
+  if (process.env.NODE_ENV !== "test")
+    throw new Error("The injected working-draft recovery provider is available only to automated tests.");
+  if (!Number.isFinite(input.budgetCap) || input.budgetCap <= 0)
+    throw new Error("A valid working-draft retry budget is required.");
+}
+
+/**
+ * A recovery claim is durable before provider dispatch. The unique
+ * review-run key makes concurrent retry requests fail closed without holding
+ * a SQLite transaction open across the provider await. A claim is created
+ * only after local cost validation, so a no-dispatch cap rejection does not
+ * consume the one permitted paid retry.
+ */
+function claimInitialDrafterRecovery(database: Database, reviewRunId: string) {
+  try {
+    database.prepare(
+      "INSERT INTO initial_drafter_recovery_claims (review_run_id, claimed_at) VALUES (?, ?)",
+    ).run(reviewRunId, timestamp());
+  } catch {
+    throw new Error("Only one working-draft retry is permitted for a saved Editorial Board run. Start a new Board run after adjusting the configured route or output allowance.");
+  }
+}
+
+function assertInitialDrafterRecoveryCanReserve(
+  provider: CumulativeBudgetProvider,
+  request: ModelRequest,
+  budgetCap: number,
+) {
+  const tier = request.metadata?.modelTier as ModelTier | undefined;
+  const maximum = provider.estimateCost(requestMaximumUsage(request), request.model, {
+    provider: request.provider,
+    tier,
+  }).totalCost;
+  if (!Number.isFinite(maximum) || maximum < 0)
+    throw new Error("Live-run budget could not be validated from the configured pricing assumptions. No provider call was made.");
+  if (maximum > budgetCap)
+    throw new Error(`Live-run budget would be exceeded before the ${String(request.metadata?.agentRole ?? "model")} ${String(request.metadata?.task ?? "call")} request. No provider call was made.`);
+}
+
+/**
+ * Recovers only an Initial Drafter failure from the original saved Board
+ * snapshot. It never re-runs reviewers or synthesis, never changes the
+ * bounded output allowance, and keeps every prior failed provider attempt.
+ */
+export async function retryInitialDrafterDraft(
+  ideaId: string,
+  input: ProductionInitialDrafterRecoveryInput,
+) {
+  const resolved = serverResolvedInitialDrafterRecoveryInput(input);
+  assertInitialDrafterRecoveryPolicy(resolved);
+  return executeInitialDrafterRecovery(ideaId, resolved, { requireOriginalConfiguredRoute: true });
+}
+
+/** Test-only provider seam; production callers must use the central live route. */
+export async function retryInitialDrafterDraftForTest(
+  ideaId: string,
+  provider: ModelProvider,
+  input: InitialDrafterRecoveryInput,
+) {
+  assertTestOnlyInitialDrafterRecovery(input);
+  return executeInitialDrafterRecovery(ideaId, { ...input, provider });
+}
+
+async function executeInitialDrafterRecovery(
+  ideaId: string,
+  input: InjectedInitialDrafterRecoveryInput,
+  options: { requireOriginalConfiguredRoute: boolean } = { requireOriginalConfiguredRoute: false },
+) {
+  assertPublishedWorkflowUnlocked(ideaId);
+  const database = db();
+  try {
+    const saved = initialDrafterRecoverySnapshot(database, ideaId);
+    if (options.requireOriginalConfiguredRoute) {
+      assertSavedInitialDrafterRoute(saved.persisted.initialDrafterRoute);
+    }
+    const voiceText = readSavedInitialDrafterVoice(saved);
+    const scoped = scopedInitialDrafterRequestFor({
+      originalCapture: saved.run.original_capture,
+      notes: saved.persisted.notes.map((note) => ({ id: note.id, body: note.body })),
+      answers: saved.persisted.answers,
+      selected: saved.selected,
+      synthesis: saved.synthesis,
+      voiceText,
+      provider: input.providerName,
+      model: input.model,
+      tier: input.tier,
+      ...saved.persisted.readerContract,
+    });
+    const metered = new CumulativeBudgetProvider(input.provider, input.budgetCap, true);
+    const started = metered.attempts.length;
+    assertInitialDrafterRecoveryCanReserve(metered, scoped.request, input.budgetCap);
+    claimInitialDrafterRecovery(database, saved.run.run_id);
+    let body: string;
+    try {
+      const generated = await generateStructured(metered, scoped.request, initialDraftOutputSchema);
+      body = normalizePublicationPunctuation(generated.output.body);
+      const voiceCheck = checkHumanVoice(body);
+      if (body.includes("—") || voiceCheck.findings.some((finding) => finding.id === "em_dash"))
+        throw new Error("Generated draft did not satisfy the no-em-dash voice rule.");
+      assertReaderFacingGeneratedOutput({
+        body,
+        format: saved.persisted.readerContract.outputShape === "short" ? "short" : "article",
+        readerContract: saved.persisted.readerContract,
+        originalCapture: saved.run.original_capture,
+      });
+    } catch (error) {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        persistAttempts(database, metered.attempts.slice(started), {
+          role: "initial_drafter",
+          draftVersionId: saved.run.snapshot_draft_id,
+          promptChecksum: scoped.promptChecksum,
+          voiceSkillVersionId: saved.voice.id,
+          injectionSignals: [...scoped.boundary.injectionSignals, ...scoped.voiceBoundary.injectionSignals, ...scoped.synthesisBoundary.injectionSignals],
+          provider: metered,
+          pricingAssumption: input.pricingAssumption,
+          budgetCap: input.budgetCap,
+          acceptedLastAttempt: false,
+          finalFailure: publicExecutionError(error),
+          reviewRunId: saved.run.run_id,
+          recoveryKind: "retry",
+        });
+        database.exec("COMMIT");
+      } catch (persistError) {
+        database.exec("ROLLBACK");
+        throw persistError;
+      }
+      throw new Error(publicExecutionError(error));
+    }
+    const draftVersionId = identifier("draft");
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const callId = persistAttempts(database, metered.attempts.slice(started), {
+        role: "initial_drafter",
+        draftVersionId: saved.run.snapshot_draft_id,
+        promptChecksum: scoped.promptChecksum,
+        voiceSkillVersionId: saved.voice.id,
+        injectionSignals: [...scoped.boundary.injectionSignals, ...scoped.voiceBoundary.injectionSignals, ...scoped.synthesisBoundary.injectionSignals],
+        provider: metered,
+        pricingAssumption: input.pricingAssumption,
+        budgetCap: input.budgetCap,
+        acceptedLastAttempt: true,
+        reviewRunId: saved.run.run_id,
+        recoveryKind: "retry",
+      }).at(-1);
+      if (!callId) throw new Error("The working-draft retry could not be recorded.");
+      database.prepare(
+        "INSERT INTO draft_versions (id, content_item_id, version_number, body, created_by, parent_version_id, change_summary, voice_skill_version_id, model_call_id, publication_format) VALUES (?, ?, COALESCE((SELECT MAX(version_number) + 1 FROM draft_versions WHERE content_item_id = ?), 1), ?, 'initial_drafter', ?, ?, ?, ?, ?)",
+      ).run(
+        draftVersionId,
+        saved.run.content_item_id,
+        saved.run.content_item_id,
+        body,
+        saved.run.snapshot_draft_id,
+        "Live working-draft retry created from the saved Editorial Board synthesis.",
+        saved.voice.id,
+        callId,
+        saved.persisted.readerContract.outputShape === "short" ? "short" : "article",
+      );
+      database.prepare("UPDATE model_calls SET draft_version_id = ? WHERE id = ?").run(draftVersionId, callId);
+      database.prepare("UPDATE editorial_run_snapshots SET generated_draft_version_id = ? WHERE review_run_id = ?").run(draftVersionId, saved.run.run_id);
+      const reviewerFailure = database.prepare(
+        "SELECT 1 FROM agent_reviews WHERE review_run_id = ? AND role_id IN ('role_strategist', 'role_skeptic', 'role_editor') AND status = 'failed' LIMIT 1",
+      ).get(saved.run.run_id);
+      const status: GroundedRunResult["status"] = reviewerFailure || saved.persisted.readerContract.outputShape === "long_with_derived_short"
+        ? "partially_completed"
+        : "completed";
+      database.prepare("UPDATE review_runs SET status = ?, actual_cost = ?, completed_at = ? WHERE id = ?").run(
+        status,
+        saved.run.execution_mode === "grounded_test" ? 0 : null,
+        timestamp(),
+        saved.run.run_id,
+      );
+      database.prepare("UPDATE ideas SET status = 'drafted', updated_at = ? WHERE id = ?").run(timestamp(), ideaId);
+      database.prepare("UPDATE content_items SET status = 'drafted', updated_at = ? WHERE id = ?").run(timestamp(), ideaId);
+      database.exec("COMMIT");
+      return { draftVersionId, status };
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    database.close();
+  }
 }
 
 /**
@@ -1737,6 +2407,26 @@ export async function runSingleReviewer(
         "SELECT call.id, json_extract(call.raw_usage, '$.reviewRunId') AS review_run_id FROM model_calls call JOIN draft_versions draft ON draft.id = call.draft_version_id WHERE draft.content_item_id = ? AND call.agent_role = ? AND call.success = 1 ORDER BY call.ended_at DESC LIMIT 1",
       )
       .get(snapshot.contentItemId, role) as { id: string; review_run_id: string | null } | undefined;
+    // A targeted rerun is never substituted into the original Board run. If
+    // it addresses a failed Board reviewer, retain that relationship solely
+    // as recovery provenance so the UI can distinguish a resolved failure
+    // from a rewritten history.
+    const recoveryOfReviewRunId = database
+      .prepare(
+        `SELECT run.id
+           FROM review_runs run
+           JOIN editorial_run_snapshots snapshot ON snapshot.review_run_id = run.id
+           JOIN agent_reviews review ON review.review_run_id = run.id
+           JOIN agent_roles failed_role ON failed_role.id = review.role_id
+          WHERE snapshot.idea_id = ?
+            AND run.review_type = 'editorial'
+            AND run.status IN ('failed', 'partially_completed')
+            AND failed_role.name = ?
+            AND review.status = 'failed'
+          ORDER BY run.completed_at DESC, run.rowid DESC
+          LIMIT 1`,
+      )
+      .get(ideaId, role) as { id: string } | undefined;
     const runId = identifier("review_run");
     database
       .prepare(
@@ -1771,6 +2461,7 @@ export async function runSingleReviewer(
           budgetCap: input.budgetCap,
           acceptedLastAttempt: true,
           reviewRunId: runId,
+          recoveryOfReviewRunId: recoveryOfReviewRunId?.id,
         });
         const modelCallId = modelCallIds.at(-1);
         if (!modelCallId) throw new Error("The reviewer call could not be recorded.");
@@ -1803,6 +2494,7 @@ export async function runSingleReviewer(
           acceptedLastAttempt: false,
           finalFailure: publicExecutionError(error),
           reviewRunId: runId,
+          recoveryOfReviewRunId: recoveryOfReviewRunId?.id,
         });
         persistFailure(
           database, runId, role, prompt, draft.id, error, provider, input.pricingAssumption, input.budgetCap,

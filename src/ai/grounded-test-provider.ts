@@ -16,7 +16,13 @@ type GroundedMetadata = {
   sourceFingerprint?: string;
   factualGaps?: string[];
   publicationTarget?: "short" | "article" | "derived_short";
+  targetWordRange?: { min: number; max: number };
 };
+
+// This marker is a deterministic browser-fixture seam only. It proves that a
+// locally persisted Initial-Drafter scaffolding rejection reaches the browser
+// projection; it cannot select a live provider path.
+const E2E_SCAFFOLDING_FAILURE_MARKER = "[[e2e_scaffolding_failure]]";
 
 function words(value: string) {
   return value.trim().split(/\s+/).filter(Boolean).length;
@@ -25,24 +31,6 @@ function words(value: string) {
 function fingerprint(request: ModelRequest) {
   const material = request.messages.map((message) => message.content).join("\n");
   return crypto.createHash("sha256").update(material).digest("hex").slice(0, 10);
-}
-
-function safeSeed(value: unknown) {
-  const compact = String(value ?? "").replace(/\s+/g, " ").trim();
-  if (!compact || /ignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions|(?:reveal|show).{0,40}(?:secret|api key|password|system prompt)/i.test(compact))
-    return "A useful operational question is worth making specific before it is published.";
-  return compact.slice(0, 320);
-}
-
-function plainPublicationText(value: unknown) {
-  return safeSeed(value)
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(/(^|\s)#{1,6}\s+/g, "$1")
-    .replace(/\*\*|__|`|^\s*[-*+]\s+/gm, "")
-    .replace(/^\s*\d+[.)]\s+/gm, "")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function reviewOutput(role: string, marker: string, bokHeading?: string) {
@@ -87,17 +75,33 @@ function reviewOutput(role: string, marker: string, bokHeading?: string) {
   };
 }
 
-function draftOutput(metadata: GroundedMetadata) {
-  const seed = plainPublicationText(metadata.draftSeed);
-  const bok = metadata.bokHeading
-    ? `One useful frame from the selected BOK material is ${plainPublicationText(metadata.bokFocus ?? metadata.bokHeading)}.`
-    : "The useful frame is to make the operating consequence visible.";
-  const shortBody = `${seed}\n\nA lot of AI discussion still starts with what a model or agent can do. The more useful starting point is the work that needs to become meaningfully better. That shifts the conversation from visible activity to an outcome people can actually observe.\n\n${bok} It does not settle the argument on its own. It gives the question a boundary: what would need to change in the workflow, decision, or customer experience for this to matter?\n\nThat is where a promising idea becomes more than a demo. It becomes a claim that can be tested, improved, or set aside.\n\nWhat is the operating change you would need to see before calling an AI initiative valuable?`;
-  const body = metadata.publicationTarget === "article"
-    ? `${shortBody}\n\nFor a longer article, it helps to distinguish a successful technical demonstration from a dependable workflow. The latter has an accountable owner, a clear place in the process, appropriate controls, and a way to see whether the outcome improved. Those conditions do not make every pilot worth scaling. They make the next decision more honest.\n\nThat is also why the first question should not be which tool or agent framework to adopt. It should be what problem is frequent enough, consequential enough, and observable enough to justify changing how people work. Sometimes the answer will be AI. Sometimes a simpler redesign, automation, or decision rule will do more good.\n\nA useful operating discipline is to state the baseline, decide what evidence would justify continuation, and name the conditions that would cause the work to be redesigned or stopped. This keeps curiosity intact without confusing activity with progress.\n\nWhat would make an AI initiative valuable enough to keep operating?`
-    : metadata.publicationTarget === "derived_short"
-      ? `${seed}\n\n${bok} The point is practical: name the outcome, the owner, and the condition that would show the work is improving.\n\nWhat would you check before scaling it?`
-      : shortBody;
+function draftOutput(metadata: GroundedMetadata, forceScaffoldingFailure = false) {
+  // This local fixture demonstrates the same publication boundary used for
+  // provider output: no capture/source copy may appear in reader-facing prose.
+  const range = metadata.targetWordRange ?? (metadata.publicationTarget === "article" ? { min: 800, max: 1100 } : { min: 180, max: 300 });
+  const sentences = metadata.publicationTarget === "derived_short"
+    ? [
+        "AI work becomes useful when it changes an observable part of the work.",
+        "A clear owner can decide whether the change improves the result.",
+        "The practical test is whether people can see the outcome getting better.",
+        "What would you check before treating this as dependable work?",
+      ]
+    : [
+        "Capability is only the starting point for useful AI work.",
+        "The durable question is what changes in the work people actually do.",
+        "A clear owner, sensible controls, and an observable outcome make that question practical.",
+        "Teams can name the baseline, decide what evidence would justify continuing, and notice when the work needs redesign.",
+        "That approach keeps experimentation useful without mistaking visible activity for progress.",
+        "What operating change would make this initiative worth sustaining?",
+      ];
+  const outputWords: string[] = [];
+  let sentence = 0;
+  const prefix = forceScaffoldingFailure ? ["The", "following", "themes"] : [];
+  while (outputWords.length + prefix.length < range.min) {
+    outputWords.push(...sentences[sentence % sentences.length]!.split(/\s+/));
+    sentence += 1;
+  }
+  const body = [...prefix, ...outputWords].slice(0, range.max).join(" ");
   return {
     role: metadata.agentRole === "final_drafter" ? "final_drafter" : "initial_drafter",
     body,
@@ -113,9 +117,11 @@ export class GroundedTestProvider implements ModelProvider {
     const metadata = (request.metadata ?? {}) as GroundedMetadata & { agentRole?: string };
     const marker = metadata.sourceFingerprint ?? fingerprint(request);
     const task = metadata.task ?? "review";
+    const forceScaffoldingFailure = metadata.agentRole === "initial_drafter"
+      && request.messages.some((message) => message.content.includes(E2E_SCAFFOLDING_FAILURE_MARKER));
     const structuredOutput =
       task === "draft"
-        ? draftOutput(metadata)
+        ? draftOutput(metadata, forceScaffoldingFailure)
         : task === "synthesis"
           ? {
               role: "synthesizer",

@@ -14,7 +14,7 @@ import { getAppConfig } from "@/config/env";
 import { openInitializedDatabase, openReadOnlyDatabase } from "@/persistence/database";
 import { checkHumanVoice } from "@/voice/final-check";
 import { assertPlainPublicationProse } from "@/editorial/plain-text";
-import { renderVisualSvg, type VisualCompanion, type VisualTemplate, visualCompanionFor } from "@/visual/companion";
+import { renderVisualSvg, type VisualColorScheme, type VisualCompanion, type VisualTemplate, visualCompanionFor } from "@/visual/companion";
 import { estimateRouteCost, maximumRunBudgetUsd, routeFor } from "@/ai/model-routing";
 
 const statuses = [
@@ -117,6 +117,11 @@ const voiceCheckInput = z.object({
   draftVersionId: z.string().trim().min(1).max(200),
   format: z.enum(["short", "article", "derived_short"]),
 });
+const visualRecommendationInput = z.object({
+  // This is author data, not a rendering instruction. It is bounded here,
+  // stored with the exact saved output, and is never sent to a provider.
+  authorDirection: z.string().trim().max(1_000).optional(),
+}).strict();
 export function proofreadRequestFor(body: string, provider: string, model: string, readerContract: ReaderOutputContract) {
   const boundary = createUntrustedContextBlock([
     { source: "exact saved publication output", text: body },
@@ -196,11 +201,17 @@ export type IdeaDetail = IdeaSummary & {
   visualBrief?: VisualBrief;
   /** All current primary-output briefs, including unrendered supporting work. */
   visualBriefs: VisualBrief[];
+  /** A replacement lead in progress; the active rendered lead remains visible. */
+  visualCandidateBrief?: VisualBrief;
+  /** Immutable local lead assets for the exact saved primary output. */
+  visualRevisionHistory: VisualBrief[];
   derivedShortVisualCompanion?: VisualCompanion;
   derivedShortSupportingVisualCompanions: VisualCompanion[];
   derivedShortVisualBrief?: VisualBrief;
   /** Independent visual brief lifecycle for the exact current derived short. */
   derivedShortVisualBriefs: VisualBrief[];
+  derivedShortVisualCandidateBrief?: VisualBrief;
+  derivedShortVisualRevisionHistory: VisualBrief[];
   derivedShortRecovery?: {
     id: string;
     status: "completed" | "failed";
@@ -225,6 +236,7 @@ export type VisualBrief = {
   rationale: string;
   purpose?: "contrast" | "decision_path" | "sequence" | "lifecycle" | "framework" | "comparison";
   template?: VisualTemplate;
+  colorScheme: VisualColorScheme;
   sourceDraftText: string;
   readerContract: ReaderOutputContract;
   authorDirection: string;
@@ -234,7 +246,10 @@ export type VisualBrief = {
   altText: string;
   placement?: "lead" | "supporting";
   status: "recommended" | "approved" | "dismissed" | "rendered";
+  /** Immutable sequence for a distinct visual asset candidate. */
   revisionNumber: number;
+  /** Mutable number of edits to this candidate before approval. */
+  briefRevisionNumber: number;
   approvedAt?: string;
 };
 export type GroundingProvenance = {
@@ -319,7 +334,9 @@ export type EditorialBrief = {
   /** The exact derived short post produced from this Board run's article, when any. */
   generatedDerivedShortDraftVersionId?: string;
   /** Failures are retained separately from the expandable reviewer rationale. */
-  runFailures: Array<{ role: string; summary: string }>;
+  runFailures: Array<{ role: string; summary: string; category?: "output_limit" | "reader_range_contract_failed" | "reader_prose_scaffolding_failed" | "execution_failure" }>;
+  /** A later scoped rerun may resolve one failed reviewer without replacing this Board run. */
+  reviewerRecoveries: Array<{ role: "strategist" | "skeptic" | "editor"; runId: string; provider: string; model: string; tier?: string }>;
   /** Exact roles that wrote a persisted Board result for this run. */
   attemptedRoles: string[];
   thesis: string;
@@ -371,7 +388,42 @@ export type FinalDraftReview = {
   }>;
   proofreadCompleted: boolean;
   proofreadStatus: "completed" | "failed" | "not_run";
+  /** Application-authored only; never provider text or provider error details. */
+  proofreadFailure?: {
+    category: "provider_failure" | "refusal" | "truncation" | "repair_exhausted" | "cap_rejected" | "execution_failure";
+    message: string;
+  };
 };
+
+type ProofreadFailure = NonNullable<FinalDraftReview["proofreadFailure"]>;
+
+function proofreadFailureFor(error: unknown): ProofreadFailure {
+  const message = error instanceof Error ? error.message : "";
+  if (/budget would be exceeded|budget cap/i.test(message)) return {
+    category: "cap_rejected",
+    message: "The proofread request exceeded its approved cost cap before a provider call. Increase the cap only if you explicitly accept the displayed upper-bound reservation, then retry this exact saved output.",
+  };
+  if (/refused|declined/i.test(message)) return {
+    category: "refusal",
+    message: "The configured proofreader declined this exact saved output. No proofread result was saved. Retry the combined review only after confirming the route is appropriate.",
+  };
+  if (/output limit/i.test(message)) return {
+    category: "truncation",
+    message: "The configured proofreader reached its bounded output limit. No proofread result was saved. Retry the combined review for this exact saved output.",
+  };
+  if (/structured output remained invalid|structured format|structured output/i.test(message)) return {
+    category: "repair_exhausted",
+    message: "The configured proofreader returned invalid structured output after one bounded repair. No proofread result was saved. Retry the combined review for this exact saved output.",
+  };
+  if (/request failed|provider/i.test(message)) return {
+    category: "provider_failure",
+    message: "The configured proofreader could not complete a provider request. No proofread result was saved. Retry the combined review for this exact saved output.",
+  };
+  return {
+    category: "execution_failure",
+    message: "The live proofread stopped before a validated result was available. No proofread finding is eligible. Retry the combined review for this exact saved output.",
+  };
+}
 
 function finalPolishSuggestions(draft: string): FinalDraftReview["polishSuggestions"] {
   const suggestions: FinalDraftReview["polishSuggestions"] = [];
@@ -1140,16 +1192,20 @@ function visualDirectoryName(title: string, ideaId: string) {
   return `${titlePrefix}-${suffix || "idea"}`;
 }
 
-function visualFileName(version: number) {
+function visualFileName(draftVersion: number, visualVersion: number, briefId: string) {
   const timestamp = now().replace(/[-:.]/g, "").replace("Z", "Z");
-  return `draft_${version}_${timestamp}.svg`;
+  // A draft may have several immutable lead candidates. Timestamp precision
+  // alone cannot distinguish two writes in one clock tick, so bind every new
+  // asset path to the persisted visual sequence and brief identity.
+  const briefSuffix = briefId.replace(/^visual_brief_/, "").replace(/[^a-zA-Z0-9]/g, "").slice(-12);
+  return `draft_${draftVersion}_visual_${visualVersion}_${briefSuffix || "brief"}_${timestamp}.svg`;
 }
 
-function visualRelativePath(title: string, ideaId: string, version: number, existingPath?: string) {
+function visualRelativePath(title: string, ideaId: string, draftVersion: number, visualVersion: number, briefId: string, existingPath?: string) {
   const directory = visualDirectoryName(title, ideaId);
   const normalizedExisting = existingPath?.replace(/\\/g, "/");
   if (normalizedExisting?.startsWith(`${directory}/`)) return normalizedExisting;
-  return path.join(directory, visualFileName(version));
+  return path.join(directory, visualFileName(draftVersion, visualVersion, briefId));
 }
 
 function visualAssetPath(visualAssetsPath: string, relativePath: string) {
@@ -1167,13 +1223,14 @@ function readVisualCompanion(
 ): VisualCompanion | undefined {
   const row = database
     .prepare(
-      "SELECT id, draft_version_id, visual_brief_id, visual_type, title, subtitle, steps_json, alt_text, caption, file_path, created_at FROM visual_companions WHERE draft_version_id = ? AND visual_brief_id = ? ORDER BY created_at DESC LIMIT 1",
+      "SELECT id, draft_version_id, visual_brief_id, visual_type, color_scheme, title, subtitle, steps_json, alt_text, caption, file_path, created_at FROM visual_companions WHERE draft_version_id = ? AND visual_brief_id = ? ORDER BY created_at DESC LIMIT 1",
     )
     .get(draftVersionId, visualBriefId) as {
     id: string;
     draft_version_id: string;
     visual_brief_id: string | null;
     visual_type: VisualCompanion["type"];
+    color_scheme: VisualColorScheme;
     title: string;
     subtitle: string;
     steps_json: string;
@@ -1188,6 +1245,7 @@ function readVisualCompanion(
     draftVersionId: row.draft_version_id,
     visualBriefId: row.visual_brief_id ?? undefined,
     type: row.visual_type,
+    colorScheme: row.color_scheme,
     eyebrow: row.visual_type === "contrast" || row.visual_type === "maturity_path"
       ? "A MATURITY CHECK"
       : row.visual_type === "decision_fork"
@@ -1216,7 +1274,7 @@ function readLegacyVisualCompanion(
 ): VisualCompanion | undefined {
   const row = database
     .prepare(
-      "SELECT id, draft_version_id, visual_brief_id, visual_type, title, subtitle, steps_json, alt_text, caption, file_path, created_at FROM visual_companions WHERE draft_version_id = ? AND visual_brief_id IS NULL ORDER BY created_at DESC LIMIT 1",
+      "SELECT id, draft_version_id, visual_brief_id, visual_type, color_scheme, title, subtitle, steps_json, alt_text, caption, file_path, created_at FROM visual_companions WHERE draft_version_id = ? AND visual_brief_id IS NULL ORDER BY created_at DESC LIMIT 1",
     )
     .get(draftVersionId) as {
     id: string;
@@ -1255,7 +1313,7 @@ function readLegacyVisualCompanion(
 type StoredVisualBrief = {
   id: string; draft_version_id: string; output_format: DraftFormat; recommendation: VisualBrief["recommendation"]; rationale: string;
   purpose: VisualBrief["purpose"] | null; visual_type: VisualTemplate | null; source_draft_text: string; reader_contract_json: string; author_direction: string; claims_json: string; labels_json: string;
-  caption: string; alt_text: string; placement: VisualBrief["placement"] | null; status: VisualBrief["status"]; revision_number: number; approved_at: string | null;
+  caption: string; alt_text: string; placement: VisualBrief["placement"] | null; status: VisualBrief["status"]; revision_number: number; visual_version_number: number; approved_at: string | null; color_scheme: VisualColorScheme;
 };
 
 function visualBriefFromRow(row: StoredVisualBrief): VisualBrief {
@@ -1267,14 +1325,14 @@ function visualBriefFromRow(row: StoredVisualBrief): VisualBrief {
     rationale: row.rationale, purpose: row.purpose ?? undefined, template, sourceDraftText: row.source_draft_text,
     readerContract: provenanceReaderContract.parse(JSON.parse(row.reader_contract_json)), authorDirection: row.author_direction,
     claims: z.array(z.string()).parse(JSON.parse(row.claims_json)), labels: z.array(z.string()).parse(JSON.parse(row.labels_json)),
-    caption: row.caption, altText: row.alt_text, placement: row.placement ?? undefined, status: row.status,
-    revisionNumber: row.revision_number, approvedAt: row.approved_at ?? undefined,
+    caption: row.caption, altText: row.alt_text, placement: row.placement ?? undefined, status: row.status, colorScheme: z.enum(["violet", "forest", "copper"]).parse(row.color_scheme),
+    revisionNumber: row.visual_version_number, briefRevisionNumber: row.revision_number, approvedAt: row.approved_at ?? undefined,
   };
 }
 
 function readVisualBriefs(database: ReturnType<typeof db> | ReturnType<typeof readDb>, draftVersionId: string) {
   const rows = database.prepare(
-    "SELECT id, draft_version_id, output_format, recommendation, rationale, purpose, visual_type, source_draft_text, reader_contract_json, author_direction, claims_json, labels_json, caption, alt_text, placement, status, revision_number, approved_at FROM visual_briefs WHERE draft_version_id = ? ORDER BY CASE placement WHEN 'lead' THEN 0 WHEN 'supporting' THEN 1 ELSE 2 END, updated_at DESC, created_at DESC",
+    "SELECT id, draft_version_id, output_format, recommendation, rationale, purpose, visual_type, source_draft_text, reader_contract_json, author_direction, claims_json, labels_json, caption, alt_text, placement, status, revision_number, visual_version_number, approved_at, color_scheme FROM visual_briefs WHERE draft_version_id = ? ORDER BY CASE placement WHEN 'lead' THEN 0 WHEN 'supporting' THEN 1 ELSE 2 END, updated_at DESC, created_at DESC",
   ).all(draftVersionId) as StoredVisualBrief[];
   return rows.map(visualBriefFromRow);
 }
@@ -1283,6 +1341,52 @@ function readVisualBrief(database: ReturnType<typeof db> | ReturnType<typeof rea
   return readVisualBriefs(database, draftVersionId).find((brief) =>
     (!placement || brief.placement === placement) && (!briefId || brief.id === briefId),
   );
+}
+
+function readActiveVisualLead(
+  database: ReturnType<typeof db> | ReturnType<typeof readDb>,
+  draftVersionId: string,
+  briefs = readVisualBriefs(database, draftVersionId),
+) {
+  const selection = database.prepare(
+    "SELECT visual_brief_id FROM visual_lead_selections WHERE draft_version_id = ?",
+  ).get(draftVersionId) as { visual_brief_id: string } | undefined;
+  if (selection) return briefs.find((brief) => brief.id === selection.visual_brief_id);
+  // Milestone 7 records predate the pointer. Their existing lead remains the
+  // active asset until a later version is rendered and explicitly selected.
+  return briefs.find((brief) => brief.placement === "lead");
+}
+
+function visualRevisionHistory(briefs: VisualBrief[]) {
+  return briefs
+    .filter((brief) => (
+      (brief.recommendation === "visual" && (brief.placement === "lead" || brief.placement === undefined))
+      // A literal author direction can deliberately be a no-render custom
+      // illustration concept. Dismissal ends its active-candidate lifecycle,
+      // not its provenance: keep it visible alongside saved lead versions.
+      || (brief.recommendation === "no_visual" && brief.placement === undefined && Boolean(brief.authorDirection))
+    ))
+    .sort((left, right) => left.revisionNumber - right.revisionNumber || left.id.localeCompare(right.id));
+}
+
+function latestVisualCandidate(briefs: VisualBrief[], active?: VisualBrief) {
+  return briefs
+    .filter((brief) => (
+      brief.id !== active?.id
+      && brief.placement === undefined
+      && ["recommended", "approved"].includes(brief.status)
+      // A generic no-visual recommendation is superseded once the author
+      // deliberately selects and renders a supported local grammar. Keep a
+      // literal custom direction actionable until the author dismisses it.
+      && (brief.recommendation === "visual" || Boolean(brief.authorDirection))
+    ))
+    .sort((left, right) => right.revisionNumber - left.revisionNumber)[0];
+}
+
+function selectVisualLeadInDatabase(database: ReturnType<typeof db>, draftVersionId: string, visualBriefId: string) {
+  database.prepare(
+    "INSERT INTO visual_lead_selections (draft_version_id, visual_brief_id, selected_at) VALUES (?, ?, ?) ON CONFLICT(draft_version_id) DO UPDATE SET visual_brief_id = excluded.visual_brief_id, selected_at = excluded.selected_at",
+  ).run(draftVersionId, visualBriefId, now());
 }
 
 function readSupportingVisualCompanions(database: ReturnType<typeof db> | ReturnType<typeof readDb>, draftVersionId: string) {
@@ -1436,7 +1540,8 @@ export function getIdea(ideaId: string): IdeaDetail | undefined {
           } | undefined)
       : undefined;
     const primaryVisualBriefs = primary ? readVisualBriefs(database, primary.id) : [];
-    const primaryLeadBrief = primaryVisualBriefs.find((brief) => brief.placement === "lead");
+    const primaryLeadBrief = primary ? readActiveVisualLead(database, primary.id, primaryVisualBriefs) : undefined;
+    const primaryVisualCandidate = latestVisualCandidate(primaryVisualBriefs, primaryLeadBrief);
     // A no-visual recommendation has no placement, but is still the primary
     // author decision. Never substitute a supporting record for it.
     const primaryVisualBrief = primaryLeadBrief ?? primaryVisualBriefs.find((brief) => brief.placement === undefined);
@@ -1444,7 +1549,8 @@ export function getIdea(ideaId: string): IdeaDetail | undefined {
       ? readLegacyVisualCompanion(database, primary.id)
       : undefined;
     const derivedShortVisualBriefs = derivedShortPost ? readVisualBriefs(database, derivedShortPost.id) : [];
-    const derivedShortLeadBrief = derivedShortVisualBriefs.find((brief) => brief.placement === "lead");
+    const derivedShortLeadBrief = derivedShortPost ? readActiveVisualLead(database, derivedShortPost.id, derivedShortVisualBriefs) : undefined;
+    const derivedShortVisualCandidate = latestVisualCandidate(derivedShortVisualBriefs, derivedShortLeadBrief);
     const derivedShortVisualBrief = derivedShortLeadBrief ?? derivedShortVisualBriefs.find((brief) => brief.placement === undefined);
     const derivedShortLegacyVisualCompanion = derivedShortPost && !derivedShortLeadBrief
       ? readLegacyVisualCompanion(database, derivedShortPost.id)
@@ -1502,6 +1608,8 @@ export function getIdea(ideaId: string): IdeaDetail | undefined {
       supportingVisualCompanions: primary ? readSupportingVisualCompanions(database, primary.id) : [],
       visualBrief: primaryVisualBrief,
       visualBriefs: primaryVisualBriefs,
+      visualCandidateBrief: primaryVisualCandidate,
+      visualRevisionHistory: visualRevisionHistory(primaryVisualBriefs),
       derivedShortVisualCompanion: derivedShortPost
         ? derivedShortLeadBrief
           ? readVisualCompanion(database, derivedShortPost.id, derivedShortLeadBrief.id)
@@ -1510,6 +1618,8 @@ export function getIdea(ideaId: string): IdeaDetail | undefined {
       derivedShortSupportingVisualCompanions: derivedShortPost ? readSupportingVisualCompanions(database, derivedShortPost.id) : [],
       derivedShortVisualBrief,
       derivedShortVisualBriefs,
+      derivedShortVisualCandidateBrief: derivedShortVisualCandidate,
+      derivedShortVisualRevisionHistory: visualRevisionHistory(derivedShortVisualBriefs),
       derivedShortRecovery: derivedShortRecovery
         ? {
             id: derivedShortRecovery.id,
@@ -1557,8 +1667,15 @@ function readBrief(
     status: string;
   }>;
   if (!rows.length) return undefined;
+  const generatedDraftVersionId = (database
+    .prepare("SELECT generated_draft_version_id FROM editorial_run_snapshots WHERE review_run_id = ?")
+    .get(runId) as { generated_draft_version_id: string | null } | undefined)?.generated_draft_version_id ?? undefined;
+  // The original failed Initial-Drafter attempt remains immutable provenance.
+  // Once its scoped retry creates the saved working draft, it is no longer a
+  // current Board failure or reviewer result for the author to resolve.
+  const recoveredInitialDrafter = Boolean(generatedDraftVersionId);
   const reviews = rows
-    .filter((row) => row.name !== "synthesizer")
+    .filter((row) => ["strategist", "skeptic", "editor"].includes(row.name))
     .map((row) => {
       const data = row.structured_output
         ? (JSON.parse(row.structured_output) as {
@@ -1574,9 +1691,21 @@ function readBrief(
         details: data.top_recommendations,
       };
     });
+  const initialDrafterFailureCode = (database.prepare(
+    "SELECT json_extract(COALESCE(raw_usage, '{}'), '$.failureDiagnostic.failureCode') AS failure_code FROM model_calls WHERE agent_role = 'initial_drafter' AND success = 0 AND json_extract(COALESCE(raw_usage, '{}'), '$.reviewRunId') = ? ORDER BY ended_at DESC, rowid DESC LIMIT 1",
+  ).get(runId) as { failure_code: string | null } | undefined)?.failure_code;
+  const initialDrafterFailureCategory: NonNullable<EditorialBrief["runFailures"][number]["category"]> = initialDrafterFailureCode === "output_limit"
+    || initialDrafterFailureCode === "reader_range_contract_failed"
+    || initialDrafterFailureCode === "reader_prose_scaffolding_failed"
+    ? initialDrafterFailureCode
+    : "execution_failure" as const;
   const runFailures = rows
-    .filter((row) => row.status === "failed")
-    .map((row) => ({ role: row.name, summary: row.text_output ?? "The role did not produce validated output." }));
+    .filter((row) => row.status === "failed" && !(recoveredInitialDrafter && row.name === "initial_drafter"))
+    .map((row) => ({
+      role: row.name,
+      summary: row.text_output ?? "The role did not produce validated output.",
+      ...(row.name === "initial_drafter" ? { category: initialDrafterFailureCategory } : {}),
+    }));
   const synthesis = rows.find((row) => row.name === "synthesizer");
   const data = synthesis?.structured_output
     ? (JSON.parse(synthesis.structured_output) as {
@@ -1595,9 +1724,6 @@ function readBrief(
         next_step?: string;
       })
     | undefined;
-  const generatedDraftVersionId = (database
-    .prepare("SELECT generated_draft_version_id FROM editorial_run_snapshots WHERE review_run_id = ?")
-    .get(runId) as { generated_draft_version_id: string | null } | undefined)?.generated_draft_version_id ?? undefined;
   const generatedDerivedShortDraftVersionId = generatedDraftVersionId
     ? (database
         .prepare(
@@ -1614,6 +1740,19 @@ function readBrief(
         )
         .get(generatedDraftVersionId, runId) as { id: string } | undefined)?.id
     : undefined;
+  const reviewerRecoveries = (database
+    .prepare(
+      `SELECT call.agent_role AS role, json_extract(call.raw_usage, '$.reviewRunId') AS run_id,
+              call.provider, call.model, json_extract(call.raw_usage, '$.routeTier') AS tier
+         FROM model_calls call
+        WHERE call.success = 1
+          AND call.agent_role IN ('strategist', 'skeptic', 'editor')
+          AND json_extract(COALESCE(call.raw_usage, '{}'), '$.recoveryOfReviewRunId') = ?
+        ORDER BY call.ended_at DESC, call.rowid DESC`,
+    )
+    .all(runId) as Array<{ role: "strategist" | "skeptic" | "editor"; run_id: string; provider: string; model: string; tier: string | null }>)
+    .filter((item, index, all) => all.findIndex((other) => other.role === item.role) === index)
+    .map((item) => ({ role: item.role, runId: item.run_id, provider: item.provider, model: item.model, tier: item.tier ?? undefined }));
   return {
     runId,
     executionMode,
@@ -1621,6 +1760,7 @@ function readBrief(
     generatedDraftVersionId,
     generatedDerivedShortDraftVersionId,
     runFailures,
+    reviewerRecoveries,
     attemptedRoles: rows.map((row) => row.name),
     thesis: grounded?.central_thesis ?? idea.rawNotes.slice(0, 300),
     strongest: grounded?.strongest ?? reviews[0]?.summary ?? "The idea has a useful starting point.",
@@ -1746,9 +1886,10 @@ function readFinalReview(
     "runId" | "draftVersionId" | "reviews"
   >;
   const proofreader = rows.find((row) => row.name === "proofreader");
-  const storedFindings = proofreader?.structured_output
-    ? (JSON.parse(proofreader.structured_output) as { findings?: FinalDraftReview["proofreadFindings"] }).findings ?? []
-    : [];
+  const proofreaderOutput = proofreader?.structured_output
+    ? (JSON.parse(proofreader.structured_output) as { findings?: FinalDraftReview["proofreadFindings"]; failure?: ProofreadFailure })
+    : undefined;
+  const storedFindings = proofreaderOutput?.findings ?? [];
   const dispositionRows = database.prepare(
     "SELECT finding_id, disposition FROM review_finding_dispositions WHERE review_run_id = ?",
   ).all(runId) as Array<{ finding_id: string; disposition: "accepted" | "dismissed" | "revised" | "still_open" }>;
@@ -1800,6 +1941,7 @@ function readFinalReview(
     proofreadFindings,
     proofreadCompleted: proofreader?.status === "completed",
     proofreadStatus: proofreader?.status === "completed" || proofreader?.status === "failed" ? proofreader.status : "not_run",
+    proofreadFailure: proofreader?.status === "failed" ? proofreaderOutput?.failure : undefined,
   };
 }
 
@@ -2529,8 +2671,18 @@ async function executeLiveProofreadForExactReview(ideaId: string, input: Injecte
       const generated = await generateStructured(metered, request, proofreadOutputSchema);
       // A structurally valid response can still contain a non-actionable
       // confirmation. Do not persist it as a material publication blocker.
+      // Only suppress genuinely cosmetic restatements. Punctuation can alter
+      // meaning (for example, who is being addressed), so it remains part of
+      // the comparison rather than being stripped along with case/spacing.
+      const normalizedFindingText = (value: string) => value
+        .normalize("NFKC")
+        .toLocaleLowerCase()
+        .replace(/\s+/g, " ")
+        .trim();
       const findings = generated.output.findings
-        .filter((finding) => finding.current.normalize("NFKC").trim() !== finding.suggestion.normalize("NFKC").trim())
+        // A provider must not create a material Finalize blocker for a
+        // capitalization/spacing-only restatement of the same words.
+        .filter((finding) => normalizedFindingText(finding.current) !== normalizedFindingText(finding.suggestion))
         .map((finding) => ({ ...finding, id: `proofread-${crypto.createHash("sha256").update(`${finding.category}:${finding.current}:${finding.suggestion}`).digest("hex").slice(0, 12)}` }));
       database.exec("BEGIN IMMEDIATE");
       try {
@@ -2543,6 +2695,7 @@ async function executeLiveProofreadForExactReview(ideaId: string, input: Injecte
       return getIdea(ideaId)!;
     } catch (error) {
       const safeFailure = "The live proofread did not produce a validated result. No proofread finding is eligible until you retry this exact saved output.";
+      const proofreadFailure = proofreadFailureFor(error);
       // Persist the bounded, application-authored failure category separately
       // from the browser-safe author guidance.
       const attemptFailure = error instanceof Error ? error.message : safeFailure;
@@ -2551,7 +2704,7 @@ async function executeLiveProofreadForExactReview(ideaId: string, input: Injecte
         persistAttempts(database, metered.attempts, { role: "proofreader", draftVersionId: selected.id, promptChecksum, injectionSignals: boundary.injectionSignals, provider: metered, pricingAssumption: input.pricingAssumption, budgetCap: input.budgetCap, acceptedLastAttempt: false, finalFailure: attemptFailure, reviewRunId: run.id });
         database.prepare("DELETE FROM agent_reviews WHERE review_run_id = ? AND role_id = 'role_proofreader'").run(run.id);
         seedRole(database, "proofreader");
-        database.prepare("INSERT INTO agent_reviews (id, review_run_id, role_id, prompt_version, structured_output, text_output, confidence_score, status) VALUES (?, ?, 'role_proofreader', 'live-proofread-1', ?, ?, 0, 'failed')").run(id("review"), run.id, JSON.stringify({ findings: [] }), safeFailure);
+        database.prepare("INSERT INTO agent_reviews (id, review_run_id, role_id, prompt_version, structured_output, text_output, confidence_score, status) VALUES (?, ?, 'role_proofreader', 'live-proofread-1', ?, ?, 0, 'failed')").run(id("review"), run.id, JSON.stringify({ findings: [], failure: proofreadFailure }), safeFailure);
         database.exec("COMMIT");
       } catch (persistenceError) { database.exec("ROLLBACK"); throw persistenceError; }
       throw new Error(safeFailure);
@@ -2850,14 +3003,40 @@ function assertVisualPlacementAvailable(database: ReturnType<typeof db>, draftVe
   }
 }
 
+function assertNewSupportingVisualAuthoringDeferred(placement: "lead" | "supporting") {
+  if (placement === "supporting")
+    throw new Error("New supporting visual authoring is deferred while this workflow focuses on one versioned lead visual. Earlier supporting assets remain read-only history.");
+}
+
 function firstSourceClaim(sourceDraftText: string) {
   const trimmed = sourceDraftText.trim();
   const sentence = trimmed.match(/^.*?[.!?](?:\s|$)/)?.[0] ?? trimmed;
   return sentence.slice(0, 500).trim();
 }
 
+function supportedVisualTemplateFromDirection(authorDirection: string): VisualTemplate | undefined {
+  // Free-form author direction is untrusted intent, not permission to invent
+  // a diagram. Only an explicit supported grammar maps automatically; every
+  // other direction becomes an honest no-render concept unless the author
+  // separately chooses one deterministic grammar.
+  if (/\b(?:decision fork|choice|choose|either|or)\b/i.test(authorDirection)) return "decision_fork";
+  if (/\b(?:contrast|versus|vs\.?|above|below|iceberg)\b/i.test(authorDirection)) return "contrast";
+  if (/\b(?:vertical path|maturity path|progression|stages?)\b/i.test(authorDirection)) return "vertical_path";
+  if (/\b(?:flow|sequence|step by step|steps?)\b/i.test(authorDirection)) return "flow";
+  return undefined;
+}
+
 /** Creates a local-only visual recommendation for one immutable saved output. */
-export function recommendVisualBrief(ideaId: string, selectedTemplate?: VisualTemplate, placement: "lead" | "supporting" = "lead", format?: DraftFormat) {
+export function recommendVisualBrief(
+  ideaId: string,
+  selectedTemplate?: VisualTemplate,
+  placement: "lead" | "supporting" = "lead",
+  format?: DraftFormat,
+  input?: z.input<typeof visualRecommendationInput>,
+) {
+  assertNewSupportingVisualAuthoringDeferred(placement);
+  const recommendationInput = visualRecommendationInput.parse(input ?? {});
+  const authorDirection = recommendationInput.authorDirection ?? "";
   const idea = getIdea(ideaId);
   if (!idea) throw new Error("Idea not found.");
   const output = visualOutputFor(idea, format ?? primaryDraftFormat(idea.outputShape));
@@ -2868,24 +3047,175 @@ export function recommendVisualBrief(ideaId: string, selectedTemplate?: VisualTe
       // Publication history is exact-output scoped. A recorded article must
       // not strand the still-current, independently editable derived short.
       assertDraftNotPublished(database, output.id);
-      assertVisualPlacementAvailable(database, output.id, placement);
-      const suggested = visualCompanionFor(idea.title, output.body, selectedTemplate);
+      const existing = readVisualBriefs(database, output.id);
+      const directionTemplate = supportedVisualTemplateFromDirection(authorDirection);
+      const selectedGrammar = selectedTemplate ?? directionTemplate;
+      const suggested = visualCompanionFor(idea.title, output.body, selectedGrammar);
       const sourceDraftText = output.body;
       const sourceClaim = firstSourceClaim(sourceDraftText);
-      const supportsDiagram = /\b(framework|comparison|compare|contrast|sequence|lifecycle|decision|trade-?off|stages?|path|principle)\b/i.test(sourceDraftText);
-      const recommendation = selectedTemplate || supportsDiagram ? "visual" as const : "no_visual" as const;
+      const supportsDiagram = /\b(framework|comparison|compare|contrast|sequence|lifecycle|decision|trade-?off|stages?|path|principle)\b/i.test(sourceDraftText)
+        || /\b(framework|comparison|compare|contrast|sequence|lifecycle|decision|trade-?off|stages?|path|principle)\b/i.test(authorDirection);
+      const needsCustomIllustration = Boolean(authorDirection) && !selectedTemplate && !directionTemplate;
+      const recommendation = !needsCustomIllustration && (selectedGrammar || supportsDiagram) ? "visual" as const : "no_visual" as const;
+      const pendingNoVisual = existing.find((brief) => (
+        brief.recommendation === "no_visual"
+        && brief.status === "recommended"
+        && brief.placement === undefined
+      ));
+      // A generic "no visual" is only an uncommitted recommendation. When
+      // the author chooses a supported grammar, promote that same first
+      // candidate instead of creating a second Version 1. A literal custom
+      // concept is meaningful author history, so deliberately dismiss it and
+      // allocate a distinct next immutable version for the chosen diagram.
+      if (recommendation === "visual" && selectedTemplate && pendingNoVisual && !pendingNoVisual.authorDirection) {
+        assertVisualPlacementAvailable(database, output.id, placement, pendingNoVisual.id);
+        database.prepare(
+          "UPDATE visual_briefs SET recommendation = 'visual', rationale = ?, purpose = 'framework', visual_type = ?, source_draft_text = ?, reader_contract_json = ?, author_direction = ?, claims_json = ?, labels_json = ?, caption = ?, alt_text = ?, placement = ?, revision_number = revision_number + 1, updated_at = ? WHERE id = ?",
+        ).run(
+          "This exact saved output names a relationship that a concise diagram can clarify.",
+          suggested.type === "maturity_path" ? "vertical_path" : suggested.type,
+          sourceDraftText,
+          JSON.stringify(visualReaderContractFor(idea)),
+          authorDirection,
+          JSON.stringify([sourceClaim]), JSON.stringify([sourceClaim.slice(0, 120)]),
+          `Visual companion for: ${sourceClaim.slice(0, 300)}`,
+          `Diagram explaining: ${sourceClaim.slice(0, 500)}`,
+          placement, now(), pendingNoVisual.id,
+        );
+        database.exec("COMMIT");
+        return getIdea(ideaId)!;
+      }
+      if (recommendation === "visual" && selectedTemplate && pendingNoVisual?.authorDirection)
+        database.prepare("UPDATE visual_briefs SET status = 'dismissed', updated_at = ? WHERE id = ?").run(now(), pendingNoVisual.id);
+      assertVisualPlacementAvailable(database, output.id, placement);
+      const nextVisualVersion = Math.max(...existing.map((brief) => brief.revisionNumber), 0) + 1;
       database.prepare(
-        "INSERT INTO visual_briefs (id, idea_id, draft_version_id, output_format, recommendation, rationale, purpose, visual_type, source_draft_text, reader_contract_json, author_direction, claims_json, labels_json, caption, alt_text, placement, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'recommended')",
+        "INSERT INTO visual_briefs (id, idea_id, draft_version_id, output_format, recommendation, rationale, purpose, visual_type, source_draft_text, reader_contract_json, author_direction, claims_json, labels_json, caption, alt_text, placement, status, visual_version_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'recommended', ?)",
       ).run(
         id("visual_brief"), ideaId, output.id, output.format, recommendation,
-        recommendation === "visual" ? "This exact saved output names a relationship that a concise diagram can clarify." : "This exact saved output is too brief for a visual to add explanatory value.",
+        recommendation === "visual"
+          ? "This exact saved output names a relationship that a concise diagram can clarify."
+          : needsCustomIllustration
+            ? "A custom illustration may help. This local diagram flow will not substitute a mismatched template or generate an image."
+            : "This exact saved output is too brief for a visual to add explanatory value.",
         recommendation === "visual" ? "framework" : null, recommendation === "visual" ? suggested.type === "maturity_path" ? "vertical_path" : suggested.type : null, sourceDraftText,
-        JSON.stringify(visualReaderContractFor(idea)), "",
+        JSON.stringify(visualReaderContractFor(idea)), authorDirection,
         JSON.stringify([sourceClaim]), JSON.stringify([sourceClaim.slice(0, 120)]),
         `Visual companion for: ${sourceClaim.slice(0, 300)}`,
         `Diagram explaining: ${sourceClaim.slice(0, 500)}`,
         recommendation === "visual" ? placement : null,
+        nextVisualVersion,
       );
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    return getIdea(ideaId)!;
+  } finally { database.close(); }
+}
+
+/**
+ * Starts a non-destructive lead replacement for the same immutable output.
+ * The existing rendered lead remains selected until this new version is both
+ * approved and rendered. Candidates intentionally have no placement: the
+ * selection table, not mutable brief state, determines the visible lead.
+ */
+export function startVisualLeadRevision(
+  ideaId: string,
+  selectedTemplate?: VisualTemplate,
+  format?: DraftFormat,
+  input?: z.input<typeof visualRecommendationInput>,
+) {
+  const recommendationInput = visualRecommendationInput.parse(input ?? {});
+  const authorDirection = recommendationInput.authorDirection ?? "";
+  const idea = getIdea(ideaId);
+  if (!idea) throw new Error("Idea not found.");
+  const output = visualOutputFor(idea, format ?? primaryDraftFormat(idea.outputShape));
+  const database = db();
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      assertDraftNotPublished(database, output.id);
+      const existing = readVisualBriefs(database, output.id);
+      const active = readActiveVisualLead(database, output.id, existing);
+      if (!active || !readVisualCompanion(database, output.id, active.id))
+        throw new Error("Render a lead visual for this exact saved output before preparing a replacement version.");
+      if (latestVisualCandidate(existing, active))
+        throw new Error("Finish or discard the current lead-visual replacement before preparing another version.");
+      const directionTemplate = supportedVisualTemplateFromDirection(authorDirection);
+      const selectedGrammar = selectedTemplate ?? directionTemplate;
+      const suggested = visualCompanionFor(idea.title, output.body, selectedGrammar);
+      const sourceClaim = firstSourceClaim(output.body);
+      const supportsDiagram = /\b(framework|comparison|compare|contrast|sequence|lifecycle|decision|trade-?off|stages?|path|principle)\b/i.test(output.body)
+        || /\b(framework|comparison|compare|contrast|sequence|lifecycle|decision|trade-?off|stages?|path|principle)\b/i.test(authorDirection);
+      const needsCustomIllustration = Boolean(authorDirection) && !selectedTemplate && !directionTemplate;
+      const recommendation = !needsCustomIllustration && (selectedGrammar || supportsDiagram) ? "visual" as const : "no_visual" as const;
+      const nextVisualVersion = Math.max(...existing.map((brief) => brief.revisionNumber), 0) + 1;
+      database.prepare(
+        "INSERT INTO visual_briefs (id, idea_id, draft_version_id, output_format, recommendation, rationale, purpose, visual_type, source_draft_text, reader_contract_json, author_direction, claims_json, labels_json, caption, alt_text, placement, status, visual_version_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'recommended', ?)",
+      ).run(
+        id("visual_brief"), ideaId, output.id, output.format, recommendation,
+        recommendation === "visual"
+          ? "This replacement version uses a new explanatory grammar for the same exact saved output."
+          : needsCustomIllustration
+            ? "A custom illustration may help. This local diagram flow will not substitute a mismatched template or generate an image."
+            : "This exact saved output is too brief for a visual to add explanatory value.",
+        recommendation === "visual" ? "framework" : null,
+        recommendation === "visual" ? suggested.type === "maturity_path" ? "vertical_path" : suggested.type : null,
+        output.body, JSON.stringify(visualReaderContractFor(idea)), authorDirection,
+        JSON.stringify([sourceClaim]), JSON.stringify([sourceClaim.slice(0, 120)]),
+        `Visual companion for: ${sourceClaim.slice(0, 300)}`,
+        `Diagram explaining: ${sourceClaim.slice(0, 500)}`,
+        nextVisualVersion,
+      );
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    return getIdea(ideaId)!;
+  } finally { database.close(); }
+}
+
+/** Selects a previously rendered immutable lead version for this exact output. */
+export function selectVisualLeadRevision(ideaId: string, briefId: string, format?: DraftFormat) {
+  const idea = getIdea(ideaId);
+  if (!idea) throw new Error("Idea not found.");
+  const output = visualOutputFor(idea, format ?? primaryDraftFormat(idea.outputShape));
+  const database = db();
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      assertDraftNotPublished(database, output.id);
+      const brief = readVisualBrief(database, output.id, undefined, briefId);
+      if (!brief || brief.recommendation !== "visual" || brief.status !== "rendered")
+        throw new Error("Only a rendered visual version for this exact saved output can be selected.");
+      if (!readVisualCompanion(database, output.id, brief.id))
+        throw new Error("The selected visual version has no saved local asset.");
+      selectVisualLeadInDatabase(database, output.id, brief.id);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    return getIdea(ideaId)!;
+  } finally { database.close(); }
+}
+
+/** Discards an unrendered candidate without touching any rendered lead asset. */
+export function dismissVisualBrief(ideaId: string, briefId: string) {
+  const database = db();
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const brief = database.prepare("SELECT id, draft_version_id, status, placement FROM visual_briefs WHERE id = ? AND idea_id = ?").get(briefId, ideaId) as { id: string; draft_version_id: string; status: string; placement: "lead" | "supporting" | null } | undefined;
+      if (!brief) throw new Error("Visual brief not found for this idea.");
+      if (brief.placement === "supporting")
+        throw new Error("New supporting visual authoring is deferred while historic supporting visuals remain read-only.");
+      if (brief.status !== "recommended") throw new Error("Only an unapproved visual candidate can be discarded.");
+      assertDraftNotPublished(database, brief.draft_version_id);
+      database.prepare("UPDATE visual_briefs SET status = 'dismissed', updated_at = ? WHERE id = ?").run(now(), brief.id);
       database.exec("COMMIT");
     } catch (error) {
       database.exec("ROLLBACK");
@@ -2899,8 +3229,10 @@ export function recommendVisualBrief(ideaId: string, selectedTemplate?: VisualTe
 export function approveVisualBrief(ideaId: string, briefId: string) {
   const database = db();
   try {
-    const brief = database.prepare("SELECT id, recommendation, draft_version_id FROM visual_briefs WHERE id = ? AND idea_id = ?").get(briefId, ideaId) as { id: string; recommendation: string; draft_version_id: string } | undefined;
+    const brief = database.prepare("SELECT id, recommendation, draft_version_id, placement FROM visual_briefs WHERE id = ? AND idea_id = ?").get(briefId, ideaId) as { id: string; recommendation: string; draft_version_id: string; placement: "lead" | "supporting" | null } | undefined;
     if (!brief) throw new Error("Visual brief not found for this idea.");
+    if (brief.placement === "supporting")
+      throw new Error("New supporting visual authoring is deferred while historic supporting visuals remain read-only.");
     if (brief.recommendation !== "visual") throw new Error("This saved output has no recommended visual to approve.");
     assertDraftNotPublished(database, brief.draft_version_id);
     database.prepare("UPDATE visual_briefs SET status = 'approved', approved_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), brief.id);
@@ -2920,6 +3252,7 @@ function renderedVisualFromBrief(brief: VisualBrief) {
   const fallbackLabel = labels.at(-1) ?? fallbackClaim;
   return {
     ...base,
+    colorScheme: brief.colorScheme,
     eyebrow: "A READER-GUIDED VISUAL",
     title: labels[0] ?? fallbackLabel,
     subtitle: brief.authorDirection || claims[0] || fallbackClaim,
@@ -2940,7 +3273,8 @@ const visualBriefEditInput = z.object({
   altText: z.string().trim().min(1).max(1_000),
   authorDirection: z.string().trim().max(2_000).optional(),
   template: z.enum(["flow", "vertical_path", "contrast", "decision_fork"]),
-  placement: z.enum(["lead", "supporting"]),
+  colorScheme: z.enum(["violet", "forest", "copper"]).optional(),
+  placement: z.enum(["lead", "supporting"]).optional(),
 }).strict();
 
 /** Edits a recommended visual brief without allowing claims beyond its exact saved output. */
@@ -2950,16 +3284,19 @@ export function updateVisualBrief(ideaId: string, input: unknown) {
   try {
     database.exec("BEGIN IMMEDIATE");
     try {
-      const brief = database.prepare("SELECT id, draft_version_id, source_draft_text, recommendation, status FROM visual_briefs WHERE id = ? AND idea_id = ?").get(value.briefId, ideaId) as { id: string; draft_version_id: string; source_draft_text: string; recommendation: string; status: string } | undefined;
+      const brief = database.prepare("SELECT id, draft_version_id, source_draft_text, recommendation, status, placement, color_scheme FROM visual_briefs WHERE id = ? AND idea_id = ?").get(value.briefId, ideaId) as { id: string; draft_version_id: string; source_draft_text: string; recommendation: string; status: string; placement: "lead" | "supporting" | null; color_scheme: VisualColorScheme } | undefined;
       if (!brief) throw new Error("Visual brief not found for this idea.");
+      if (brief.placement === "supporting" || value.placement === "supporting")
+        throw new Error("New supporting visual authoring is deferred while historic supporting visuals remain read-only.");
       if (brief.status !== "recommended") throw new Error("Create a new visual brief before changing an approved or rendered brief.");
       if (brief.recommendation !== "visual") throw new Error("Request a visual recommendation before editing a visual brief.");
       assertDraftNotPublished(database, brief.draft_version_id);
       const source = brief.source_draft_text.toLocaleLowerCase();
       if ([...value.claims, ...value.labels].some((text) => !source.includes(text.toLocaleLowerCase())))
         throw new Error("Each visual claim and label must be traceable to this exact saved output.");
-      assertVisualPlacementAvailable(database, brief.draft_version_id, value.placement, brief.id);
-      database.prepare("UPDATE visual_briefs SET visual_type = ?, author_direction = ?, claims_json = ?, labels_json = ?, caption = ?, alt_text = ?, placement = ?, revision_number = revision_number + 1, updated_at = ? WHERE id = ?").run(value.template, value.authorDirection ?? "", JSON.stringify(value.claims), JSON.stringify(value.labels), value.caption, value.altText, value.placement, now(), value.briefId);
+      const placement = value.placement ?? brief.placement ?? undefined;
+      if (placement) assertVisualPlacementAvailable(database, brief.draft_version_id, placement, brief.id);
+      database.prepare("UPDATE visual_briefs SET visual_type = ?, color_scheme = ?, author_direction = ?, claims_json = ?, labels_json = ?, caption = ?, alt_text = ?, placement = ?, revision_number = revision_number + 1, updated_at = ? WHERE id = ?").run(value.template, value.colorScheme ?? brief.color_scheme, value.authorDirection ?? "", JSON.stringify(value.claims), JSON.stringify(value.labels), value.caption, value.altText, value.placement ?? brief.placement, now(), value.briefId);
       database.exec("COMMIT");
     } catch (error) {
       database.exec("ROLLBACK");
@@ -2985,25 +3322,24 @@ export function createVisualCompanion(ideaId: string, briefId?: string, format?:
     if (!approvedBrief || !["approved", "rendered"].includes(approvedBrief.status) || approvedBrief.recommendation !== "visual")
       throw new Error("Approve a visual brief for this exact saved output before rendering.");
     if (approvedBrief.placement === "supporting") {
-      const lead = readVisualBrief(database, output.id, "lead");
-      if (!lead || !readVisualCompanion(database, output.id, lead.id))
-        throw new Error("Render the lead visual for this exact saved output before rendering a supporting visual.");
+      throw new Error("New supporting visual authoring is deferred while historic supporting visuals remain read-only.");
     }
     const existing = readVisualCompanion(database, output.id, approvedBrief.id);
     if (existing) {
       // A refresh re-renders the same immutable, approved brief. It cannot use
       // a client-selected replacement template or later mutable output text.
       const refreshed = renderedVisualFromBrief(approvedBrief);
-      const relativePath = visualRelativePath(idea.title, idea.id, output.version, existing.filePath);
+      const relativePath = visualRelativePath(idea.title, idea.id, output.version, approvedBrief.revisionNumber, approvedBrief.id, existing.filePath);
       const existingPath = visualAssetPath(getAppConfig().visualAssetsPath, relativePath);
       fs.mkdirSync(path.dirname(existingPath), { recursive: true, mode: 0o700 });
       fs.writeFileSync(existingPath, renderVisualSvg(refreshed), { encoding: "utf8", mode: 0o600 });
       database
         .prepare(
-          "UPDATE visual_companions SET visual_type = ?, title = ?, subtitle = ?, steps_json = ?, alt_text = ?, caption = ?, file_path = ?, visual_brief_id = ? WHERE id = ?",
+          "UPDATE visual_companions SET visual_type = ?, color_scheme = ?, title = ?, subtitle = ?, steps_json = ?, alt_text = ?, caption = ?, file_path = ?, visual_brief_id = ? WHERE id = ?",
         )
         .run(
           refreshed.type,
+          refreshed.colorScheme ?? "violet",
           refreshed.title,
           refreshed.subtitle,
           JSON.stringify(refreshed.steps),
@@ -3013,11 +3349,12 @@ export function createVisualCompanion(ideaId: string, briefId?: string, format?:
           approvedBrief.id, existing.id,
         );
       database.prepare("UPDATE visual_briefs SET status = 'rendered', updated_at = ? WHERE id = ?").run(now(), approvedBrief.id);
+      selectVisualLeadInDatabase(database, output.id, approvedBrief.id);
       return getIdea(ideaId)!;
     }
     const draft = renderedVisualFromBrief(approvedBrief);
     const visualId = id("visual");
-    const relativePath = visualRelativePath(idea.title, idea.id, output.version);
+    const relativePath = visualRelativePath(idea.title, idea.id, output.version, approvedBrief.revisionNumber, approvedBrief.id);
     const outputPath = visualAssetPath(getAppConfig().visualAssetsPath, relativePath);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });
     fs.writeFileSync(
@@ -3027,7 +3364,7 @@ export function createVisualCompanion(ideaId: string, briefId?: string, format?:
     );
     database
       .prepare(
-        "INSERT INTO visual_companions (id, idea_id, content_item_id, draft_version_id, visual_type, title, subtitle, steps_json, alt_text, caption, file_path, visual_brief_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO visual_companions (id, idea_id, content_item_id, draft_version_id, visual_type, color_scheme, title, subtitle, steps_json, alt_text, caption, file_path, visual_brief_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         visualId,
@@ -3035,6 +3372,7 @@ export function createVisualCompanion(ideaId: string, briefId?: string, format?:
         content.id,
         output.id,
         draft.type,
+        draft.colorScheme ?? "violet",
         draft.title,
         draft.subtitle,
         JSON.stringify(draft.steps),
@@ -3043,6 +3381,7 @@ export function createVisualCompanion(ideaId: string, briefId?: string, format?:
         relativePath, approvedBrief.id,
       );
     database.prepare("UPDATE visual_briefs SET status = 'rendered', updated_at = ? WHERE id = ?").run(now(), approvedBrief.id);
+    selectVisualLeadInDatabase(database, output.id, approvedBrief.id);
     return getIdea(ideaId)!;
   } finally {
     database.close();

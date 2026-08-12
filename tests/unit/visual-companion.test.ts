@@ -38,6 +38,14 @@ describe("visual companion selection", () => {
     expect(renderVisualSvg(verticalPath)).toContain('<rect x="104" y="464" width="872" height="126"');
   });
 
+  it("renders an explicit saved palette without mutating the default visual grammar", () => {
+    const visual = visualCompanionFor("Activity is not maturity", "Licenses, pilots, and experiments can coexist with low operational maturity.", "contrast");
+    expect(renderVisualSvg({ ...visual, colorScheme: "violet" })).toContain("#635bcb");
+    const forest = renderVisualSvg({ ...visual, colorScheme: "forest" });
+    expect(forest).toContain("#2d6a4f");
+    expect(forest).not.toContain("#635bcb");
+  });
+
   it("constrains even wide-glyph text to each SVG text region's rendered width", () => {
     const longTitle = "W".repeat(260);
     const svg = renderVisualSvg({

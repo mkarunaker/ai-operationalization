@@ -7,6 +7,8 @@ export type EditorialRunProgress = {
   runId?: string;
   kind?: "board" | "derived_short_recovery" | "initial_drafter_recovery";
   recoveryFailure?: "persisted_provider_failure" | "pre_dispatch_rejection" | "outcome_unconfirmed";
+  /** Application-authored explanation for a recovery rejected before dispatch. */
+  recoveryRejectionReason?: string;
   status: "waiting" | "running" | "completed" | "partially_completed" | "failed";
   stages: Array<{
     id: "context" | "strategist" | "skeptic" | "editor" | "synthesizer" | "draft" | "derived_short" | "provenance";

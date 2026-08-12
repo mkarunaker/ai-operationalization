@@ -245,15 +245,15 @@ describe("grounded reader-output boundaries", () => {
     expect(queuedLedger).toEqual(ledger);
   });
 
-  it("rejects an under-range generated draft without saving it, while a compliant exact range remains current", async () => {
-    const underRange = createIdea({ rawNotes: "An under-range generated article must never appear as a successful current draft." });
+  it("saves a range-variant generated draft for the author while keeping the saved target visible", async () => {
+    const underRange = createIdea({ rawNotes: "A range-variant generated article remains an author-editable working draft." });
     updateIdea(underRange.id, {
       outputShape: "long",
       outputPreferences: { longFormEnabled: true, longFormMinWords: 120, longFormMaxWords: 130, shortFormEnabled: false, shortFormMinWords: 180, shortFormMaxWords: 300, shortFormSource: "standalone" },
     });
-    await expect(runGroundedEditorialRun(underRange.id, new FixedInitialDrafterProvider(repeatedWords(25)))).rejects.toThrow(/outside its saved reader range/i);
-    expect(getIdea(underRange.id)).toMatchObject({ editorialBrief: { runStatus: "failed", runFailures: [{ role: "initial_drafter" }] } });
-    expect(getIdea(underRange.id)?.article).toBeUndefined();
+    await expect(runGroundedEditorialRun(underRange.id, new FixedInitialDrafterProvider(repeatedWords(25)))).resolves.toMatchObject({ status: "completed" });
+    expect(getIdea(underRange.id)).toMatchObject({ editorialBrief: { runStatus: "completed", runFailures: [] } });
+    expect(getIdea(underRange.id)?.article?.body.trim().split(/\s+/)).toHaveLength(25);
 
     const compliant = createIdea({ rawNotes: "A compliant generated article should remain the current exact output." });
     updateIdea(compliant.id, {
@@ -265,16 +265,13 @@ describe("grounded reader-output boundaries", () => {
     expect(current.article?.body.trim().split(/\s+/)).toHaveLength(124);
     expect(current.grounding?.readerContract).toMatchObject({ longForm: { min: 120, max: 130 } });
 
-    const shortUnderRange = createIdea({ rawNotes: "An under-range generated short post must never appear as a successful current output." });
+    const shortUnderRange = createIdea({ rawNotes: "A range-variant generated short post remains an author-editable working output." });
     updateIdea(shortUnderRange.id, {
       outputShape: "short",
       outputPreferences: { longFormEnabled: false, longFormMinWords: 800, longFormMaxWords: 1100, shortFormEnabled: true, shortFormMinWords: 73, shortFormMaxWords: 77, shortFormSource: "standalone" },
     });
-    await expect(runGroundedEditorialRun(shortUnderRange.id, new FixedInitialDrafterProvider(repeatedWords(25)))).rejects.toThrow(/outside its saved reader range/i);
-    expect(getIdea(shortUnderRange.id)?.shortPost).toBeUndefined();
-    expect(getIdea(shortUnderRange.id)?.editorialBrief?.runFailures).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "initial_drafter", category: "reader_range_contract_failed" }),
-    ]));
+    await expect(runGroundedEditorialRun(shortUnderRange.id, new FixedInitialDrafterProvider(repeatedWords(25)))).resolves.toMatchObject({ status: "completed" });
+    expect(getIdea(shortUnderRange.id)?.shortPost?.body.trim().split(/\s+/)).toHaveLength(25);
 
     const shortCompliant = createIdea({ rawNotes: "A compliant generated short post should remain the current exact output." });
     updateIdea(shortCompliant.id, {
@@ -297,25 +294,36 @@ describe("grounded reader-output boundaries", () => {
     expect(getIdea(created.id)?.context).toBeDefined();
   });
 
-  it("rejects an under-range derived short post in both the Board run and its scoped recovery", async () => {
-    const created = createIdea({ rawNotes: "An invalid derived short post must not become the current companion." });
+  it("allows ordinary editorial phrasing while retaining explicit internal-label and capture-copy guards", async () => {
+    const ordinaryPhrase = createIdea({ rawNotes: "This idea examines operating ownership without using any internal prompt label." });
+    const ordinaryBody = `The following themes help leaders make an operating choice with more care. ${repeatedWords(180)}`;
+    await expect(runGroundedEditorialRun(ordinaryPhrase.id, new FixedInitialDrafterProvider(ordinaryBody))).resolves.toMatchObject({ status: "completed" });
+    expect(getIdea(ordinaryPhrase.id)?.shortPost?.body).toContain("The following themes help leaders");
+
+    const internalLabel = createIdea({ rawNotes: "This idea must not expose a source label in reader-facing prose." });
+    const internalLabelBody = `Selected BOK passages should not appear in publication prose. ${repeatedWords(180)}`;
+    await expect(runGroundedEditorialRun(internalLabel.id, new FixedInitialDrafterProvider(internalLabelBody))).rejects.toThrow(/internal source or prompt scaffolding/i);
+    expect(getIdea(internalLabel.id)?.editorialBrief?.runFailures).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "initial_drafter",
+        summary: "The generated text exposed internal source or prompt scaffolding. No affected draft was saved; retry only the affected stage.",
+        category: "reader_prose_scaffolding_failed",
+      }),
+    ]));
+  });
+
+  it("saves a range-variant derived short post for the author to edit", async () => {
+    const created = createIdea({ rawNotes: "A range-variant derived short post remains available for author judgment." });
     updateIdea(created.id, {
       outputShape: "long_with_derived_short",
       outputPreferences: { longFormEnabled: true, longFormMinWords: 120, longFormMaxWords: 130, shortFormEnabled: true, shortFormMinWords: 73, shortFormMaxWords: 77, shortFormSource: "derived_from_long" },
     });
     const provider = new FixedDerivedShortProvider(repeatedWords(124), repeatedWords(25));
     const first = await runGroundedEditorialRun(created.id, provider);
-    expect(first.status).toBe("partially_completed");
+    expect(first.status).toBe("completed");
     expect(getIdea(created.id)?.article?.body.trim().split(/\s+/)).toHaveLength(124);
-    expect(getIdea(created.id)?.derivedShortPost).toBeUndefined();
-    expect(getIdea(created.id)?.editorialBrief).toMatchObject({ runFailures: [{ role: "final_drafter" }] });
-
-    await expect(retryDerivedShortDraftForTest(created.id, provider, {
-      providerName: "grounded-test", model: "grounded-editorial-test-v1", tier: "low", budgetCap: 0.05,
-      pricingAssumption: "Synthetic test-only pricing.", recoveryKind: "retry",
-    })).rejects.toThrow(/outside its saved reader range/i);
-    expect(provider.requests.filter((request) => request.metadata?.agentRole === "final_drafter")).toHaveLength(2);
-    expect(getIdea(created.id)?.derivedShortPost).toBeUndefined();
+    expect(getIdea(created.id)?.derivedShortPost?.body.trim().split(/\s+/)).toHaveLength(25);
+    expect(getIdea(created.id)?.editorialBrief).toMatchObject({ runFailures: [] });
   });
 
   it("uses adversarial reader notes and unmistakable ranges at every generic drafting and review boundary", async () => {
@@ -908,7 +916,7 @@ describe("grounded reader-output boundaries", () => {
     const body = `${capture.split(" ").slice(1, 13).join(" ")} ${Array.from({ length: 180 }, (_, index) => `reader${index}`).join(" ")}`;
     const provider = new FixedInitialDrafterProvider(body);
 
-    await expect(runGroundedEditorialRun(created.id, provider)).rejects.toThrow(/capture scaffolding/i);
+    await expect(runGroundedEditorialRun(created.id, provider)).rejects.toThrow(/repeated a long portion of the original capture/i);
     expect(getIdea(created.id)?.shortPost).toBeUndefined();
     expect(getIdea(created.id)?.editorialBrief?.runFailures).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "initial_drafter", category: "reader_prose_scaffolding_failed" }),
@@ -958,7 +966,7 @@ describe("grounded reader-output boundaries", () => {
     await expect(retryDerivedShortDraftForTest(created.id, provider, {
       providerName: "grounded-test", model: "grounded-editorial-test-v1", tier: "low", budgetCap: 0.05,
       pricingAssumption: "Synthetic test-only pricing.", recoveryKind: "refresh",
-    })).rejects.toThrow(/capture scaffolding/i);
+    })).rejects.toThrow(/repeated a long portion of the original capture/i);
     expect(getIdea(created.id)?.derivedShortPost).toBeUndefined();
   });
 });

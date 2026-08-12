@@ -23,6 +23,8 @@ describe("foundation migration", () => {
     const visualBriefMigration = database.prepare("SELECT id FROM schema_migrations WHERE id = '019_visual_brief_approval.sql'").get();
     const recoveryClaimMigration = database.prepare("SELECT id FROM schema_migrations WHERE id = '022_initial_drafter_recovery_claim.sql'").get();
     const visualVersionMigration = database.prepare("SELECT id FROM schema_migrations WHERE id = '023_visual_asset_version_sequence.sql'").get();
+    const customVisualMigration = database.prepare("SELECT id FROM schema_migrations WHERE id = '024_custom_visual_images.sql'").get();
+    const customIntentMigration = database.prepare("SELECT id FROM schema_migrations WHERE id = '025_custom_visual_intent.sql'").get();
     const visualBriefColumns = database.prepare("PRAGMA table_info(visual_briefs)").all() as Array<{ name: string }>;
     database.close();
 
@@ -40,6 +42,8 @@ describe("foundation migration", () => {
     expect(visualBriefMigration).toBeTruthy();
     expect(recoveryClaimMigration).toBeTruthy();
     expect(visualVersionMigration).toBeTruthy();
+    expect(customVisualMigration).toBeTruthy();
+    expect(customIntentMigration).toBeTruthy();
     expect(visualBriefColumns.map((column) => column.name)).toContain("visual_version_number");
     expect(visualBriefSql.sql).toContain("vertical_path");
     expect(visualBriefSql.sql).not.toContain("'maturity_path'");
@@ -82,6 +86,8 @@ describe("foundation migration", () => {
     fs.rmSync(path.join(legacyMigrations, "021_visual_version_color_schemes.sql"));
     fs.rmSync(path.join(legacyMigrations, "022_initial_drafter_recovery_claim.sql"));
     fs.rmSync(path.join(legacyMigrations, "023_visual_asset_version_sequence.sql"));
+    fs.rmSync(path.join(legacyMigrations, "024_custom_visual_images.sql"));
+    fs.rmSync(path.join(legacyMigrations, "025_custom_visual_intent.sql"));
     migrateDatabase(database, legacyMigrations);
 
     database.prepare("INSERT INTO users (id, name, email) VALUES ('user', 'Synthetic owner', 'owner@example.test')").run();

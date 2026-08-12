@@ -22,7 +22,7 @@ type VisualCompanionView = {
   id: string;
   draftVersionId: string;
   visualBriefId?: string;
-  type: "flow" | "maturity_path" | "contrast" | "decision_fork";
+  type: "flow" | "maturity_path" | "contrast" | "decision_fork" | "custom_image";
   colorScheme?: "violet" | "forest" | "copper";
   eyebrow: string;
   title: string;
@@ -45,6 +45,7 @@ type VisualBriefView = {
   sourceDraftText: string;
   readerContract: { outputShape: "short" | "long" | "long_with_derived_short"; audienceProfile: "professional" | "executive" | "practitioner" | "general" };
   authorDirection: string;
+  customIllustration: boolean;
   claims: string[];
   labels: string[];
   caption: string;
@@ -52,6 +53,24 @@ type VisualBriefView = {
   placement?: "lead" | "supporting";
   revisionNumber: number;
 };
+
+function wordCount(text: string) {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function readerRangeGuidance(
+  label: string,
+  body: string,
+  range: { min: number; max: number },
+) {
+  const words = wordCount(body);
+  return {
+    label,
+    words,
+    range,
+    outsideGuidance: words < range.min || words > range.max,
+  };
+}
 
 function savedVisualTemplate(
   visual?: VisualCompanionView,
@@ -74,11 +93,12 @@ function visualTemplateLabel(template?: VisualTemplate) {
 }
 
 type VisualAction = {
-  operation: "recommend" | "approve" | "render" | "start_revision" | "select_revision" | "dismiss";
+  operation: "recommend" | "approve" | "render" | "render_custom" | "start_revision" | "select_revision" | "dismiss";
   format: VisualFormat;
   placement?: "lead" | "supporting";
   template?: VisualTemplate;
   authorDirection?: string;
+  customIllustration?: boolean;
   briefId?: string;
 };
 export type Idea = {
@@ -102,6 +122,14 @@ export type Idea = {
     attempts: number;
     totalTokens: number;
     estimatedCost: number;
+  };
+  customImageRoute: {
+    available: boolean;
+    provider?: "openai";
+    model?: string;
+    estimatedCost: number;
+    pricingAssumption?: string;
+    unavailableReason?: string;
   };
 };
 function outputPreferencesForShape(shape: Idea["outputShape"]): NonNullable<Idea["outputPreferences"]> {
@@ -671,7 +699,7 @@ export function IdeaDetailView({
     event: FormEvent<HTMLFormElement>,
     format: "short" | "article" | "derived_short",
     channel: "linkedin" | "medium" | "substack",
-    output: { id: string; body: string; version: number },
+    output: { id: string; body: string; version: number; createdBy?: string },
   ) => Promise<void>;
   request: (body: unknown) => Promise<Detail>;
   showDevelopment?: boolean;
@@ -717,29 +745,38 @@ export function IdeaDetailView({
   // the article selector merely because both outputs appear on one Write page.
   const [derivedVisualTemplate, setDerivedVisualTemplate] = useState<VisualTemplate | undefined>(() => savedVisualTemplate(idea.derivedShortVisualCompanion, idea.derivedShortVisualBrief));
   const [derivedVisualDirection, setDerivedVisualDirection] = useState("");
-  const [visualClaim, setVisualClaim] = useState("");
-  const [visualLabel, setVisualLabel] = useState("");
+  const [customIllustration, setCustomIllustration] = useState(false);
+  const [derivedCustomIllustration, setDerivedCustomIllustration] = useState(false);
+  const [visualClaims, setVisualClaims] = useState<string[]>([]);
   const [visualCaption, setVisualCaption] = useState("");
   const [visualAltText, setVisualAltText] = useState("");
   const [visualDirection, setVisualDirection] = useState("");
   const [visualColorScheme, setVisualColorScheme] = useState<"violet" | "forest" | "copper">();
   const visualBriefEditor = (brief: VisualBriefView, selectedTemplate?: VisualTemplate) => {
     const template = selectedTemplate ?? brief.template ?? visualTemplate;
+    const claims = Array.from({ length: 3 }, (_, index) => visualClaims[index]?.trim() || brief.claims[index] || "").filter(Boolean);
+    const updateClaim = (index: number, value: string) => setVisualClaims((current) => {
+      const next = [...current];
+      next[index] = value;
+      return next;
+    });
     return (
-      <div className="visual-brief-editor">
+      <details className="visual-brief-editor">
+        <summary>Fine-tune this deterministic diagram <small>Optional; the visual already derives its source-backed copy from the saved article.</small></summary>
+        <div>
         <label>What should this visual help the reader see?<textarea value={visualDirection} placeholder={brief.authorDirection || "For example: make the trade-off between speed and operating discipline clear."} onChange={(event) => setVisualDirection(event.target.value)} /></label>
         <label>Color treatment<select value={visualColorScheme ?? brief.colorScheme} onChange={(event) => setVisualColorScheme(event.target.value as "violet" | "forest" | "copper")}><option value="violet">Violet</option><option value="forest">Forest</option><option value="copper">Copper</option></select></label>
-        <label>Claim from this exact saved output<textarea value={visualClaim} placeholder={brief.sourceDraftText.slice(0, 180) || "Enter an exact claim from the saved output"} onChange={(event) => setVisualClaim(event.target.value)} /></label>
-        <label>Label<input value={visualLabel} placeholder="A concise phrase from that saved output" onChange={(event) => setVisualLabel(event.target.value)} /></label>
+        {[0, 1, 2].map((index) => <div className="visual-brief-slot" key={index}>
+          <label>{index === 0 ? "Claim from this exact saved output" : `Supporting claim ${index + 1} from this exact saved output`}<textarea value={visualClaims[index] ?? ""} placeholder={brief.claims[index] || "Leave blank to use this grammar's concise default"} onChange={(event) => updateClaim(index, event.target.value)} /></label>
+        </div>)}
         <label>Caption<textarea value={visualCaption} placeholder={brief.caption} onChange={(event) => setVisualCaption(event.target.value)} /></label>
         <label>Alt text<textarea value={visualAltText} placeholder={brief.altText} onChange={(event) => setVisualAltText(event.target.value)} /></label>
         <button disabled={busy || !template} onClick={() => {
           if (!template) return;
-          const claim = visualClaim.trim() || brief.claims[0] || brief.sourceDraftText.slice(0, 500);
-          const label = visualLabel.trim() || brief.labels[0] || claim;
-          void updateVisualBrief?.({ briefId: brief.id, claims: [claim], labels: [label], caption: visualCaption.trim() || brief.caption, altText: visualAltText.trim() || brief.altText, authorDirection: visualDirection.trim() || brief.authorDirection, template, colorScheme: visualColorScheme, placement: brief.placement });
+          void updateVisualBrief?.({ briefId: brief.id, claims: claims.length ? claims : [brief.sourceDraftText.slice(0, 500)], labels: brief.labels, caption: visualCaption.trim() || brief.caption, altText: visualAltText.trim() || brief.altText, authorDirection: visualDirection.trim() || brief.authorDirection, template, colorScheme: visualColorScheme, placement: brief.placement });
         }}>Save visual brief edits</button>
-      </div>
+        </div>
+      </details>
     );
   };
   const liveBudget = liveBudgetOverride ?? livePreview?.budgetCap ?? 0.5;
@@ -748,6 +785,17 @@ export function IdeaDetailView({
   const initialDrafterFailure = failedBoardRoles.find((failure) => failure.role === "initial_drafter");
   const initialDrafterFailureCategory = initialDrafterFailure?.category
     ?? (/output limit/i.test(initialDrafterFailure?.summary ?? "") ? "output_limit" : "execution_failure");
+  const displayedFailureSummary = (failure: typeof failedBoardRoles[number]) => {
+    const retiredRangeValidation = failure.role === "initial_drafter" && (
+      failure.category === "reader_range_contract_failed"
+      || /outside its saved reader range/i.test(failure.summary)
+    );
+    if (retiredRangeValidation)
+      return "This run used a retired strict reader-range check, so its draft was not saved. Current runs treat the range as guidance; start a new Board run to create a saved draft.";
+    return failure.role === "final_drafter" && latestFinalDrafterFailure
+      ? latestFinalDrafterFailure
+      : failure.summary;
+  };
   const finalDrafterFailed = failedBoardRoles.some((failure) => failure.role === "final_drafter");
   const synthesizerFailed = failedBoardRoles.some((failure) => failure.role === "synthesizer");
   const initialDrafterFailed = failedBoardRoles.some((failure) => failure.role === "initial_drafter");
@@ -872,7 +920,7 @@ export function IdeaDetailView({
     ? "The retry claim prevents another attempt, but no persisted provider outcome is available. Start a new Board run before attempting another working draft."
     : (executionProgress?.kind === "derived_short_recovery" || executionProgress?.kind === "initial_drafter_recovery")
     && executionProgress.recoveryFailure === "pre_dispatch_rejection"
-    ? "This recovery was rejected before a provider attempt. No provider failure provenance was created."
+    ? `${executionProgress.recoveryRejectionReason ?? "This recovery was rejected before a provider attempt."} No provider failure provenance was created.`
     : "These are persisted workflow events, not the models’ private reasoning.";
   const visibleStatus = showBoard && reviewIncomplete
     ? "Review incomplete"
@@ -938,6 +986,25 @@ export function IdeaDetailView({
   const primaryOutput = idea.shortPost ?? idea.article;
   const primaryOutputLabel = primaryFormat === "short" ? "Short post" : "Article";
   const primaryOutputVersionLabel = primaryFormat === "short" ? "short-post" : "article";
+  const savedReaderContract = idea.grounding?.readerContract;
+  // These are author-facing range guides, not output validators. Show the
+  // current saved text honestly without implying that a variance failed a run.
+  const savedOutputLengths = [
+    idea.article && savedReaderContract?.longForm
+      ? readerRangeGuidance("Article", idea.article.body, savedReaderContract.longForm)
+      : undefined,
+    idea.shortPost && savedReaderContract?.shortForm
+      ? readerRangeGuidance("Short post", idea.shortPost.body, savedReaderContract.shortForm)
+      : undefined,
+    idea.derivedShortPost && savedReaderContract?.shortForm
+      ? readerRangeGuidance("Derived short post", idea.derivedShortPost.body, savedReaderContract.shortForm)
+      : undefined,
+  ].filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const savedBoardGrounding = idea.grounding?.runId === idea.editorialBrief?.runId
+    ? idea.grounding
+    : undefined;
+  const savedBoardCalls = savedBoardGrounding?.calls ?? [];
+  const savedBoardRecordedCost = savedBoardCalls.reduce((total, call) => total + call.estimatedCost, 0);
   const primaryVisualHasLinkedLead = Boolean(
     idea.visualCompanion?.visualBriefId
       && idea.visualCompanion.visualBriefId === idea.visualBrief?.id,
@@ -951,6 +1018,11 @@ export function IdeaDetailView({
     <p className="visual-cost-disclosure">
       <b>Rendering cost:</b> $0.00 local for this exact {outputLabel.toLowerCase()} deterministic diagram. No provider call is made.
     </p>
+  );
+  const customIllustrationCostDisclosure = () => idea.customImageRoute.available ? (
+    <p className="visual-cost-disclosure"><b>Custom illustration:</b> one explicit OpenAI image request · estimated ${idea.customImageRoute.estimatedCost.toFixed(4)}. {idea.customImageRoute.pricingAssumption}</p>
+  ) : (
+    <p className="visual-cost-disclosure"><b>Custom illustration unavailable:</b> {idea.customImageRoute.unavailableReason}</p>
   );
   const articlePublished = Boolean(
     idea.article && idea.publications.some((publication) => publication.draftVersionId === idea.article!.id),
@@ -974,7 +1046,7 @@ export function IdeaDetailView({
   const renderFinalizeOutput = (
     label: string,
     format: "short" | "article" | "derived_short",
-    output: { id: string; body: string; version: number },
+    output: { id: string; body: string; version: number; createdBy?: string },
     sourceNote?: string,
   ) => {
     const voiceCheck = voiceChecks?.[format];
@@ -1021,7 +1093,7 @@ export function IdeaDetailView({
               <div>
                 <div>
                   <h4>Check this exact version before publishing.</h4>
-                  <p>It flags common AI-like patterns for your judgment. A low result does not require another revision.</p>
+                  <p>{output.createdBy === "initial_drafter" || output.createdBy === "final_drafter" ? "This Board-generated version was drafted with your saved voice reference. " : "This version may include your own edits after drafting. "}It flags common AI-like patterns for your judgment; a low result does not require another revision.</p>
                 </div>
                 <button disabled={busy} onClick={() => void checkVoice?.(format)}>Check final voice</button>
               </div>
@@ -1535,7 +1607,7 @@ export function IdeaDetailView({
       {showBoard && idea.editorialBrief && (
         <>
           {persistedRunStages && (
-            <details className="editorial-progress saved-run-status">
+            <details className="editorial-progress saved-run-status" open={reviewIncomplete}>
               <summary>Saved run status · {reviewIncomplete ? "incomplete" : "complete"}</summary>
               <p>Saved workflow results, not the model’s private reasoning.</p>
               {derivedShortFailureRecovered && (
@@ -1553,6 +1625,33 @@ export function IdeaDetailView({
                   </li>
                 ))}
               </ol>
+              {savedBoardCalls.length > 0 && (
+                <>
+                  <p className="grounded-note"><b>Recorded run cost:</b> est. ${savedBoardRecordedCost.toFixed(4)} across {savedBoardCalls.length} recorded {savedBoardCalls.length === 1 ? "attempt" : "attempts"}. This is a local estimate, not a provider invoice.</p>
+                  <details className="provenance-calls">
+                    <summary>View cost and usage by attempt</summary>
+                  <p className="grounded-note">Recorded cost is a local estimate, not a provider invoice. It includes failed attempts when usage was recorded; the Board cap is only the maximum allowed spend, not an additional charge.</p>
+                  {savedBoardCalls.map((call, index) => (
+                    <p key={`${call.role}-${index}`}>
+                      <b>{call.role}</b> · {call.provider}/{call.model} · {call.success ? "completed" : "failed"} · {call.inputTokens !== undefined && call.outputTokens !== undefined
+                        ? `${call.inputTokens.toLocaleString()} input + ${call.outputTokens.toLocaleString()} output tokens`
+                        : call.totalTokens !== undefined ? `${call.totalTokens.toLocaleString()} tokens` : "usage unavailable"} · est. ${call.estimatedCost.toFixed(4)}{call.retryCount > 0 ? ` · attempt ${call.retryCount + 1}` : ""}{call.errorCategory ? ` · ${call.errorCategory.replaceAll("_", " ")}` : ""}
+                    </p>
+                  ))}
+                  </details>
+                </>
+              )}
+              {savedOutputLengths.length > 0 && (
+                <section aria-label="Saved output length guidance">
+                  <p><b>Saved output lengths</b></p>
+                  {savedOutputLengths.map((output) => (
+                    <p className="grounded-note" key={output.label}>
+                      <b>{output.label}:</b> {output.words} words · reader-range guidance: {output.range.min}–{output.range.max} words.
+                      {output.outsideGuidance ? " Saved for author judgment." : " Within the saved guidance."}
+                    </p>
+                  ))}
+                </section>
+              )}
               {idea.derivedShortRecovery && (
                 <p className="grounded-note">
                   Latest derived-short {idea.derivedShortRecovery.kind} · {idea.derivedShortRecovery.status} · {idea.derivedShortRecovery.provider}/{idea.derivedShortRecovery.model}
@@ -1570,7 +1669,7 @@ export function IdeaDetailView({
               {failedBoardRoles.length > 0 ? (
                 <ul>
                   {failedBoardRoles.map((failure) => (
-                    <li key={failure.role}><strong>{failure.role}:</strong> {failure.role === "final_drafter" && latestFinalDrafterFailure ? latestFinalDrafterFailure : failure.summary}</li>
+                    <li key={failure.role}><strong>{failure.role}:</strong> {displayedFailureSummary(failure)}</li>
                   ))}
                 </ul>
               ) : <p>The Board review completed, but a later drafting output did not.</p>}
@@ -1592,9 +1691,9 @@ export function IdeaDetailView({
               {initialDrafterFailed && !idea.editorialBrief.generatedDraftVersionId && retryInitialDrafter && livePreview?.initialDrafterRecovery?.available && (
                 <>
                   <p>{initialDrafterFailureCategory === "reader_range_contract_failed"
-                    ? "The generated working draft fell outside its saved reader range. Completed reviews and synthesis are saved; retry only this stage after confirming the selected range or start a new Board run."
+                    ? "This historical working-draft failure used an older strict reader-range rule. Current runs save range-variant drafts for author judgment. Start a new Board run to use the current behavior."
                     : initialDrafterFailureCategory === "reader_prose_scaffolding_failed"
-                      ? "The generated working draft exposed internal source or capture scaffolding. Completed reviews and synthesis are saved; retry only this stage or start a new Board run."
+                      ? `${initialDrafterFailure?.summary ?? "The generated working draft did not pass the reader-facing safety check."} Completed reviews and synthesis are saved; retry only this stage or start a new Board run.`
                       : initialDrafterFailureCategory === "output_limit"
                         ? "The model reached its output limit before a complete working draft was validated. Completed reviews and synthesis are saved. This retry uses the same configured route and bounded output allowance; it does not rerun or alter the Board assessment. If the same limit occurs again, an administrator must adjust that route or allowance before you start a new Board run."
                         : "The working draft did not pass its saved output validation. Completed reviews and synthesis are saved; retry only this stage or start a new Board run."}</p>
@@ -1835,6 +1934,19 @@ export function IdeaDetailView({
                 : "Grounded deterministic test output. The selected BOK passages and configured voice skill are recorded below; no paid model was called."}
             </p>
           )}
+          {primaryOutput.createdBy === "initial_drafter" && idea.grounding?.readerContract && (() => {
+            const range = primaryFormat === "article"
+              ? idea.grounding.readerContract.longForm
+              : idea.grounding.readerContract.shortForm;
+            if (!range) return null;
+            const generatedWords = wordCount(primaryOutput.body);
+            const outsideTarget = generatedWords < range.min || generatedWords > range.max;
+            return (
+              <p className="grounded-note">
+                Generated length: {generatedWords} words · reader-range guidance: {range.min}–{range.max} words.{outsideTarget ? " This working draft is saved. Keep it or edit it to the length you want, then save a new version." : ""}
+              </p>
+            );
+          })()}
           {primaryOutput.createdBy === "initial_drafter" && !idea.grounding && (
             <p className="simulation-note">
               This starter text is deterministic test content. BOK and kk-spoken-voice have not been applied.
@@ -2168,8 +2280,9 @@ export function IdeaDetailView({
             {!idea.visualCompanion ? (
               <>
                 {!idea.visualBrief && <>
-                  <label className="visual-direction-field">What visual are you thinking of? <small>Optional. Describe the relationship, object, or scene you want the reader to see. This stays local and does not generate an image.</small><textarea value={visualDirection} maxLength={1000} placeholder="For example: show a building with a reliable foundation beneath visible AI activity." onChange={(event) => setVisualDirection(event.target.value)} /></label>
-                  <p>Prepare a local recommendation from this exact saved output. It will select one faithful diagram grammar or say that none fits.</p>
+                  <label className="visual-direction-field">What visual are you thinking of? <small>Optional. The app uses the saved article to propose a clean diagram; choose custom only for a literal scene or illustration concept.</small><textarea value={visualDirection} maxLength={1000} placeholder="For example: show a building with a reliable foundation beneath visible AI activity." onChange={(event) => setVisualDirection(event.target.value)} /></label>
+                  <label className="visual-custom-choice"><input type="checkbox" checked={customIllustration} onChange={(event) => setCustomIllustration(event.target.checked)} /> This is a custom illustration concept, not a diagram</label>
+                  <p>{customIllustration ? "Save one article-grounded creative direction without substituting a diagram. You will review the concept and its explicit image price before generation." : "Prepare a local recommendation from this exact saved output. It will select one faithful diagram grammar or say that none fits."}</p>
                 </>}
                 {idea.visualBrief && <p>{idea.visualBrief.rationale}</p>}
                 {idea.visualBrief && <p><b>Saved reader contract:</b> {idea.visualBrief.readerContract.audienceProfile} · {idea.visualBrief.readerContract.outputShape.replaceAll("_", " ")}.</p>}
@@ -2179,7 +2292,16 @@ export function IdeaDetailView({
                 )}
                 {idea.visualBrief?.recommendation === "no_visual" ? (
                   <>
-                    <p><b>{idea.visualBrief?.authorDirection ? "A custom illustration may help." : "No visual recommended for this exact output."}</b> {idea.visualBrief?.authorDirection ? "This local flow will not substitute a mismatched diagram or create an image. No provider call or price applies. A future custom-image route will require its own explicit model, cost, and approval controls." : "You can still explicitly choose one deterministic diagram if it would materially help the reader."}</p>
+                    {idea.visualBrief?.customIllustration ? <>
+                      <p><b>Custom editorial illustration.</b> The image will use this exact saved output and your direction as reference, without a diagram template or text in the image. You can revise the direction by creating a new visual version.</p>
+                      <p><b>Concept:</b> a clean editorial scene that clarifies the article’s practical tension{idea.visualBrief.authorDirection ? `, guided by “${idea.visualBrief.authorDirection}”` : ""}.</p>
+                      {customIllustrationCostDisclosure()}
+                      <button disabled={busy || draftDirty || primaryPublished || (!idea.customImageRoute.available && idea.visualBrief.status === "approved")} onClick={() => void createVisual(
+                        idea.visualBrief?.status === "recommended"
+                          ? { operation: "approve", format: primaryFormat, briefId: idea.visualBrief.id }
+                          : { operation: "render_custom", format: primaryFormat, briefId: idea.visualBrief!.id },
+                      )}>{idea.visualBrief.status === "recommended" ? "Approve custom illustration" : "Generate custom illustration"}</button>
+                    </> : <p><b>No visual recommended for this exact output.</b> You can still explicitly choose one deterministic diagram if it would materially help the reader.</p>}
                     <details className="visual-template-alternative">
                       <summary>Try a supported deterministic diagram instead</summary>
                       <fieldset className="visual-template-picker" disabled={busy || draftDirty || primaryPublished}>
@@ -2195,7 +2317,7 @@ export function IdeaDetailView({
                 ) : (
                   <>{visualCostDisclosure(primaryOutputLabel)}<button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual(
                     !idea.visualBrief
-                      ? { operation: "recommend", format: primaryFormat, placement: "lead", authorDirection: visualDirection.trim() || undefined }
+                      ? { operation: "recommend", format: primaryFormat, placement: "lead", authorDirection: visualDirection.trim() || undefined, customIllustration }
                       : idea.visualBrief.status === "recommended"
                         ? { operation: "approve", format: primaryFormat, briefId: idea.visualBrief.id }
                         : { operation: "render", format: primaryFormat, briefId: idea.visualBrief.id },
@@ -2208,7 +2330,9 @@ export function IdeaDetailView({
               <VisualFlow
                 visual={idea.visualCompanion}
                 actions={primaryVisualHasLinkedLead
-                  ? <>{visualCostDisclosure(primaryOutputLabel)}<button className="refresh-visual" disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual({ operation: "render", format: primaryFormat, briefId: idea.visualBrief?.id })}>Refresh this visual</button></>
+                  ? idea.visualCompanion.type === "custom_image"
+                    ? <p className="legacy-visual-note">This custom illustration is immutable. Create a new visual version to change its direction or generate another image.</p>
+                    : <>{visualCostDisclosure(primaryOutputLabel)}<button className="refresh-visual" disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual({ operation: "render", format: primaryFormat, briefId: idea.visualBrief?.id })}>Refresh this visual</button></>
                   : <p className="legacy-visual-note">Saved before visual briefs were introduced. This retained local asset is read-only and can still be downloaded.</p>}
               />
             )}
@@ -2228,7 +2352,17 @@ export function IdeaDetailView({
                         : { operation: "render", format: primaryFormat, briefId: idea.visualCandidateBrief?.id },
                       )}>{idea.visualCandidateBrief.status === "recommended" ? "Approve new visual version" : "Generate new visual version"}</button>
                     </>}
-                    {idea.visualCandidateBrief.recommendation === "no_visual" && <><p><b>A custom illustration may help.</b> This version is retained as an author concept; no image, provider call, or price was created.</p><button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual({ operation: "dismiss", format: primaryFormat, briefId: idea.visualCandidateBrief?.id })}>Keep this concept as history and prepare another version</button></>}
+                    {idea.visualCandidateBrief.recommendation === "no_visual" && <>
+                      <p><b>Custom editorial illustration.</b> The current rendered visual remains active while this article-grounded custom version is reviewed.</p>
+                      <p><b>Concept:</b> a clean editorial scene that clarifies the article’s practical tension{idea.visualCandidateBrief.authorDirection ? `, guided by “${idea.visualCandidateBrief.authorDirection}”` : ""}, with no template or text rendered into the image.</p>
+                      {customIllustrationCostDisclosure()}
+                      <button disabled={busy || draftDirty || primaryPublished || (!idea.customImageRoute.available && idea.visualCandidateBrief.status === "approved")} onClick={() => void createVisual(
+                        idea.visualCandidateBrief?.status === "recommended"
+                          ? { operation: "approve", format: primaryFormat, briefId: idea.visualCandidateBrief!.id }
+                          : { operation: "render_custom", format: primaryFormat, briefId: idea.visualCandidateBrief!.id },
+                      )}>{idea.visualCandidateBrief.status === "recommended" ? "Approve custom illustration" : "Generate custom illustration"}</button>
+                      <button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual({ operation: "dismiss", format: primaryFormat, briefId: idea.visualCandidateBrief?.id })}>Keep this concept as history and prepare another version</button>
+                    </>}
                   </article>
                 ) : (
                   <details className="visual-version-request">
@@ -2236,26 +2370,26 @@ export function IdeaDetailView({
                     <label>What should change? <textarea value={visualDirection} maxLength={1000} placeholder="For example: use a calmer contrast, add a foundation metaphor, or make the decision clearer." onChange={(event) => setVisualDirection(event.target.value)} /></label>
                     <fieldset className="visual-template-picker" disabled={busy || draftDirty || primaryPublished}>
                       <legend>Choose a grammar for the new version</legend>
-                      <label><input type="radio" name="visual-revision-template" checked={!visualTemplate} onChange={() => setVisualTemplate(undefined)} /><span><b>Custom illustration concept</b><small>Keep a literal object or scene as author direction; this local diagram flow will not render it.</small></span></label>
+                      <label><input type="radio" name="visual-revision-template" checked={!visualTemplate} onChange={() => setVisualTemplate(undefined)} /><span><b>Custom illustration</b><small>Use the saved article plus your direction to create one paid image, with no diagram template.</small></span></label>
                       <label><input type="radio" name="visual-revision-template" checked={visualTemplate === "decision_fork"} onChange={() => setVisualTemplate("decision_fork")} /><span><b>Decision fork</b><small>One starting point, then two outcomes.</small></span></label>
                       <label><input type="radio" name="visual-revision-template" checked={visualTemplate === "contrast"} onChange={() => setVisualTemplate("contrast")} /><span><b>Iceberg contrast</b><small>Visible activity above operating maturity.</small></span></label>
                       <label><input type="radio" name="visual-revision-template" checked={visualTemplate === "vertical_path"} onChange={() => setVisualTemplate("vertical_path")} /><span><b>Vertical path</b><small>A compact upward progression.</small></span></label>
                       <label><input type="radio" name="visual-revision-template" checked={visualTemplate === "flow"} onChange={() => setVisualTemplate("flow")} /><span><b>Three-step flow</b><small>Connected stages when sequence is the point.</small></span></label>
                     </fieldset>
-                    {visualCostDisclosure(`visual version ${Math.max(...idea.visualRevisionHistory.map((brief) => brief.revisionNumber), 0) + 1}`)}
-                    <button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual({ operation: "start_revision", format: primaryFormat, template: visualTemplate, authorDirection: visualDirection.trim() || undefined })}>Prepare new visual version</button>
+                    {visualTemplate ? visualCostDisclosure(`visual version ${Math.max(...idea.visualRevisionHistory.map((brief) => brief.revisionNumber), 0) + 1}`) : customIllustrationCostDisclosure()}
+                    <button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual({ operation: "start_revision", format: primaryFormat, template: visualTemplate, authorDirection: visualDirection.trim() || undefined, customIllustration: !visualTemplate })}>{visualTemplate ? "Prepare new visual version" : "Prepare custom illustration"}</button>
                   </details>
                 )}
                 {(() => {
                   const completeHistory = idea.visualRevisionHistory;
-                  const renderedHistory = idea.visualRevisionHistory.filter((brief) => brief.recommendation === "visual" && brief.status === "rendered");
-                  const customConcepts = idea.visualRevisionHistory.filter((brief) => brief.recommendation === "no_visual" && Boolean(brief.authorDirection));
+                  const renderedHistory = idea.visualRevisionHistory.filter((brief) => brief.status === "rendered");
+                  const customConcepts = idea.visualRevisionHistory.filter((brief) => brief.recommendation === "no_visual" && brief.customIllustration);
                   const activeIndex = renderedHistory.findIndex((brief) => brief.id === idea.visualBrief?.id);
                   const previous = activeIndex > 0 ? renderedHistory[activeIndex - 1] : undefined;
                   const next = activeIndex >= 0 && activeIndex < renderedHistory.length - 1 ? renderedHistory[activeIndex + 1] : undefined;
                   return <>
                     {completeHistory.length > 1 && <div className="visual-version-arrows"><button disabled={busy || !previous} aria-label="Previous saved visual version" onClick={() => previous && void createVisual({ operation: "select_revision", format: primaryFormat, briefId: previous.id })}>←</button><span>Version {idea.visualBrief?.revisionNumber ?? 1} of {completeHistory.length}</span><button disabled={busy || !next} aria-label="Next saved visual version" onClick={() => next && void createVisual({ operation: "select_revision", format: primaryFormat, briefId: next.id })}>→</button></div>}
-                    {customConcepts.length > 0 && <section className="visual-custom-history" aria-label="Saved custom illustration concepts"><h4>Saved custom illustration concepts</h4>{customConcepts.map((brief) => <article key={brief.id}><b>Version {brief.revisionNumber} · author concept</b><p>{brief.authorDirection}</p><small>No image, provider call, or price was created for this saved concept.</small></article>)}</section>}
+                    {customConcepts.length > 0 && <section className="visual-custom-history" aria-label="Saved custom illustration concepts"><h4>Saved custom illustration concepts</h4>{customConcepts.map((brief) => <article key={brief.id}><b>Version {brief.revisionNumber} · {brief.status === "rendered" ? "rendered illustration" : "author concept"}</b><p>{brief.authorDirection}</p><small>{brief.status === "rendered" ? "A paid custom image is saved locally for this exact output." : "No image was generated for this saved concept."}</small></article>)}</section>}
                   </>;
                 })()}
               </section>
@@ -2275,12 +2409,20 @@ export function IdeaDetailView({
           <summary><span>Derived short-post visual companion</span><small>Separate optional asset for exact derived short-post version {idea.derivedShortPost.version}</small></summary>
           <div className="visual-companion-content">
             <p>{idea.derivedShortVisualBrief?.rationale ?? "This is a separate visual decision for the current derived short post; it does not reuse the article visual."}</p>
-            {!idea.derivedShortVisualBrief && <label className="visual-direction-field">What visual are you thinking of? <small>Optional. The local planner will recommend one faithful diagram or say that none fits; it does not generate an image.</small><textarea value={derivedVisualDirection} maxLength={1000} placeholder="For example: show the contrast between a pilot and dependable work." onChange={(event) => setDerivedVisualDirection(event.target.value)} /></label>}
+            {!idea.derivedShortVisualBrief && <><label className="visual-direction-field">What visual are you thinking of? <small>Optional. The app uses this exact derived post to propose a clean diagram; choose custom only for a literal scene or illustration concept.</small><textarea value={derivedVisualDirection} maxLength={1000} placeholder="For example: show the contrast between a pilot and dependable work." onChange={(event) => setDerivedVisualDirection(event.target.value)} /></label><label className="visual-custom-choice"><input type="checkbox" checked={derivedCustomIllustration} onChange={(event) => setDerivedCustomIllustration(event.target.checked)} /> This is a custom illustration concept, not a diagram</label></>}
             {idea.derivedShortVisualBrief?.status === "recommended" && idea.derivedShortVisualBrief.recommendation === "visual" && updateVisualBrief && visualBriefEditor(idea.derivedShortVisualBrief, derivedVisualTemplate)}
             {!idea.derivedShortVisualCompanion ? (
               idea.derivedShortVisualBrief?.recommendation === "no_visual" ? (
                 <>
-                  <p><b>{idea.derivedShortVisualBrief.authorDirection ? "A custom illustration may help." : "No visual recommended for this exact derived short post."}</b> {idea.derivedShortVisualBrief.authorDirection ? "This local flow will not substitute a mismatched diagram or create an image. No provider call or price applies." : "You can still choose a deterministic diagram if it would materially help the reader."}</p>
+                  {idea.derivedShortVisualBrief.authorDirection ? <>
+                    <p><b>Custom editorial illustration.</b> It will use this exact saved derived post and your direction as reference, without a diagram template or text in the image.</p>
+                    {customIllustrationCostDisclosure()}
+                    <button disabled={busy || derivedShortDirty || derivedShortPublished || (!idea.customImageRoute.available && idea.derivedShortVisualBrief.status === "approved")} onClick={() => void createVisual(
+                      idea.derivedShortVisualBrief?.status === "recommended"
+                        ? { operation: "approve", format: "derived_short", briefId: idea.derivedShortVisualBrief.id }
+                        : { operation: "render_custom", format: "derived_short", briefId: idea.derivedShortVisualBrief!.id },
+                    )}>{idea.derivedShortVisualBrief.status === "recommended" ? "Approve custom illustration" : "Generate custom illustration"}</button>
+                  </> : <p><b>No visual recommended for this exact derived short post.</b> You can still choose a deterministic diagram if it would materially help the reader.</p>}
                   <details className="visual-template-alternative"><summary>Try a supported deterministic diagram instead</summary><fieldset className="visual-template-picker derived-visual-template-picker" disabled={busy || derivedShortDirty || derivedShortPublished}>
                     <legend>Choose the derived short-post explanatory shape</legend>
                     <label><input type="radio" name="derived-visual-template" checked={derivedVisualTemplate === "decision_fork"} onChange={() => setDerivedVisualTemplate("decision_fork")} /><span><b>Decision fork</b><small>One starting point, then two outcomes.</small></span></label>
@@ -2294,7 +2436,7 @@ export function IdeaDetailView({
                   {visualCostDisclosure("derived short post")}
                   <button disabled={busy || derivedShortDirty || derivedShortPublished} onClick={() => void createVisual(
                     !idea.derivedShortVisualBrief
-                      ? { operation: "recommend", format: "derived_short", placement: "lead", authorDirection: derivedVisualDirection.trim() || undefined }
+                      ? { operation: "recommend", format: "derived_short", placement: "lead", authorDirection: derivedVisualDirection.trim() || undefined, customIllustration: derivedCustomIllustration }
                       : idea.derivedShortVisualBrief.status === "recommended"
                         ? { operation: "approve", format: "derived_short", briefId: idea.derivedShortVisualBrief.id }
                         : { operation: "render", format: "derived_short", briefId: idea.derivedShortVisualBrief.id },

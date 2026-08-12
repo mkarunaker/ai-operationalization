@@ -58,6 +58,22 @@ export function IdeaWorkspaceClient({
   const [draftDirty, setDraftDirty] = useState(false);
   const [derivedShortDirty, setDerivedShortDirty] = useState(false);
   const [voiceChecks, setVoiceChecks] = useState<Partial<Record<"short" | "article" | "derived_short", VoiceCheck>>>({});
+  // Develop is intentionally an explicit local save. Keep a compact snapshot
+  // of the Board-relevant fields so moving to Board cannot accidentally leave
+  // the author looking at a run made from older saved preferences.
+  const savedDevelopmentSnapshot = useRef<string | undefined>(undefined);
+  function developmentSnapshot(value: Detail) {
+    return JSON.stringify({
+      audienceProfileKey: value.audienceProfileKey ?? "professional",
+      audienceNotes: value.audienceNotes ?? "",
+      outputShape: value.outputShape,
+      outputPreferences: value.outputPreferences ?? null,
+      themeIds: value.themes.map((theme) => theme.id).sort(),
+    });
+  }
+  function hasUnsavedDevelopmentChanges(value: Detail) {
+    return savedDevelopmentSnapshot.current !== developmentSnapshot(value) || Boolean(note.trim());
+  }
   // A recovery response may arrive after the author begins typing. Refs keep
   // the async request path aligned with the editor's current state rather
   // than the state captured when the request started.
@@ -81,6 +97,7 @@ export function IdeaWorkspaceClient({
     if (!ideaResponse.ok || !ideaData.idea)
       throw new Error(ideaData.error ?? "Idea not found.");
     setIdea(ideaData.idea);
+    savedDevelopmentSnapshot.current = developmentSnapshot(ideaData.idea);
     setThemes(listData.themes);
     if (previewResponse.ok) {
       const previewData = (await previewResponse.json()) as { preview?: typeof livePreview };
@@ -196,6 +213,7 @@ export function IdeaWorkspaceClient({
   }
   async function hydrateInitialDrafterRecoveryFailure(
     stages: EditorialRunProgress["stages"],
+    error: unknown,
   ) {
     try {
       const [ideaResponse, previewResponse] = await Promise.all([
@@ -245,6 +263,7 @@ export function IdeaWorkspaceClient({
     setRunProgress({
       kind: "initial_drafter_recovery",
       recoveryFailure: "pre_dispatch_rejection",
+      recoveryRejectionReason: safeInitialDrafterRecoveryRejection(error),
       status: "failed",
       stages: stages.map((stage) => ({
         ...stage,
@@ -252,6 +271,12 @@ export function IdeaWorkspaceClient({
         status: stage.id === "context" ? "failed" : "not_run",
       })),
     });
+  }
+  function safeInitialDrafterRecoveryRejection(error: unknown) {
+    const message = error instanceof Error ? error.message : "";
+    if (/^(A positive per-run budget cap is required for the working-draft retry\.|The working-draft retry cap cannot exceed \$|Working-draft recovery must use the configured Initial Drafter route and pricing assumption\.|Only one working-draft retry is permitted for a saved Editorial Board run\.|The saved voice reference is unavailable\.|The configured Initial Drafter route has changed since this Board run\.|The saved Editorial Board (recovery snapshot is invalid|synthesis is unavailable)\.)/.test(message))
+      return message;
+    return "This recovery was rejected before provider dispatch. Confirm the saved Board route, source references, and retry cap before starting a new Board run.";
   }
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -295,6 +320,7 @@ export function IdeaWorkspaceClient({
     if (!response.ok || !data.idea)
       throw new Error(data.error ?? "The idea could not be saved.");
     setIdea(data.idea);
+    savedDevelopmentSnapshot.current = developmentSnapshot(data.idea);
     const action =
       typeof body === "object" && body !== null && "action" in body
         ? String(body.action)
@@ -521,6 +547,25 @@ export function IdeaWorkspaceClient({
             }
             createGroundedDraft={() =>
               run(async () => {
+                if (hasUnsavedDevelopmentChanges(idea)) {
+                  const saveBeforeBoard = window.confirm(
+                    "You have unsaved Develop changes. The Editorial Board can use only saved audience, output shape, ranges, themes, and notes.\n\nSelect OK to save these changes and continue to the Editorial Board. Select Cancel to stay here.",
+                  );
+                  if (!saveBeforeBoard) {
+                    setMessage("Your Develop changes have not been saved. Save them before continuing to the Editorial Board.");
+                    return;
+                  }
+                  await request({
+                    title: idea.title,
+                    outputShape: idea.outputShape,
+                    audienceProfileKey: idea.audienceProfileKey,
+                    audienceNotes: idea.audienceNotes ?? null,
+                    outputPreferences: idea.outputPreferences,
+                    themeIds: idea.themes.map((theme) => theme.id),
+                    note: note || undefined,
+                  });
+                  setNote("");
+                }
                 await request({ action: "prepare_editorial_review" });
                 router.push(`/ideas/${ideaId}/board`);
               })
@@ -656,7 +701,7 @@ export function IdeaWorkspaceClient({
                   });
                   setMessage("Working draft created from the saved Board synthesis. The original failed attempt remains in provenance; reviews and synthesis were not rerun.");
                 } catch (error) {
-                  await hydrateInitialDrafterRecoveryFailure(retryStages);
+                  await hydrateInitialDrafterRecoveryFailure(retryStages, error);
                   throw error;
                 } finally {
                   setEditorialRunLabel(undefined);
@@ -758,11 +803,15 @@ export function IdeaWorkspaceClient({
             createVisual={(visualAction) =>
               run(async () => {
                 if (visualAction.operation === "recommend") {
-                  await request({ action: "recommend_visual_brief", template: visualAction.template, placement: visualAction.placement, format: visualAction.format, authorDirection: visualAction.authorDirection });
-                  setMessage("Visual brief saved. Review the rationale, then approve it before rendering.");
+                  await request({ action: "recommend_visual_brief", template: visualAction.template, placement: visualAction.placement, format: visualAction.format, authorDirection: visualAction.authorDirection, customIllustration: visualAction.customIllustration });
+                  setMessage(visualAction.customIllustration
+                    ? "Custom visual brief saved. Review the article-grounded concept, then approve its one paid image request."
+                    : "Visual brief saved. Review the rationale, then approve it before rendering.");
                 } else if (visualAction.operation === "start_revision") {
-                  await request({ action: "start_visual_lead_revision", template: visualAction.template, format: visualAction.format, authorDirection: visualAction.authorDirection });
-                  setMessage("A new visual version is ready to review. The current rendered version remains active until this one is rendered.");
+                  await request({ action: "start_visual_lead_revision", template: visualAction.template, format: visualAction.format, authorDirection: visualAction.authorDirection, customIllustration: visualAction.customIllustration });
+                  setMessage(visualAction.customIllustration
+                    ? "Custom visual brief saved as a new version. The current rendered visual remains active until this illustration is generated."
+                    : "A new visual version is ready to review. The current rendered version remains active until this one is rendered.");
                 } else if (visualAction.operation === "select_revision" && visualAction.briefId) {
                   await request({ action: "select_visual_lead_revision", briefId: visualAction.briefId, format: visualAction.format });
                   setMessage("Selected visual version is now active for this exact saved output.");
@@ -772,6 +821,9 @@ export function IdeaWorkspaceClient({
                 } else if (visualAction.operation === "approve" && visualAction.briefId) {
                   await request({ action: "approve_visual_brief", briefId: visualAction.briefId });
                   setMessage("Visual brief approved for this exact saved output. Render when ready.");
+                } else if (visualAction.operation === "render_custom" && visualAction.briefId) {
+                  await request({ action: "create_custom_visual_illustration", briefId: visualAction.briefId, format: visualAction.format });
+                  setMessage("Custom editorial illustration saved locally for this exact output.");
                 } else {
                   await request({ action: "create_visual_companion", briefId: visualAction.briefId, format: visualAction.format });
                   setMessage("Visual companion saved locally for this draft version.");

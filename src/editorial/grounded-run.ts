@@ -151,8 +151,10 @@ function publicExecutionError(error: unknown) {
     return "The generated text contained Markdown formatting, which publication outputs do not allow. No affected draft was saved; retry the affected role only.";
   if (/^Generated (draft|derived short post) was outside its saved reader range/.test(message))
     return `${message} No affected draft was saved; retry only the affected stage or change the reader range before a new Board run.`;
-  if (/^Generated (publication text included internal source or prompt scaffolding|publication text repeated a long captured-idea fragment)/.test(message))
-    return "The generated text exposed internal source or capture scaffolding. No affected draft was saved; retry only the affected stage.";
+  if (/^Generated publication text included internal source or prompt scaffolding/.test(message))
+    return "The generated text exposed internal source or prompt scaffolding. No affected draft was saved; retry only the affected stage.";
+  if (/^Generated publication text repeated a long captured-idea fragment/.test(message))
+    return "The generated text repeated a long portion of the original capture instead of reader-facing prose. No affected draft was saved; retry only the affected stage.";
   if (/^Live-run budget/.test(message)) return `${message} Increase the cap only if you explicitly accept the projected cost.`;
   if (/^(Anthropic|OpenAI|ZenMux|grounded-test) refused the editorial request\.$/i.test(message))
     return "The configured model declined the editorial request. No validated output was saved; retry the affected role with a compatible configured model.";
@@ -176,8 +178,10 @@ function publicDerivedShortDrafterError(error: unknown) {
     return "The derived-short drafter reached its output limit before producing a validated post. The article and completed Board review were saved.";
   if (/outside its saved reader range/.test(detail))
     return `${detail} The article and completed Board review were saved; no derived short post was created.`;
-  if (/exposed internal source or capture scaffolding/.test(detail))
-    return "The derived-short drafter exposed internal source or capture scaffolding. The article and completed Board review were saved; no derived short post was created.";
+  if (/exposed internal source or prompt scaffolding/.test(detail))
+    return "The derived-short drafter exposed internal source or prompt scaffolding. The article and completed Board review were saved; no derived short post was created.";
+  if (/repeated a long portion of the original capture/.test(detail))
+    return "The derived-short drafter repeated a long portion of the original capture instead of reader-facing prose. The article and completed Board review were saved; no derived short post was created.";
   if (/required structured format/.test(detail))
     return "The derived-short drafter returned an invalid structured response after one bounded repair. The article and completed Board review were saved.";
   if (/^The derived-short drafter completed, but/.test(detail)) return detail;
@@ -192,10 +196,6 @@ function publicDerivedShortDrafterError(error: unknown) {
  */
 function normalizePublicationPunctuation(body: string) {
   return body.replace(/\s*—\s*/g, ", ").trim();
-}
-
-function publicationWordCount(body: string) {
-  return body.trim().split(/\s+/).filter(Boolean).length;
 }
 
 function normalizedReaderFacingText(value: string) {
@@ -215,7 +215,7 @@ function capturedFragments(value: string) {
   return fragments;
 }
 
-/** Final deterministic guard before model prose becomes a saved output. */
+/** Final deterministic safety guard before model prose becomes a saved output. */
 function assertReaderFacingGeneratedOutput(input: {
   body: string;
   format: "short" | "article" | "derived_short";
@@ -224,11 +224,11 @@ function assertReaderFacingGeneratedOutput(input: {
 }) {
   const range = input.format === "article" ? input.readerContract.longForm : input.readerContract.shortForm;
   if (!range) throw new Error("Generated output did not match the saved reader contract.");
-  const words = publicationWordCount(input.body);
-  if (words < range.min || words > range.max)
-    throw new Error(`Generated ${input.format === "article" ? "draft" : "derived short post"} was outside its saved reader range (${words} words; target ${range.min}-${range.max}).`);
   const normalized = normalizedReaderFacingText(input.body);
-  if (/\b(selected bok|book of knowledge|the following themes|grounding marker|untrusted context|validated editorial synthesis|captured idea|configured kk spoken voice|drafting process)\b/i.test(normalized))
+  // These are internal labels, not ordinary editorial language. Do not reject
+  // generic reader-facing phrases such as “the following themes” merely
+  // because a hostile capture happened to use them.
+  if (/\b(selected bok|book of knowledge|grounding marker|untrusted context|validated editorial synthesis|captured idea|configured kk spoken voice)\b/i.test(normalized))
     throw new Error("Generated publication text included internal source or prompt scaffolding.");
   if (input.originalCapture && capturedFragments(input.originalCapture).some((fragment) => normalized.includes(fragment)))
     throw new Error("Generated publication text repeated a long captured-idea fragment instead of writing reader-facing prose.");
@@ -269,7 +269,7 @@ function failureDiagnostic(message: string, response?: ModelResponse) {
       ? "output_limit"
       : /outside its saved reader range/i.test(message)
         ? "reader_range_contract_failed"
-        : /internal source or prompt scaffolding|exposed internal source or capture scaffolding|long captured-idea fragment/i.test(message)
+        : /internal source or prompt scaffolding|exposed internal source or capture scaffolding|long captured-idea fragment|repeated a long portion of the original capture/i.test(message)
           ? "reader_prose_scaffolding_failed"
           : /structured format|structured output|invalid structured response/i.test(message)
             ? "structured_output_invalid"

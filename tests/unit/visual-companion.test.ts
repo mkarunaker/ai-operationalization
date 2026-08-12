@@ -46,7 +46,7 @@ describe("visual companion selection", () => {
     expect(forest).not.toContain("#635bcb");
   });
 
-  it("constrains even wide-glyph text to each SVG text region's rendered width", () => {
+  it("uses normal letterforms while conservatively truncating text to fixed visual regions", () => {
     const longTitle = "W".repeat(260);
     const svg = renderVisualSvg({
       type: "flow",
@@ -63,8 +63,10 @@ describe("visual companion selection", () => {
     expect(svg).toContain("…");
     const titleElement = svg.split('<text x="54" y="170"')[1]?.split("</text>")[0] ?? "";
     expect(titleElement).not.toContain(longTitle);
-    expect(titleElement).toMatch(/<tspan x="54" dy="0" textLength="972" lengthAdjust="spacingAndGlyphs" data-bounded-text="true">/);
-    expect(svg).toContain('<tspan x="79" dy="0" textLength="230" lengthAdjust="spacingAndGlyphs" data-bounded-text="true">');
+    expect(titleElement).toContain('<tspan x="54" dy="0" data-bounded-text="true">');
+    expect(svg).toContain('<tspan x="79" dy="0" data-bounded-text="true">');
+    expect(svg).not.toContain("textLength=");
+    expect(svg).not.toContain("lengthAdjust=");
 
     const decisionForkSvg = renderVisualSvg({
       type: "decision_fork",
@@ -79,9 +81,9 @@ describe("visual companion selection", () => {
     });
     expect(decisionForkSvg).toContain("…");
     expect(decisionForkSvg).not.toContain(longTitle);
-    expect(decisionForkSvg).toContain('<tspan x="540" textLength="332" lengthAdjust="spacingAndGlyphs" data-bounded-text="true">');
-    expect(decisionForkSvg).toContain('<tspan x="140" textLength="318" lengthAdjust="spacingAndGlyphs" data-bounded-text="true">');
-    expect(decisionForkSvg).toContain('<tspan x="622" textLength="318" lengthAdjust="spacingAndGlyphs" data-bounded-text="true">');
+    expect(decisionForkSvg).toContain('<tspan x="540" data-bounded-text="true">');
+    expect(decisionForkSvg).toContain('<tspan x="140" data-bounded-text="true">');
+    expect(decisionForkSvg).toContain('<tspan x="622" data-bounded-text="true">');
 
     const contrastSvg = renderVisualSvg({
       type: "contrast",
@@ -94,8 +96,7 @@ describe("visual companion selection", () => {
         { title: longTitle, detail: longTitle },
       ],
     });
-    expect(contrastSvg).toContain('<tspan x="540" textLength="520" lengthAdjust="spacingAndGlyphs" data-bounded-text="true">');
-    expect(contrastSvg).toContain('<tspan x="540" textLength="320" lengthAdjust="spacingAndGlyphs" data-bounded-text="true">');
+    expect(contrastSvg).toContain('<tspan x="540" data-bounded-text="true">');
 
     const verticalSvg = renderVisualSvg({
       type: "maturity_path",
@@ -108,8 +109,8 @@ describe("visual companion selection", () => {
         { title: longTitle, detail: longTitle },
       ],
     });
-    expect(verticalSvg).toContain('<tspan x="202" textLength="730" lengthAdjust="spacingAndGlyphs" data-bounded-text="true">');
-    expect(verticalSvg).toContain('<tspan x="202" dy="0" textLength="730" lengthAdjust="spacingAndGlyphs" data-bounded-text="true">');
+    expect(verticalSvg).toContain('<tspan x="202" data-bounded-text="true">');
+    expect(verticalSvg).toContain('<tspan x="202" dy="0" data-bounded-text="true">');
   });
 
   it("creates the browser preview from the exact escaped SVG used for export", () => {

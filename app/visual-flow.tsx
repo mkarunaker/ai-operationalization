@@ -20,6 +20,12 @@ function pngFilename(visual: VisualCompanion) {
 
 export function VisualFlow({ visual, actions }: { visual: VisualCompanion; actions?: ReactNode }) {
   function downloadPng() {
+    if (visual.type === "custom_image") {
+      void fetch(`/api/visuals/${encodeURIComponent(visual.id)}`)
+        .then((response) => response.ok ? response.blob() : undefined)
+        .then((png) => { if (png) downloadBlob(png, pngFilename(visual)); });
+      return;
+    }
     const image = new Image();
     image.onload = () => {
       const canvas = document.createElement("canvas");
@@ -41,7 +47,7 @@ export function VisualFlow({ visual, actions }: { visual: VisualCompanion; actio
         {/* eslint-disable-next-line @next/next/no-img-element -- This exact escaped local SVG data URL is also the export source. */}
         <img
           className="visual-rendered-asset"
-          src={visualSvgDataUrl(visual)}
+          src={visual.type === "custom_image" ? `/api/visuals/${encodeURIComponent(visual.id)}` : visualSvgDataUrl(visual)}
           alt={visual.altText}
         />
       </figure>

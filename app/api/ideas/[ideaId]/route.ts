@@ -3,6 +3,7 @@ import {
   deleteUnpublishedIdea,
   createDerivedShortPost,
   createVisualCompanion,
+  createCustomVisualIllustration,
   approveVisualBrief,
   dismissVisualBrief,
   recommendVisualBrief,
@@ -187,6 +188,12 @@ export async function POST(
       const format = body.format === "short" || body.format === "article" || body.format === "derived_short" ? body.format : undefined;
       return Response.json({ idea: createVisualCompanion(ideaId, typeof body.briefId === "string" ? body.briefId : undefined, format) });
     }
+    if (body.action === "create_custom_visual_illustration") {
+      if (["provider", "model", "price", "pricingAssumption", "prompt"].some((field) => field in body))
+        throw new Error("Custom-image provider, model, price, and prompt are resolved only by the server route.");
+      const format = body.format === "short" || body.format === "article" || body.format === "derived_short" ? body.format : undefined;
+      return Response.json({ idea: await createCustomVisualIllustration(ideaId, String(body.briefId ?? ""), format) });
+    }
     if (body.action === "recommend_visual_brief") {
       const template = body.template === "contrast" || body.template === "decision_fork" || body.template === "flow" || body.template === "vertical_path"
         ? body.template
@@ -198,6 +205,7 @@ export async function POST(
       return Response.json({
         idea: recommendVisualBrief(ideaId, template, placement, format, {
           authorDirection: typeof body.authorDirection === "string" ? body.authorDirection : undefined,
+          customIllustration: body.customIllustration === true,
         }),
       });
     }
@@ -209,6 +217,7 @@ export async function POST(
       return Response.json({
         idea: startVisualLeadRevision(ideaId, template, format, {
           authorDirection: typeof body.authorDirection === "string" ? body.authorDirection : undefined,
+          customIllustration: body.customIllustration === true,
         }),
       });
     }

@@ -71,6 +71,7 @@ export function safeRouteError(error: unknown) {
     /^Resolve or explicitly dismiss every material proofread finding/,
     /^The model response did not match the required structured format/,
     /^The generated (publication text|text) (did not satisfy|contained Markdown)/,
+    /^The generated text repeated a long portion of the original capture instead of reader-facing prose\./,
     /^Generated (draft|derived short post) was outside its saved reader range/,
     /^The generated text exposed internal source or capture scaffolding\./,
     /^The derived-short drafter (reached its output limit|returned an invalid structured response|completed, but its result could not be saved safely|failed before a validated response was available|exposed internal source or capture scaffolding)/,

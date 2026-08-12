@@ -41,7 +41,7 @@ export function IdeaWorkspaceClient({
       medium: { provider: string; model: string; tier: "medium"; estimatedCost: number; available: boolean };
       high: { provider: string; model: string; tier: "high"; estimatedCost: number; available: boolean };
     };
-    initialDrafterRecovery: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean; unavailableReason?: string };
+    initialDrafterRecovery: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean; unavailableReason?: string; outcome?: "persisted_failure" | "unconfirmed" };
     derivedShortRefresh: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
     derivedShortEscalation: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
     proofreader?: { provider: string; model: string; tier: "low" | "medium" | "high"; estimates: { short: number; article: number; derived_short: number }; available: boolean };
@@ -190,6 +190,65 @@ export function IdeaWorkspaceClient({
       stages: stages.map((stage) => ({
         ...stage,
         label: stage.id === "context" ? "Validate recovery route and budget" : stage.label,
+        status: stage.id === "context" ? "failed" : "not_run",
+      })),
+    });
+  }
+  async function hydrateInitialDrafterRecoveryFailure(
+    stages: EditorialRunProgress["stages"],
+  ) {
+    try {
+      const [ideaResponse, previewResponse] = await Promise.all([
+        fetch(`/api/ideas/${ideaId}`),
+        fetch(`/api/ideas/${ideaId}?execution=live_preview`),
+      ]);
+      const ideaData = (await ideaResponse.json()) as { idea?: Detail };
+      const previewData = (await previewResponse.json()) as { preview?: typeof livePreview };
+      if (ideaData.idea) setIdea(ideaData.idea);
+      if (previewData.preview) setLivePreview(previewData.preview);
+      const retryWasConsumed = Boolean(
+        ideaResponse.ok
+          && ideaData.idea?.editorialBrief?.runStatus === "failed"
+          && !ideaData.idea.editorialBrief.generatedDraftVersionId
+          && previewData.preview?.initialDrafterRecovery.available === false
+          && previewData.preview.initialDrafterRecovery.unavailableReason?.startsWith("Only one working-draft retry"),
+      );
+      if (retryWasConsumed && previewData.preview?.initialDrafterRecovery.outcome === "persisted_failure") {
+        setRunProgress({
+          kind: "initial_drafter_recovery",
+          recoveryFailure: "persisted_provider_failure",
+          status: "failed",
+          stages: stages.map((stage) => ({
+            ...stage,
+            label: stage.id === "provenance" ? "Save failure provenance" : stage.label,
+            status: stage.id === "draft" ? "failed" : "completed",
+          })),
+        });
+        return;
+      }
+      if (retryWasConsumed && previewData.preview?.initialDrafterRecovery.outcome === "unconfirmed") {
+        setRunProgress({
+          kind: "initial_drafter_recovery",
+          recoveryFailure: "outcome_unconfirmed",
+          status: "failed",
+          stages: stages.map((stage) => ({
+            ...stage,
+            label: stage.id === "provenance" ? "Confirm saved recovery outcome" : stage.label,
+            status: stage.id === "context" ? "completed" : stage.id === "draft" ? "failed" : "not_run",
+          })),
+        });
+        return;
+      }
+    } catch {
+      // Fall through to the safe, non-persistent rejection state below.
+    }
+    setRunProgress({
+      kind: "initial_drafter_recovery",
+      recoveryFailure: "pre_dispatch_rejection",
+      status: "failed",
+      stages: stages.map((stage) => ({
+        ...stage,
+        label: stage.id === "context" ? "Validate saved recovery inputs, route, and budget" : stage.label,
         status: stage.id === "context" ? "failed" : "not_run",
       })),
     });
@@ -597,16 +656,7 @@ export function IdeaWorkspaceClient({
                   });
                   setMessage("Working draft created from the saved Board synthesis. The original failed attempt remains in provenance; reviews and synthesis were not rerun.");
                 } catch (error) {
-                  setRunProgress({
-                    kind: "initial_drafter_recovery",
-                    recoveryFailure: "pre_dispatch_rejection",
-                    status: "failed",
-                    stages: retryStages.map((stage) => ({
-                      ...stage,
-                      label: stage.id === "context" ? "Validate saved recovery inputs, route, and budget" : stage.label,
-                      status: stage.id === "context" ? "failed" : "not_run",
-                    })),
-                  });
+                  await hydrateInitialDrafterRecoveryFailure(retryStages);
                   throw error;
                 } finally {
                   setEditorialRunLabel(undefined);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_RUN_BUDGET_USD, MAXIMUM_RUN_BUDGET_USD, defaultRunBudgetUsd, estimateRouteCost, routeFor } from "@/ai/model-routing";
+import { DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_RUN_BUDGET_USD, MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS, MAXIMUM_RUN_BUDGET_USD, defaultRunBudgetUsd, estimateRouteCost, initialDrafterOutputTokens, routeFor } from "@/ai/model-routing";
 
 describe("model routing", () => {
   it("uses the finance-first role tiers", () => {
@@ -39,6 +39,23 @@ describe("model routing", () => {
   it("commits the documented safe budget fallbacks", () => {
     expect(DEFAULT_RUN_BUDGET_USD).toBe(0.05);
     expect(MAXIMUM_RUN_BUDGET_USD).toBe(0.25);
+  });
+
+  it("uses a bounded, operator-configurable Initial Drafter output allowance", () => {
+    const previous = process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS;
+    try {
+      delete process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS;
+      expect(initialDrafterOutputTokens()).toBe(DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS);
+
+      process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS = "4500";
+      expect(initialDrafterOutputTokens()).toBe(4_500);
+
+      process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS = String(MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS + 1);
+      expect(() => initialDrafterOutputTokens()).toThrow(/Initial Drafter output allowance/i);
+    } finally {
+      if (previous === undefined) delete process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS;
+      else process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS = previous;
+    }
   });
 
   it("rejects invalid pricing instead of allowing a NaN budget comparison", () => {

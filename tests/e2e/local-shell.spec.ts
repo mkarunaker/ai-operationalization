@@ -449,6 +449,69 @@ test("removes the Initial Drafter retry control after its one permitted retry ha
   await expect(page.getByRole("button", { name: /Retry working draft/ })).toHaveCount(0);
 });
 
+test("reports a persisted Initial Drafter retry failure rather than a pre-dispatch rejection", async ({ page }) => {
+  const ideaId = await createIdeaThroughWrite(page, { shape: "short" });
+  const baseline = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: Record<string, unknown> };
+  const failedIdea = {
+    ...baseline.idea,
+    editorialBrief: {
+      ...(baseline.idea.editorialBrief as Record<string, unknown>),
+      runStatus: "failed",
+      generatedDraftVersionId: undefined,
+      runFailures: [{ role: "initial_drafter", summary: "OpenAI response reached its output limit." }],
+      attemptedRoles: ["strategist", "skeptic", "editor", "synthesizer", "initial_drafter"],
+      reviewerRecoveries: [],
+    },
+  };
+  let retryAttempted = false;
+  await page.route(`**/api/ideas/${ideaId}?execution=live_preview`, async (route) => {
+    await route.fulfill({ json: { preview: preview({ initialDrafterRecovery: retryAttempted
+      ? { provider: "test-provider", model: "initial-medium", tier: "medium", estimatedCost: 0, available: false, unavailableReason: "Only one working-draft retry is permitted for a saved Editorial Board run. Start a new Board run after adjusting the configured route or output allowance.", outcome: "persisted_failure" }
+      : { provider: "test-provider", model: "initial-medium", tier: "medium", estimatedCost: 0, available: true } }) } });
+  });
+  await page.route(`**/api/ideas/${ideaId}`, async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { idea: failedIdea } });
+    retryAttempted = true;
+    return route.fulfill({ status: 500, json: { error: "The model reached its output limit before a complete working draft was validated." } });
+  });
+  await page.goto(`/ideas/${ideaId}/board`);
+  await page.getByRole("button", { name: /Retry working draft/ }).click();
+  await expect(page.getByText("Working-draft recovery failed after provider dispatch")).toBeVisible();
+  await expect(page.getByText("This recovery was rejected before a provider attempt. No provider failure provenance was created.")).toHaveCount(0);
+});
+
+test("reports a claimed Initial Drafter retry without persisted telemetry as unconfirmed", async ({ page }) => {
+  const ideaId = await createIdeaThroughWrite(page, { shape: "short" });
+  const baseline = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: Record<string, unknown> };
+  const failedIdea = {
+    ...baseline.idea,
+    editorialBrief: {
+      ...(baseline.idea.editorialBrief as Record<string, unknown>),
+      runStatus: "failed",
+      generatedDraftVersionId: undefined,
+      runFailures: [{ role: "initial_drafter", summary: "OpenAI response reached its output limit." }],
+      attemptedRoles: ["strategist", "skeptic", "editor", "synthesizer", "initial_drafter"],
+      reviewerRecoveries: [],
+    },
+  };
+  let retryAttempted = false;
+  await page.route(`**/api/ideas/${ideaId}?execution=live_preview`, async (route) => {
+    await route.fulfill({ json: { preview: preview({ initialDrafterRecovery: retryAttempted
+      ? { provider: "test-provider", model: "initial-medium", tier: "medium", estimatedCost: 0, available: false, unavailableReason: "Only one working-draft retry is permitted for a saved Editorial Board run. Start a new Board run after adjusting the configured route or output allowance.", outcome: "unconfirmed" }
+      : { provider: "test-provider", model: "initial-medium", tier: "medium", estimatedCost: 0, available: true } }) } });
+  });
+  await page.route(`**/api/ideas/${ideaId}`, async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { idea: failedIdea } });
+    retryAttempted = true;
+    return route.fulfill({ status: 500, json: { error: "The working-draft retry did not complete." } });
+  });
+  await page.goto(`/ideas/${ideaId}/board`);
+  await page.getByRole("button", { name: /Retry working draft/ }).click();
+  await expect(page.getByText("Working-draft recovery outcome could not be confirmed")).toBeVisible();
+  await expect(page.getByText("This recovery was rejected before a provider attempt. No provider failure provenance was created.")).toHaveCount(0);
+  await expect(page.getByText("Working-draft recovery failed after provider dispatch")).toHaveCount(0);
+});
+
 test("explains that Initial Drafter route drift requires a new Board run", async ({ page }) => {
   const ideaId = await createIdeaThroughWrite(page, { shape: "short" });
   const baseline = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: Record<string, unknown> };

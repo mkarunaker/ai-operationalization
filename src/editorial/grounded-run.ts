@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { GroundedTestProvider } from "@/ai/grounded-test-provider";
-import { estimateRouteCost, maximumRunBudgetUsd, routeFor } from "@/ai/model-routing";
+import { estimateRouteCost, initialDrafterOutputTokens, maximumRunBudgetUsd, routeFor } from "@/ai/model-routing";
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
 import { ZenMuxChatCompletionsProvider } from "@/ai/zenmux-provider";
@@ -91,6 +91,7 @@ export type ScopedInitialDrafterRequestInput = {
   provider: string;
   model: string;
   tier?: ModelTier;
+  maxOutputTokens: number;
 };
 type InitialDrafterRecoveryInput = {
   model: string;
@@ -108,10 +109,6 @@ const checksum = (value: string) => crypto.createHash("sha256").update(value).di
 const modelName = "grounded-editorial-test-v1";
 const reviewOutputTokens = 900;
 const synthesisOutputTokens = 1_000;
-const draftOutputTokens = 1_800;
-// This includes the structured response and any model-managed reasoning
-// budget. A 160–240 word post alone is smaller, but 700 caused valid
-// low-cost Responses calls to end as incomplete before JSON validation.
 const derivedShortOutputTokens = 1_200;
 const immutableReaderContractSchema = z
   .object({
@@ -422,7 +419,7 @@ export function scopedInitialDrafterRequestFor(input: ScopedInitialDrafterReques
         { role: "user" as const, content: boundary.contextBlock },
         { role: "user" as const, content: synthesisBoundary.contextBlock },
       ],
-      maxOutputTokens: draftOutputTokens,
+      maxOutputTokens: input.maxOutputTokens,
       responseFormat: { type: "json_schema" as const },
       metadata: {
         agentRole: "initial_drafter" as const,
@@ -694,7 +691,7 @@ function selectKnowledge(snapshot: SnapshotInput) {
 function sourceManifest(
   shared: PromptSource[],
   rolePrompts: Record<ReviewerRole | "synthesizer" | "initial_drafter" | "final_drafter", PromptSource>,
-  providerInfo: { name: string; modelForRole: (role: AgentRole) => string; providerForRole?: (role: AgentRole) => string; tierForRole?: (role: AgentRole) => ModelTier; pricingAssumption: string; pricingAssumptionForRole?: (role: AgentRole) => string },
+  providerInfo: { name: string; modelForRole: (role: AgentRole) => string; providerForRole?: (role: AgentRole) => string; tierForRole?: (role: AgentRole) => ModelTier; pricingAssumption: string; pricingAssumptionForRole?: (role: AgentRole) => string; initialDrafterMaxOutputTokens: number },
   readerContract?: Pick<SnapshotInput, "outputShape" | "audienceProfile" | "audienceNotes" | "longForm" | "shortForm">,
 ) {
   // A provenance reader contract is intentionally smaller than SnapshotInput.
@@ -718,7 +715,7 @@ function sourceManifest(
           model: providerInfo.modelForRole(role as AgentRole),
           tier: providerInfo.tierForRole?.(role as AgentRole) ?? "low",
           pricingAssumption: providerInfo.pricingAssumptionForRole?.(role as AgentRole) ?? providerInfo.pricingAssumption,
-          ...(role === "initial_drafter" ? { maxOutputTokens: draftOutputTokens } : {}),
+          ...(role === "initial_drafter" ? { maxOutputTokens: providerInfo.initialDrafterMaxOutputTokens } : {}),
         }]),
       ),
       pricingAssumption: providerInfo.pricingAssumption,
@@ -1082,6 +1079,7 @@ function projectedCost(
   tierForRole: (role: AgentRole) => ModelTier | undefined,
   boundaryCharacters: number,
   includeDerivedShort: boolean,
+  initialDrafterMaxOutputTokens: number,
 ) {
   const inputTokens = boundaryCharacters + 12_000;
   const planned: Array<[AgentRole, number, number]> = [
@@ -1089,10 +1087,10 @@ function projectedCost(
     ["skeptic", inputTokens, reviewOutputTokens],
     ["editor", inputTokens, reviewOutputTokens],
     ["synthesizer", 12_000 + 3 * reviewOutputTokens * 4, synthesisOutputTokens],
-    ["initial_drafter", inputTokens + 40_000 + synthesisOutputTokens * 4, draftOutputTokens],
+    ["initial_drafter", inputTokens + 40_000 + synthesisOutputTokens * 4, initialDrafterMaxOutputTokens],
   ];
   if (includeDerivedShort) {
-    planned.push(["final_drafter", inputTokens + draftOutputTokens * 4, derivedShortOutputTokens]);
+    planned.push(["final_drafter", inputTokens + initialDrafterMaxOutputTokens * 4, derivedShortOutputTokens]);
   }
   return planned.reduce((total, [role, input, output]) => {
     const oneAttempt = provider.estimateCost?.(
@@ -1166,6 +1164,7 @@ export function estimateGroundedEditorialRun(
       tierForRole,
       boundaryFor(snapshot, selected).contextBlock.length,
       hasDerivedShortOutput(snapshot.outputShape),
+      initialDrafterOutputTokens(),
     );
   } finally {
     database.close();
@@ -1282,6 +1281,7 @@ export async function runGroundedEditorialRun(
   const tierForRole: (role: AgentRole) => ModelTier | undefined = options.tierForRole ?? (() => undefined);
   const pricingAssumption = options.pricingAssumption ?? "Deterministic local test provider; estimated and actual cost are USD 0.00.";
   const pricingAssumptionForRole = options.pricingAssumptionForRole ?? (() => pricingAssumption);
+  const initialDrafterMaxOutputTokens = initialDrafterOutputTokens();
   const config = getAppConfig();
   const sourceStatus = refreshContent(config);
   if (sourceStatus.bok.status !== "ready") throw new Error("A ready Book of Knowledge index is required for a grounded editorial run.");
@@ -1316,6 +1316,7 @@ export async function runGroundedEditorialRun(
       tierForRole,
       boundary.contextBlock.length,
       hasDerivedShortOutput(snapshot.outputShape),
+      initialDrafterMaxOutputTokens,
     );
     if (executionMode === "live" && runEstimate > budgetCap) {
       throw new Error(`Projected live-run cost $${runEstimate.toFixed(4)} exceeds the $${budgetCap.toFixed(2)} budget cap. No provider call was made.`);
@@ -1355,7 +1356,7 @@ export async function runGroundedEditorialRun(
           voice.id,
           voice.version,
           voice.checksum,
-          sourceManifest(shared, prompts, { name: provider.name, modelForRole, providerForRole, tierForRole: (role) => tierForRole(role) ?? "low", pricingAssumption, pricingAssumptionForRole }, snapshot),
+          sourceManifest(shared, prompts, { name: provider.name, modelForRole, providerForRole, tierForRole: (role) => tierForRole(role) ?? "low", pricingAssumption, pricingAssumptionForRole, initialDrafterMaxOutputTokens }, snapshot),
         );
       persistRetrieval(database, snapshotDraftId, selected, runId);
       database.exec("COMMIT");
@@ -1534,6 +1535,7 @@ export async function runGroundedEditorialRun(
       provider: providerForRole("initial_drafter"),
       model: modelForRole("initial_drafter"),
       tier: tierForRole("initial_drafter"),
+      maxOutputTokens: initialDrafterMaxOutputTokens,
     });
     const draftBoundary = initialDraftRequest.boundary;
     const voiceBoundary = initialDraftRequest.voiceBoundary;
@@ -2051,7 +2053,7 @@ function assertSavedInitialDrafterRoute(saved: ReturnType<typeof initialDrafterR
     || saved.model !== route.model
     || saved.tier !== route.tier
     || saved.pricingAssumption !== route.pricingAssumption
-    || saved.maxOutputTokens !== draftOutputTokens
+    || saved.maxOutputTokens !== initialDrafterOutputTokens()
   )
     throw new Error("The configured Initial Drafter route has changed since this Board run. Run the Editorial Board again before retrying the working draft.");
 }
@@ -2130,6 +2132,47 @@ export function initialDrafterRecoveryAvailability(ideaId: string) {
   }
 }
 
+/**
+ * A durable retry claim prevents duplicate paid attempts, but it is not
+ * provider telemetry. Expose only a safe, persisted outcome projection for
+ * the browser: a recorded failed retry is distinct from a claimed retry whose
+ * provider outcome could not be confirmed.
+ */
+export function initialDrafterRecoveryOutcome(ideaId: string) {
+  const database = readDb();
+  try {
+    const latestFailedRun = database.prepare(
+      `SELECT run.id
+         FROM review_runs run
+         JOIN editorial_run_snapshots snapshot ON snapshot.review_run_id = run.id
+        WHERE snapshot.idea_id = ?
+          AND run.review_type = 'editorial'
+          AND run.status = 'failed'
+          AND snapshot.generated_draft_version_id IS NULL
+        ORDER BY run.completed_at DESC, run.rowid DESC
+        LIMIT 1`,
+    ).get(ideaId) as { id: string } | undefined;
+    if (!latestFailedRun) return undefined;
+    const failedAttempt = database.prepare(
+      `SELECT 1
+         FROM model_calls call
+        WHERE call.agent_role = 'initial_drafter'
+          AND call.success = 0
+          AND json_extract(COALESCE(call.raw_usage, '{}'), '$.reviewRunId') = ?
+          AND json_extract(COALESCE(call.raw_usage, '{}'), '$.recoveryKind') = 'retry'
+        ORDER BY call.rowid DESC
+        LIMIT 1`,
+    ).get(latestFailedRun.id);
+    if (failedAttempt) return "persisted_failure" as const;
+    const claim = database.prepare(
+      "SELECT 1 FROM initial_drafter_recovery_claims WHERE review_run_id = ? LIMIT 1",
+    ).get(latestFailedRun.id);
+    return claim ? "unconfirmed" as const : undefined;
+  } finally {
+    database.close();
+  }
+}
+
 export function hasRecoverableInitialDrafterFailure(ideaId: string) {
   return initialDrafterRecoveryAvailability(ideaId).available;
 }
@@ -2162,6 +2205,7 @@ export function estimateInitialDrafterRecovery(
       provider: providerName,
       model,
       tier,
+      maxOutputTokens: saved.persisted.initialDrafterRoute.maxOutputTokens,
       ...saved.persisted.readerContract,
     });
     const oneAttempt = provider.estimateCost?.(
@@ -2264,6 +2308,7 @@ async function executeInitialDrafterRecovery(
       provider: input.providerName,
       model: input.model,
       tier: input.tier,
+      maxOutputTokens: saved.persisted.initialDrafterRoute.maxOutputTokens,
       ...saved.persisted.readerContract,
     });
     const metered = new CumulativeBudgetProvider(input.provider, input.budgetCap, true);

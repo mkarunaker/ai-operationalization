@@ -4,9 +4,9 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GroundedTestProvider } from "@/ai/grounded-test-provider";
 import type { CostEstimate, ModelProvider, ModelRequest, ModelResponse, TokenUsage } from "@/ai/provider";
-import { modelEnvironmentVariable, routeFor } from "@/ai/model-routing";
+import { DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, modelEnvironmentVariable, routeFor } from "@/ai/model-routing";
 import { refreshContent } from "@/content/loader";
-import { estimateDerivedShortDraft, estimateInitialDrafterRecovery, hasRecoverableInitialDrafterFailure, initialDrafterRecoveryAvailability, retryDerivedShortDraftForTest, retryInitialDrafterDraft, retryInitialDrafterDraftForTest, runGroundedEditorialRun, runSingleReviewer, scopedDerivedShortDraftRequestFor } from "@/editorial/grounded-run";
+import { estimateDerivedShortDraft, estimateInitialDrafterRecovery, hasRecoverableInitialDrafterFailure, initialDrafterRecoveryAvailability, initialDrafterRecoveryOutcome, retryDerivedShortDraftForTest, retryInitialDrafterDraft, retryInitialDrafterDraftForTest, runGroundedEditorialRun, runSingleReviewer, scopedDerivedShortDraftRequestFor } from "@/editorial/grounded-run";
 import { liveRunPreview } from "@/editorial/live-run";
 import { createIdea, getIdea, listIdeas, proofreadRequestFor, runFinalDraftReview, runLiveProofreadForExactReviewForTest, saveEditedDraft, updateIdea } from "@/lean/service";
 import { openDatabase } from "@/persistence/database";
@@ -612,6 +612,7 @@ describe("grounded reader-output boundaries", () => {
     expect(failed.editorialBrief).toMatchObject({ runStatus: "failed", runFailures: [{ role: "initial_drafter" }] });
     expect(failed.article).toBeUndefined();
     expect(provider.requests.filter((request) => request.metadata?.agentRole === "initial_drafter")).toHaveLength(1);
+    expect(provider.requests.filter((request) => request.metadata?.agentRole === "initial_drafter").at(-1)).toMatchObject({ maxOutputTokens: DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS });
     expect(provider.requests.filter((request) => request.metadata?.agentRole === "strategist" || request.metadata?.agentRole === "skeptic" || request.metadata?.agentRole === "editor" || request.metadata?.agentRole === "synthesizer")).toHaveLength(4);
 
     updateIdea(created.id, {
@@ -626,6 +627,7 @@ describe("grounded reader-output boundaries", () => {
     });
 
     const retry = provider.requests.filter((request) => request.metadata?.agentRole === "initial_drafter").at(-1)!;
+    expect(retry.maxOutputTokens).toBe(DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS);
     expect(retry.systemPrompt).toContain("executive");
     expect(retry.systemPrompt).toContain("1234-1567");
     expect(retry.systemPrompt).not.toContain("general");
@@ -645,6 +647,37 @@ describe("grounded reader-output boundaries", () => {
         { success: 1, recovery: "retry", failure: null },
       ]);
     } finally { database.close(); }
+  });
+
+  it("pins an operator-configured Initial Drafter allowance to the saved Board and its one scoped retry", async () => {
+    const previousAllowance = process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS;
+    process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS = "4500";
+    try {
+      const created = createIdea({ rawNotes: "The configured draft allowance must be reserved and reproduced exactly for recovery." });
+      const failedProvider = new InitialDrafterTruncationProvider();
+      await expect(runGroundedEditorialRun(created.id, failedProvider, {
+        executionMode: "live", budgetCap: 0.05, providerForRole: () => "openai", modelForRole: () => "synthetic-low", tierForRole: () => "low", pricingAssumptionForRole: () => "Synthetic route pricing.",
+      })).rejects.toThrow(/output limit/i);
+      expect(failedProvider.requests.filter((request) => request.metadata?.agentRole === "initial_drafter").at(-1)).toMatchObject({ maxOutputTokens: 4_500 });
+
+      const database = openDatabase(process.env.DATABASE_PATH!);
+      try {
+        const row = database.prepare(
+          "SELECT prompt_manifest FROM editorial_run_snapshots WHERE idea_id = ? ORDER BY rowid DESC LIMIT 1",
+        ).get(created.id) as { prompt_manifest: string };
+        expect(JSON.parse(row.prompt_manifest).provider.roleAssignments.initial_drafter.maxOutputTokens).toBe(4_500);
+      } finally { database.close(); }
+
+      const retryProvider = new FixedInitialDrafterProvider(repeatedWords(190));
+      await retryInitialDrafterDraftForTest(created.id, retryProvider, {
+        providerName: "grounded-test", model: "grounded-editorial-test-v1", tier: "low", budgetCap: 0.05,
+        pricingAssumption: "Synthetic test-only pricing.",
+      });
+      expect(retryProvider.requests.filter((request) => request.metadata?.agentRole === "initial_drafter").at(-1)).toMatchObject({ maxOutputTokens: 4_500 });
+    } finally {
+      if (previousAllowance === undefined) delete process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS;
+      else process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS = previousAllowance;
+    }
   });
 
   it("rejects an Initial Drafter recovery when the saved voice source has changed", async () => {
@@ -767,6 +800,8 @@ describe("grounded reader-output boundaries", () => {
     })).rejects.toThrow(/only one working-draft retry/i);
     expect(hasRecoverableInitialDrafterFailure(created.id)).toBe(false);
     expect(liveRunPreview(created.id).initialDrafterRecovery.available).toBe(false);
+    expect(initialDrafterRecoveryOutcome(created.id)).toBe("persisted_failure");
+    expect(liveRunPreview(created.id).initialDrafterRecovery).toMatchObject({ outcome: "persisted_failure" });
     expect(getIdea(created.id)?.editorialBrief).toMatchObject({ runStatus: "failed" });
     expect(getIdea(created.id)?.article).toBeUndefined();
     const database = openDatabase(process.env.DATABASE_PATH!);
@@ -775,6 +810,22 @@ describe("grounded reader-output boundaries", () => {
       expect(calls.map((call) => ({ success: call.success, failure: JSON.parse(call.raw_usage).failureDiagnostic?.failureCode }))).toEqual([{ success: 0, failure: "output_limit" }, { success: 0, failure: "output_limit" }]);
       expect(database.prepare("SELECT COUNT(*) AS count FROM review_runs WHERE status = 'running'").get()).toMatchObject({ count: 0 });
     } finally { database.close(); }
+  });
+
+  it("reports a claimed Initial Drafter retry without persisted provider telemetry as unconfirmed", async () => {
+    const created = createIdea({ rawNotes: "A retry claim alone must not be presented as provider-failure provenance." });
+    const provider = new InitialDrafterTruncationProvider();
+    await expect(runGroundedEditorialRun(created.id, provider, {
+      executionMode: "live", budgetCap: 0.05, providerForRole: () => "openai", modelForRole: () => "synthetic-low", tierForRole: () => "low", pricingAssumptionForRole: () => "Synthetic route pricing.",
+    })).rejects.toThrow(/output limit/i);
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      database.prepare("INSERT INTO initial_drafter_recovery_claims (review_run_id, claimed_at) VALUES (?, ?)").run(getIdea(created.id)!.editorialBrief!.runId, new Date().toISOString());
+    } finally { database.close(); }
+
+    expect(initialDrafterRecoveryAvailability(created.id)).toMatchObject({ available: false });
+    expect(initialDrafterRecoveryOutcome(created.id)).toBe("unconfirmed");
+    expect(liveRunPreview(created.id).initialDrafterRecovery).toMatchObject({ outcome: "unconfirmed" });
   });
 
   it("atomically claims the one Initial Drafter retry before dispatch when concurrent callers overlap", async () => {

@@ -855,7 +855,11 @@ export function IdeaDetailView({
     }
     if (executionProgress?.kind === "initial_drafter_recovery") {
       if (executionProgress.status === "completed") return "Working-draft recovery complete";
-      return "Working-draft recovery stopped";
+      return executionProgress.recoveryFailure === "persisted_provider_failure"
+        ? "Working-draft recovery failed after provider dispatch"
+        : executionProgress.recoveryFailure === "outcome_unconfirmed"
+          ? "Working-draft recovery outcome could not be confirmed"
+        : "Working-draft recovery rejected before provider dispatch";
     }
     return executionProgress?.status === "completed"
       ? "Live Editorial Board complete"
@@ -863,7 +867,10 @@ export function IdeaDetailView({
         ? "Live Editorial Board incomplete"
         : "Live Editorial Board stopped";
   };
-  const executionProgressNote = executionProgress?.kind === "derived_short_recovery"
+  const executionProgressNote = executionProgress?.kind === "initial_drafter_recovery"
+    && executionProgress.recoveryFailure === "outcome_unconfirmed"
+    ? "The retry claim prevents another attempt, but no persisted provider outcome is available. Start a new Board run before attempting another working draft."
+    : (executionProgress?.kind === "derived_short_recovery" || executionProgress?.kind === "initial_drafter_recovery")
     && executionProgress.recoveryFailure === "pre_dispatch_rejection"
     ? "This recovery was rejected before a provider attempt. No provider failure provenance was created."
     : "These are persisted workflow events, not the models’ private reasoning.";

@@ -39,8 +39,9 @@ OPENAI_MEDIUM_MODEL="gpt-5.6-luna"
 OPENAI_HIGH_MODEL="gpt-5.4-mini"
 EDITORIAL_RUN_BUDGET_USD="0.05"
 EDITORIAL_MAX_RUN_BUDGET_USD="0.25"
+EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS="4000"
 ```
 
-The browser never receives a key. The committed provider policy is [src/config/model-routing.ts](src/config/model-routing.ts), while model IDs remain in `.env.local`; capability roles therefore remain separate from providers and model names. Current official OpenAI prices are built in as operator-maintained estimates and may be overridden with matching `OPENAI_{LOW|MEDIUM|HIGH}_{INPUT|CACHED_INPUT|OUTPUT}_USD_PER_MILLION` values. Restart the server after configuration changes. Before each live Board run, the review screen displays every planned provider/model, pricing basis, estimate, and editable budget cap. A higher-tier rerun is available only for one reviewer at a time and retains the original Board and draft.
+The browser never receives a key. The committed provider policy is [src/config/model-routing.ts](src/config/model-routing.ts), while model IDs remain in `.env.local`; capability roles therefore remain separate from providers and model names. The Initial Drafter receives a server-only, cost-reserved 4,000-token allowance by default; an operator may set `EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS` from 2,000 to 5,000 and restart before starting a new Board run. The exact allowance is saved with each Board run, so a recovery cannot silently change it. Current official OpenAI prices are built in as operator-maintained estimates and may be overridden with matching `OPENAI_{LOW|MEDIUM|HIGH}_{INPUT|CACHED_INPUT|OUTPUT}_USD_PER_MILLION` values. Restart the server after configuration changes. Before each live Board run, the review screen displays every planned provider/model, pricing basis, estimate, and editable budget cap. A higher-tier rerun is available only for one reviewer at a time and retains the original Board and draft.
 
 See [BUILD_ROADMAP.md](BUILD_ROADMAP.md), [ARCHITECTURE.md](ARCHITECTURE.md), [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md), and [docs/LOCAL_BACKUP.md](docs/LOCAL_BACKUP.md).

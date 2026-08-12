@@ -28,6 +28,28 @@ Status: **complete — independently approved by Sol.** The staged schema-comple
 - No provider call, meaningful-data migration, manual `.env` inspection, secret/private-source access, commit, or push occurred. The only staging action was additive migration `023` for the audit patch. Preserve the untracked local PDF, `archive/`, and PNG assets. The prior `no such column: color_scheme` observation is only a stale synthetic local SQLite schema missing migration `021`; normal app startup deliberately does not migrate it.
 - Sol's final audit approved Milestone 7.1 with no blockers. It confirmed the custom-concept transition is atomic, V1/V2 asset paths remain separate at the same timestamp, complete history makes V3 of 3 truthful, changed claims leave immutable version order intact, and browser scaffolding guidance derives from a real persisted safe category. Sol was read-only and did not modify/stage files, run suites/migrations, call providers, or access private/untracked data.
 
+## Pre-Milestone-10 Initial Drafter production-readiness remediation — 2026-08-11
+
+Status: **complete — independently approved by Sol; ready for owner product testing.** A real local run exposed a valid Initial Drafter response reaching its 1,800-token allowance before a complete structured working draft could be validated. The remediation does not weaken the cost or recovery boundaries:
+
+- The server-only Initial Drafter allowance now defaults to 4,000 tokens. An operator may set `EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS` to an integer from 2,000 through 5,000 before restarting and starting a new Board run. Invalid values fail closed before a live estimate or provider dispatch.
+- The exact allowance participates in the conservative live estimate and reservation, is persisted in the immutable Board route manifest, and is replayed unchanged for the one permitted working-draft recovery. A later allowance change deliberately makes recovery unavailable rather than silently widening a saved paid action.
+- After a retry request returns an error, the browser reloads only safe persisted state and distinguishes a recorded failed provider attempt from a true pre-dispatch rejection. A consumed retry claim alone is explicitly **unconfirmed**: it never falsely reports a provider failure or no dispatch. The projection reads only the latest saved failed Board run’s retry-attempt/claim state and exposes no provider bodies or private content.
+- Direct no-network regressions prove the default and bounded operator override, a 4,500-token Board request plus identical saved recovery request, invalid-configuration rejection, the persisted-failure projection, the claim-without-telemetry projection, and both corresponding browser states. The existing one-retry, cost-preflight, terminal-state, route-drift, voice-drift, and failure-provenance regressions remain intact.
+- Full validation passed: `npm run typecheck`; `npm run lint`; `npm test` (**24 files / 139 tests**); `npm run db:validate` (**23 migrations, validate-only**); `npm run build`; `npm run test:e2e -- --reporter=line` (**34 deterministic production-mode browser flows**); `npm run security:secrets` (**132 source/documentation files**); `npm run security:audit` (**0 vulnerabilities**); `git diff --check`; and `git diff --cached --check`. The browser runner and secret scan used approved local execution only for their temporary TypeScript IPC sockets.
+- No provider was called, no meaningful-data migration was applied, and no database, backup, `.env.local`, credential, BOK, voice, Notebook, or provider request body was read. Preserve the untracked local PDF, `archive/`, and PNG assets.
+
+Existing saved Board snapshots retain their saved allowance by design. A run whose one retry was already consumed remains terminal; use the new server policy only for a new Board run after restarting the app.
+
+### Next planned recovery ergonomics — local per-attempt overrides
+
+The next planned item, after the owner’s end-to-end product test, is a safe author-facing recovery choice rather than a code or environment-file edit. It is deliberately scoped to one new attempt and never changes Settings or historical provenance:
+
+- A cap increase retries only the blocked stage after a new conservative reservation; a pre-dispatch cap rejection never consumes a retry claim.
+- An explicit output-allowance increase regenerates only the failed draft stage from the immutable saved Board snapshot. It creates a separately versioned attempt with its own route, allowance, cap, reservation, telemetry, and outcome; completed reviewers and synthesis are not rerun.
+- Changes to reader contract, captured/source material, or editorial reasoning require a new Board run. “Regenerate working draft from this saved Board” remains separate from a full Board rerun.
+- The UI must offer dependency-safe named actions, not arbitrary stage checkboxes. A Settings change remains a future default only; a recovery override is local to its one attempt.
+
 ## Milestone 6.2 handoff — 2026-08-09
 
 Status: **complete — independently approved by Sol on 2026-08-09.** Milestone 5.1 is likewise complete and independently approved.

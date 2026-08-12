@@ -16,6 +16,12 @@ export type ModelRoute = {
 
 export const DEFAULT_RUN_BUDGET_USD = 0.05;
 export const MAXIMUM_RUN_BUDGET_USD = 0.25;
+// The initial draft is the only long structured response in the standard
+// Board run. Keep a generous default for provider-managed reasoning while
+// retaining a hard server-side ceiling that cost reservation can enforce.
+export const DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS = 4_000;
+export const MINIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS = 2_000;
+export const MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS = 5_000;
 
 const openaiPricing = (modelClass: string, input: string, cached: string, output: string) =>
   `OpenAI ${modelClass} standard API pricing assumption: USD ${input} / MTok input, USD ${cached} / MTok cached input, and USD ${output} / MTok output. Reasoning tokens are included in reported output tokens, not charged a second time. Verify against OpenAI billing.`;
@@ -150,4 +156,19 @@ export function defaultRunBudgetUsd(): number {
 export function maximumRunBudgetUsd(): number {
   const value = Number(process.env.EDITORIAL_MAX_RUN_BUDGET_USD ?? String(MAXIMUM_RUN_BUDGET_USD));
   return Number.isFinite(value) && value > 0 ? value : MAXIMUM_RUN_BUDGET_USD;
+}
+
+/**
+ * A local operator may tune this server-only allowance without exposing a
+ * draft-control to the browser. Invalid values fail closed before any live
+ * estimate or provider request, and every Board snapshot records the value
+ * actually used so a scoped retry cannot silently change it.
+ */
+export function initialDrafterOutputTokens(): number {
+  const raw = process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < MINIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS || value > MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS)
+    throw new Error(`Initial Drafter output allowance must be an integer between ${MINIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS} and ${MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS}.`);
+  return value;
 }

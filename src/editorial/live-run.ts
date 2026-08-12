@@ -2,7 +2,7 @@ import { defaultRunBudgetUsd, estimateRouteCost, maximumRunBudgetUsd, modelEnvir
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
 import { ZenMuxChatCompletionsProvider } from "@/ai/zenmux-provider";
-import { assertDerivedShortRecoveryPolicy, estimateDerivedShortDraft, estimateGroundedEditorialRun, estimateInitialDrafterRecovery, estimateSingleReviewerRun, hasSavedBoardReaderContract, initialDrafterRecoveryAvailability, plannedRolesForIdea, retryDerivedShortDraft, retryInitialDrafterDraft, runGroundedEditorialRun, runSingleReviewer, type GroundedRunResult } from "@/editorial/grounded-run";
+import { assertDerivedShortRecoveryPolicy, estimateDerivedShortDraft, estimateGroundedEditorialRun, estimateInitialDrafterRecovery, estimateSingleReviewerRun, hasSavedBoardReaderContract, initialDrafterRecoveryAvailability, initialDrafterRecoveryOutcome as initialDrafterRecoveryOutcomeFor, plannedRolesForIdea, retryDerivedShortDraft, retryInitialDrafterDraft, runGroundedEditorialRun, runSingleReviewer, type GroundedRunResult } from "@/editorial/grounded-run";
 import type { ModelProvider, ModelRequest, ModelResponse, TokenUsage, CostEstimate } from "@/ai/provider";
 import type { AgentRole } from "@/domain/roles";
 import { assertPublishedWorkflowUnlocked, getIdea, proofreadRequestFor, runLiveProofreadForExactReview, type DraftFormat, type ReaderOutputContract } from "@/lean/service";
@@ -150,6 +150,7 @@ export function liveRunPreview(ideaId: string) {
     : 0;
   const initialDrafterRecoveryRoute = routeForPlannedRole("initial_drafter");
   const initialDrafterRecovery = initialDrafterRecoveryAvailability(ideaId);
+  const initialDrafterRecoveryOutcome = initialDrafterRecoveryOutcomeFor(ideaId);
   const initialDrafterRecoveryEstimatedCost = initialDrafterRecovery.available
     ? estimateInitialDrafterRecovery(
         ideaId,
@@ -231,6 +232,7 @@ export function liveRunPreview(ideaId: string) {
           ? "The configured Initial Drafter provider route is unavailable. Start a new Board run after configuration is restored."
           : undefined)
         : initialDrafterRecovery.reason,
+      outcome: initialDrafterRecoveryOutcome,
     },
     derivedShortRefresh: {
       provider: derivedShortRefreshRoute.provider,

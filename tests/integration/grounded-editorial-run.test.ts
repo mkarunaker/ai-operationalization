@@ -337,6 +337,12 @@ describe("grounded reader-output boundaries", () => {
         shortFormEnabled: true, shortFormMinWords: 321, shortFormMaxWords: 357,
         shortFormSource: "derived_from_long",
       },
+      structuredIdeaBrief: {
+        situation: "A team adopted a defined review path before delivery instead of escalating at the end.",
+        assumption: "Review is always the enemy of delivery.",
+        discovery: "The team moved faster because access, accountability, and the review path were known before implementation began.",
+        principle: "Governance creates a usable path, not an after-the-fact gate.",
+      },
     });
     const provider = new RecordingProvider();
     await runGroundedEditorialRun(created.id, provider, { tierForRole: () => "medium" });
@@ -358,11 +364,51 @@ describe("grounded reader-output boundaries", () => {
     const initial = byRole.get("initial_drafter")!;
     expect(initial.systemPrompt).toContain("1234-1567");
     expect(initial.systemPrompt).toContain("321-357");
+    expect(initial.systemPrompt).toContain("standalone plain-text signpost");
+    expect(initial.systemPrompt).toContain("recap bridge");
+    expect(initial.systemPrompt).toContain("four-part narrative template");
+    expect(initial.systemPrompt).not.toContain("Governance creates a usable path");
     expect(initial.messages[0]?.content).toContain("author reader note");
+    expect(initial.messages[0]?.content).toContain("Structured author brief");
+    expect(initial.messages[0]?.content).toContain("Situation:");
+    expect(initial.messages[0]?.content).toContain("Governance creates a usable path");
     const derived = byRole.get("final_drafter")!;
     expect(derived.systemPrompt).toContain("321-357");
     expect(derived.messages[0]?.content).toContain("author reader note");
     expect(getIdea(created.id)?.derivedShortPost).toMatchObject({ stale: false, sourceArticleVersion: getIdea(created.id)?.article?.version });
+  });
+
+  it("stops an incomplete started idea-capture template before any Board dispatch", async () => {
+    const created = createIdea({ rawNotes: "A partial structured brief must ask for its missing grounding before a paid run." });
+    updateIdea(created.id, {
+      structuredIdeaBrief: {
+        situation: "A team selected a model before naming the outcome.",
+      },
+    });
+    const provider = new RecordingProvider();
+    await expect(runGroundedEditorialRun(created.id, provider)).rejects.toThrow(
+      "Before the Editorial Board runs, answer these narrative-template questions: Assumption, Discovery, Principle.",
+    );
+    expect(provider.requests).toHaveLength(0);
+    expect(getIdea(created.id)?.editorialBrief).toBeUndefined();
+    expect(getIdea(created.id)?.shortPost).toBeUndefined();
+  });
+
+  it("returns a focused Discovery question for a generic narrative arc before any Board dispatch", async () => {
+    const created = createIdea({ rawNotes: "A generic discovery must not spend a Board budget." });
+    updateIdea(created.id, {
+      structuredIdeaBrief: {
+        situation: "A platform team copied a polished demo into its own workflow.",
+        assumption: "If it looks simple, it must be simple to operate.",
+        discovery: "It was more complex than it looked.",
+        principle: "Understand the operating machinery before copying the visible outcome.",
+      },
+    });
+    const provider = new RecordingProvider();
+    await expect(runGroundedEditorialRun(created.id, provider)).rejects.toThrow(
+      "Discovery — what specifically had to exist, change, cost, or be checked?",
+    );
+    expect(provider.requests).toHaveLength(0);
   });
 
   it("uses the same generic scoped request for estimate and recovery input", async () => {

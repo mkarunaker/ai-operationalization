@@ -147,6 +147,8 @@ Create one clean, original editorial illustration for a professional article tit
 
 Art direction: restrained, modern editorial illustration; simple shapes; generous whitespace; coherent hierarchy; calm palette; no gradients that reduce legibility. Do not include any text, letters, numbers, labels, logos, UI, watermarks, or readable signage. Do not reproduce the article as a diagram or put the title into the image.
 
+People are optional. When people meaningfully belong in the scene, portray an inclusive group rather than defaulting to men: use variation in gender presentation, age, and skin tone appropriate to the setting. Do not use stereotypes, tokenism, or identity as a shortcut for a job or role. If people are not needed to clarify the article, prefer an abstract or environmental scene.
+
 ${boundary.contextBlock}`,
   };
 }

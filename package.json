@@ -17,6 +17,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "db:migrate": "tsx scripts/db-migrate.ts",
+    "db:reset": "tsx scripts/db-reset.ts",
     "db:backup": "tsx scripts/db-backup.ts",
     "db:validate": "tsx scripts/db-migrate.ts --validate-only",
     "content:index": "tsx scripts/content-index.ts",

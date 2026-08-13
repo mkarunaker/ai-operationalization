@@ -55,7 +55,7 @@ For additive schema work, the migration and its direct compatibility regression 
 | Full visual companions: Milestone 7 | Complete — Sol approved | 2026-08-10 | Approved, traceable visuals; any delivery-channel choice remains a Finalize concern |
 | Post-Milestone 7.1 authoring and visual-revision hardening | Complete — Sol approved | 2026-08-11 | Independent read-only approval after provenance, failure-projection, unique visual-version, and asset-history regressions |
 | Learning loop: Milestone 8 | Planned | 2026-08-16 | Manual feedback, follow-up ideas, and Notebook history; no Notebook-to-Inbox flow in current scope |
-| Local configuration and settings: Milestone 9 | Planned | 2026-08-19 | One safe home for themes, non-secret model/cost policy, source readiness, and other local configuration; no authoring-workflow coupling |
+| Local configuration and settings: Milestone 9 | Planned | 2026-08-19 | One safe home for non-secret model/cost policy, source readiness, and other local configuration; no authoring-workflow coupling |
 | Local personal MVP release gate: Milestone 10 | Planned | 2026-08-22 | Security, recovery, production-mode validation, and honest technical-debt handoff |
 
 Milestone 5.1 is independently approved following Sol's read-only review. The completed manual-first research work remains valid historical delivery evidence; later milestones still require their own acceptance, validation, and audit gates.
@@ -516,7 +516,7 @@ Make the author choose an audience and output shape before distribution. Preserv
 
 ### Migration discipline
 
-Use one additive, owner-backup-gated migration for audience/output preferences and immutable review-finding dispositions. Backfill existing publication plans without deleting or renaming historical format records. Validate against temporary synthetic data first; apply to meaningful local data only through the explicit migration workflow.
+The current repository uses one clean baseline migration for an empty local workspace. It intentionally has no compatibility backfills, managed-theme tables, or legacy template fields. Validate it on temporary synthetic data. The owner-only fresh-start command is the explicit destructive operation that replaces a local workspace.
 
 ---
 
@@ -783,8 +783,8 @@ Move local configuration out of authoring screens into one safe, understandable 
 
 ### Scope
 
-- Create a dedicated Settings area for locally managed configuration rather than continuing to add theme, source-readiness, model-policy, budget, or default-preference controls to Capture, Develop, Board, or Write.
-- Move theme management there first: create, rename, reorder, archive, and restore local themes while preserving the historical labels already attached to ideas and runs.
+- Create a dedicated Settings area for locally managed configuration rather than continuing to add source-readiness, model-policy, budget, or default-preference controls to Capture, Develop, Board, or Write.
+- Do not add managed themes or a controlled taxonomy. Authors may use ordinary `#tags` inside ideas and notes; any future taxonomy needs demonstrated retrieval, organization, or reporting value before it earns persistent schema.
 - Surface source and index readiness as metadata only: configured-source labels, readiness, index version, and safe remediation guidance. Never render BOK, voice, Notebook, or private-source contents from Settings.
 - Provide a guarded local policy surface for permitted provider/model routes, tiers, finite non-negative pricing assumptions, and per-run cost caps. Credentials, `.env` values, provider request bodies, and raw adapter errors remain server-only and must never be read or displayed.
 - Make spend legible during live testing: the saved Board status must show a per-attempt, per-role breakdown of route, terminal outcome, reported input/output/total tokens when available, recorded cost estimate, retry number, and safe failure category. It must distinguish recorded estimated cost from a conservative reservation and from the Board cap; failed attempts remain visible. It must never expose prompts, generated text, provider bodies, credentials, source contents, or arbitrary diagnostics.
@@ -799,7 +799,7 @@ Move local configuration out of authoring screens into one safe, understandable 
 
 ### Acceptance criteria
 
-- Themes are managed from Settings and existing selected-theme history remains readable after rename, archive, restore, and reload.
+- Settings does not introduce a managed-theme layer without an explicit product need and separate data-model decision.
 - A configuration change is validated atomically, recorded with its non-secret effective values, and either produces a coherent safe state or leaves the previous state untouched.
 - Browser-visible configuration contains no credential, raw source content, provider request, or arbitrary server error. Mutation routes retain loopback, same-origin, JSON-content, authorization, and safe-error protections.
 - Model/tier/pricing choices remain an allowlisted server-side route; every execution still resolves its final provider, model, tier, pricing, and cap on the server and persists the attempted route separately from provider-reported telemetry.
@@ -863,6 +863,10 @@ Manual product testing found that the current deterministic visual renderer can 
 - Add rendered-image visual QA for each grammar at its normal display size. It must reject stretched/compressed text, clipping, overlap, unreadable contrast, and redundant hierarchy before an asset is offered as a clean reader aid.
 - Keep custom illustration authoring product-native, not a ChatGPT-style prompt worksheet. The author selects **Create custom visual** and may give one optional short “what should change?” direction; the application derives the article-grounded scene, visual hierarchy, accessibility text, and approved generation request from the exact saved output. A custom visual has no template picker. Before any paid image request, show one concise proposed concept and its cost; after an approved preview, accept ordinary feedback such as “more minimal” or “make the bridge calmer,” not a list of manual claims, labels, and prompt fragments. Reusable visual treatment—brand palette, default illustration style, and permitted image route—belongs in future Settings and affects only future custom requests. This is a separate provider-backed custom-image milestone with an explicit server route, bounded untrusted-input contract, cost reservation, per-attempt provenance, versioned assets, no silent template fallback, deterministic no-network tests, and independent audit.
 - The optional direction must remain optional in the data model as well as the form: selecting custom illustration with an empty direction creates an explicit, visible, actionable article-only custom brief. It never collapses into a generic hidden no-visual recommendation.
+- For a first visual, show all four supported deterministic grammars before any brief is created. Highlight one zero-cost article-grounded suggestion and give every choice a concise “would show” explanation; do not create, price, or render four candidates. Put the separate custom-illustration choice underneath. The author prepares exactly one chosen brief, then explicitly approves its one deterministic render or separately priced custom-image request.
+- Framework-style articles must remain plain publication prose while still being scannable: each genuine part uses a short standalone plain-text signpost and clear paragraph breaks, and the final part is followed by a brief recap bridge before the conclusion. Markdown headings, bullets, and numbered lists remain disallowed.
+- Custom illustrations do not default to men when people are relevant. The trusted image instruction makes people optional and requires inclusive variation in gender presentation, age, and skin tone for any group scene, without stereotypes, tokenism, or identity-coded roles.
+- Offer a topic-neutral narrative template at entry as an alternative to free-form capture, with one shared optional reader setup. Its four complementary fields—Situation, Assumption, Discovery, and Principle—carry one post’s arc: fact, tension, what was learned, and the plain takeaway. A structured capture stores its Principle as the underlying original capture so authors never have to type the same thought twice; later Principle edits deliberately update that mutable source for future Board runs while a completed Board retains its immutable snapshot. Once an author begins this template, all four fields must be specific enough to use: missing or generic fields return field-specific questions before any provider call. The brief is saved separately from ordinary notes, travels only as bounded untrusted editorial context, never grants prompt, tool, route, or policy authority, and retrieves BOK material against the Principle. The clean local baseline carries no legacy template or managed-theme compatibility layer; authors may use ordinary `#tags` in their own text and notes.
 - Preserve existing exact-output provenance, approval, download history, deterministic/local-only rendering, and zero-provider cost. Do not reopen the visual lifecycle safety contract merely to improve typography and information design.
 
 ## Execution prompt for GPT-5.6-terra

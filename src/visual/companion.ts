@@ -103,6 +103,18 @@ export function visualCompanionFor(title: string, draft: string, selectedTemplat
   };
 }
 
+/**
+ * A zero-cost, article-grounded suggestion for the chooser. This selects no
+ * asset and persists no brief; the author still chooses the approach that is
+ * prepared, approved, and rendered.
+ */
+export function suggestedVisualTemplateFor(title: string, draft: string): VisualTemplate {
+  const suggested = visualCompanionFor(title, draft);
+  if (suggested.type === "maturity_path") return "vertical_path";
+  if (suggested.type === "decision_fork" || suggested.type === "contrast" || suggested.type === "vertical_path" || suggested.type === "flow") return suggested.type;
+  return "flow";
+}
+
 function escapeXml(value: string) {
   return value.replace(/[<>&"']/g, (character) => ({
     "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;",

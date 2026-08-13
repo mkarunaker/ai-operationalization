@@ -7,6 +7,7 @@ import { AppNav } from "./app-nav";
 import { VisualFlow } from "./visual-flow";
 import type { EditorialRunProgress } from "@/editorial/run-progress";
 import { boardRoleStageStatus, derivedShortCreationStageStatus, isBoardReviewIncomplete, primaryDraftCreationStageStatus } from "@/editorial/board-status";
+import { suggestedVisualTemplateFor } from "@/visual/companion";
 
 export type Status =
   | "inbox"
@@ -15,9 +16,11 @@ export type Status =
   | "drafted"
   | "published"
   | "parked";
-export type Theme = { id: string; name: string };
 type VisualFormat = "short" | "article" | "derived_short";
 type VisualTemplate = "flow" | "vertical_path" | "contrast" | "decision_fork";
+type StructuredIdeaBriefInput = {
+  workingTitle?: string; situation?: string; assumption?: string; discovery?: string; principle?: string;
+};
 type VisualCompanionView = {
   id: string;
   draftVersionId: string;
@@ -92,6 +95,13 @@ function visualTemplateLabel(template?: VisualTemplate) {
   return "No supported diagram";
 }
 
+const visualTemplateDescriptions: Record<VisualTemplate, string> = {
+  decision_fork: "One starting point, then two materially different outcomes.",
+  contrast: "What is visible versus the operating work beneath it.",
+  vertical_path: "A compact progression through three stages.",
+  flow: "Three connected steps when sequence is the actual point.",
+};
+
 type VisualAction = {
   operation: "recommend" | "approve" | "render" | "render_custom" | "start_revision" | "select_revision" | "dismiss";
   format: VisualFormat;
@@ -110,7 +120,6 @@ export type Idea = {
   outputShape: "short" | "long" | "long_with_derived_short";
   createdAt: string;
   updatedAt: string;
-  themes: Theme[];
   audienceProfileKey?: "professional" | "executive" | "practitioner" | "general";
   audienceNotes?: string;
   outputPreferences?: {
@@ -139,6 +148,13 @@ function outputPreferencesForShape(shape: Idea["outputShape"]): NonNullable<Idea
 }
 export type Detail = Idea & {
   notes: Array<{ id: string; body: string; createdAt: string }>;
+  structuredIdeaBrief?: {
+    workingTitle?: string;
+    situation?: string;
+    assumption?: string;
+    discovery?: string;
+    principle?: string;
+  };
   research: Array<{
     id: string;
     mode: "provided" | "application";
@@ -344,11 +360,12 @@ const localCost = (ledger: Idea["runLedger"]) =>
 export function QueueClient() {
   const router = useRouter();
   const [ideas, setIdeas] = useState<Idea[]>([]);
-  const [themes, setThemes] = useState<Theme[]>([]);
   const [capture, setCapture] = useState("");
   const [captureTitle, setCaptureTitle] = useState("");
-  const [captureThemes, setCaptureThemes] = useState<string[]>([]);
-  const [newTheme, setNewTheme] = useState("");
+  const [captureMode, setCaptureMode] = useState<"freeform" | "structured">("freeform");
+  const [captureBrief, setCaptureBrief] = useState<StructuredIdeaBriefInput>({});
+  const [captureAudience, setCaptureAudience] = useState<NonNullable<Idea["audienceProfileKey"]>>("professional");
+  const [captureAudienceNote, setCaptureAudienceNote] = useState("");
   const [filter, setFilter] = useState<Status | "all">("all");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -358,9 +375,8 @@ export function QueueClient() {
   );
   async function refresh() {
     const response = await fetch("/api/ideas");
-    const data = (await response.json()) as { ideas: Idea[]; themes: Theme[] };
+    const data = (await response.json()) as { ideas: Idea[] };
     setIdeas(data.ideas);
-    setThemes(data.themes);
   }
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -376,43 +392,23 @@ export function QueueClient() {
       const response = await fetch("/api/ideas", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rawNotes: capture, title: captureTitle || undefined, themeIds: captureThemes }),
+        body: JSON.stringify(captureMode === "structured"
+          ? { title: captureBrief.workingTitle || undefined, structuredIdeaBrief: captureBrief, audienceProfileKey: captureAudience, audienceNotes: captureAudienceNote || undefined }
+          : { rawNotes: capture, title: captureTitle || undefined, audienceProfileKey: captureAudience, audienceNotes: captureAudienceNote || undefined }),
       });
       const data = (await response.json()) as { idea?: Detail; error?: string };
       if (!response.ok || !data.idea)
         throw new Error(data.error ?? "Could not save the idea.");
       setCapture("");
       setCaptureTitle("");
-      setCaptureThemes([]);
+      setCaptureBrief({});
+      setCaptureMode("freeform");
+      setCaptureAudience("professional");
+      setCaptureAudienceNote("");
       router.push(`/ideas/${data.idea.id}`);
     } catch (error) {
       setMessage(
         error instanceof Error ? error.message : "Could not save the idea.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function addTheme() {
-    if (!newTheme.trim()) return;
-    setBusy(true);
-    try {
-      const response = await fetch("/api/ideas", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "create_theme", name: newTheme }),
-      });
-      const data = (await response.json()) as { theme?: Theme; error?: string };
-      if (!response.ok || !data.theme)
-        throw new Error(data.error ?? "Could not add theme.");
-      setThemes((current) =>
-        [...current, data.theme!].sort((a, b) => a.name.localeCompare(b.name)),
-      );
-      setCaptureThemes((current) => [...current, data.theme!.id]);
-      setNewTheme("");
-    } catch (error) {
-      setMessage(
-        error instanceof Error ? error.message : "Could not add theme.",
       );
     } finally {
       setBusy(false);
@@ -476,68 +472,62 @@ export function QueueClient() {
           </p>
         )}
         <form className="capture-card" onSubmit={createIdea}>
+          <fieldset className="capture-mode-picker">
+            <legend>Capture</legend>
+            <label className={captureMode === "freeform" ? "selected" : ""}>
+              <input type="radio" name="capture-mode" checked={captureMode === "freeform"} onChange={() => setCaptureMode("freeform")} />
+              <span>Write freely</span>
+            </label>
+            <label className={captureMode === "structured" ? "selected" : ""}>
+              <input type="radio" name="capture-mode" checked={captureMode === "structured"} onChange={() => setCaptureMode("structured")} />
+              <span>Use template</span>
+            </label>
+          </fieldset>
           <label htmlFor="capture-title" className="capture-title-field">
             <strong>Working title <span>Optional</span></strong>
-            <input
-              id="capture-title"
-              value={captureTitle}
-              onChange={(event) => setCaptureTitle(event.target.value)}
-              placeholder="Add one, or let the app suggest it"
-              maxLength={300}
-            />
+            <input id="capture-title" value={captureMode === "structured" ? captureBrief.workingTitle ?? "" : captureTitle} onChange={(event) => captureMode === "structured" ? setCaptureBrief({ ...captureBrief, workingTitle: event.target.value }) : setCaptureTitle(event.target.value)} placeholder="Add one, or let the app suggest it" maxLength={300} />
           </label>
-          <label htmlFor="capture">
-            <strong>What are you thinking about?</strong>
-            <span>
-              A sentence, bullets, rough notes, a question, or an early possible
-              post.
-            </span>
-          </label>
-          <textarea
-            id="capture"
-            value={capture}
-            onChange={(event) => setCapture(event.target.value)}
-            placeholder="Write freely. Nothing needs to be polished."
-            minLength={2}
-            maxLength={50_000}
-            required
-          />
+          <div className="capture-reader-fields" aria-label="Reader">
+            <label>
+              Primary audience
+              <select value={captureAudience} onChange={(event) => setCaptureAudience(event.target.value as NonNullable<Idea["audienceProfileKey"]>)}>
+                <option value="professional">Professionals across AI, data, technology, business, and leadership</option>
+                <option value="executive">Executives and organizational leaders</option>
+                <option value="practitioner">Practitioners building or operating AI</option>
+                <option value="general">Curious general readers</option>
+              </select>
+            </label>
+            <label>
+              Audience note <small>Optional</small>
+              <input value={captureAudienceNote} onChange={(event) => setCaptureAudienceNote(event.target.value)} placeholder="What should this reader already understand?" maxLength={1_000} />
+            </label>
+          </div>
+          {captureMode === "freeform" ? <>
+            <label htmlFor="capture">
+              <strong>What are you thinking about?</strong>
+              <span>A sentence, bullets, rough notes, a question, or an early possible post.</span>
+            </label>
+            <textarea id="capture" value={capture} onChange={(event) => setCapture(event.target.value)} placeholder="Write freely. Nothing needs to be polished." minLength={2} maxLength={50_000} required />
+          </> : <section className="capture-template-fields" aria-label="Idea capture template">
+            <label>
+              <strong>Situation <span>Required</span></strong>
+              <textarea value={captureBrief.situation ?? ""} onChange={(event) => setCaptureBrief({ ...captureBrief, situation: event.target.value })} placeholder="What happened, and where? Use one real situation, not a composite." minLength={2} maxLength={8_000} required />
+            </label>
+            <label>
+              <strong>Assumption <span>Required</span></strong>
+              <textarea value={captureBrief.assumption ?? ""} onChange={(event) => setCaptureBrief({ ...captureBrief, assumption: event.target.value })} placeholder="The belief that was in the room, stated as someone would say it out loud." minLength={2} maxLength={4_000} required />
+            </label>
+            <label>
+              <strong>Discovery <span>Required</span></strong>
+              <textarea value={captureBrief.discovery ?? ""} onChange={(event) => setCaptureBrief({ ...captureBrief, discovery: event.target.value })} placeholder="What turned out to be true instead? Be specific about what it took, what existed first, or what it cost." minLength={2} maxLength={12_000} required />
+            </label>
+            <label>
+              <strong>Principle <span>Required</span></strong>
+              <textarea value={captureBrief.principle ?? ""} onChange={(event) => setCaptureBrief({ ...captureBrief, principle: event.target.value })} placeholder="What would you tell someone facing the same thing? One plain line." minLength={2} maxLength={2_000} required />
+            </label>
+          </section>}
           <div className="capture-footer">
-            <div className="theme-pills">
-              {themes.map((theme) => (
-                <label key={theme.id}>
-                  <input
-                    type="checkbox"
-                    checked={captureThemes.includes(theme.id)}
-                    onChange={() =>
-                      setCaptureThemes((current) =>
-                        current.includes(theme.id)
-                          ? current.filter((id) => id !== theme.id)
-                          : [...current, theme.id],
-                      )
-                    }
-                  />
-                  {theme.name}
-                </label>
-              ))}
-              <div className="new-theme">
-                <input
-                  value={newTheme}
-                  onChange={(event) => setNewTheme(event.target.value)}
-                  placeholder="Add a theme"
-                  maxLength={100}
-                />
-                <button
-                  type="button"
-                  className="quiet-button"
-                  disabled={busy}
-                  onClick={addTheme}
-                  aria-label="Add theme"
-                >
-                  +
-                </button>
-              </div>
-            </div>
+            <p className="capture-tag-note">Optional: add <code>#tags</code> in your idea or notes if they help you find related work later.</p>
             <div className="capture-actions">
               <button disabled={busy} type="submit">
                 {busy ? "Saving…" : "Save to Inbox"}
@@ -565,11 +555,6 @@ export function QueueClient() {
                       ? `${idea.runLedger.attempts} model ${idea.runLedger.attempts === 1 ? "attempt" : "attempts"} · ${idea.runLedger.totalTokens.toLocaleString()} tokens · ${localCost(idea.runLedger)}`
                       : "No model attempts yet"}
                   </p>
-                  <div className="card-meta">
-                    {idea.themes.map((theme) => (
-                      <span key={theme.id}>{theme.name}</span>
-                    ))}
-                  </div>
                 </div>
                   <b aria-hidden="true">›</b>
               </Link>
@@ -597,7 +582,6 @@ export function QueueClient() {
 
 export function IdeaDetailView({
   idea,
-  themes,
   note,
   setNote,
   setSelected,
@@ -649,7 +633,6 @@ export function IdeaDetailView({
   createApplicationResearchBrief,
 }: {
   idea: Detail;
-  themes: Theme[];
   note: string;
   setNote: (value: string) => void;
   setSelected: (idea: Detail) => void;
@@ -724,13 +707,6 @@ export function IdeaDetailView({
   saveProvidedResearch?: (input: { question: string; timeWindow?: string; evidenceSummary: string; interpretation?: string; sources: Array<{ title: string; sourceUrl?: string; publishedAt?: string; excerpt?: string; label: "fact" | "evidence" | "observation" | "pattern" | "opinion" | "hypothesis" | "recommended_default" }> }) => Promise<void>;
   createApplicationResearchBrief?: (input: { question: string; timeWindow: string }) => Promise<void>;
 }) {
-  const toggleTheme = (id: string) =>
-    setSelected({
-      ...idea,
-      themes: idea.themes.some((theme) => theme.id === id)
-        ? idea.themes.filter((theme) => theme.id !== id)
-        : [...idea.themes, themes.find((theme) => theme.id === id)!],
-    });
   const [editingTitle, setEditingTitle] = useState(false);
   const [liveBudgetOverride, setLiveBudgetOverride] = useState<number>();
   const [confirmedHighTierRole, setConfirmedHighTierRole] = useState<string>();
@@ -825,11 +801,25 @@ export function IdeaDetailView({
     idea.derivedShortPost && idea.publications.some((publication) => publication.draftVersionId === idea.derivedShortPost!.id),
   );
   const hasPublishedOutput = idea.publications.length > 0;
+  const structuredBriefStarted = Boolean(
+    idea.structuredIdeaBrief
+    && Object.values(idea.structuredIdeaBrief).some((value) => Boolean(value?.trim())),
+  );
+  const structuredBriefMissing = structuredBriefStarted
+    ? [
+      !idea.structuredIdeaBrief?.situation?.trim() ? "Situation" : undefined,
+      !idea.structuredIdeaBrief?.assumption?.trim() ? "Assumption" : undefined,
+      !idea.structuredIdeaBrief?.discovery?.trim() ? "Discovery" : undefined,
+      !idea.structuredIdeaBrief?.principle?.trim() ? "Principle" : undefined,
+    ].filter((value): value is string => Boolean(value))
+    : [];
   const liveRunDisabledReason = hasPublishedOutput
     ? "Editorial Board runs are locked after publication. Create a new revision to develop fresh content."
     : busy
       ? "The current Editorial Board run is still finishing."
-    : !livePreview?.source.boardReady
+      : structuredBriefMissing.length
+        ? `Complete the structured brief before running the Board: ${structuredBriefMissing.join(", ")}.`
+      : !livePreview?.source.boardReady
       ? livePreview?.source.unavailableReason ?? "The Editorial Board source index is unavailable."
     : !livePreview?.available
       ? "The configured provider or model route is unavailable."
@@ -986,6 +976,14 @@ export function IdeaDetailView({
   const primaryOutput = idea.shortPost ?? idea.article;
   const primaryOutputLabel = primaryFormat === "short" ? "Short post" : "Article";
   const primaryOutputVersionLabel = primaryFormat === "short" ? "short-post" : "article";
+  const suggestedPrimaryVisualTemplate = primaryOutput
+    ? suggestedVisualTemplateFor(idea.title, primaryOutput.body)
+    : "flow";
+  const selectedPrimaryVisualTemplate = visualTemplate ?? suggestedPrimaryVisualTemplate;
+  const suggestedDerivedVisualTemplate = idea.derivedShortPost
+    ? suggestedVisualTemplateFor(idea.title, idea.derivedShortPost.body)
+    : "flow";
+  const selectedDerivedVisualTemplate = derivedVisualTemplate ?? suggestedDerivedVisualTemplate;
   const savedReaderContract = idea.grounding?.readerContract;
   // These are author-facing range guides, not output validators. Show the
   // current saved text honestly without implying that a variance failed a run.
@@ -1313,36 +1311,59 @@ export function IdeaDetailView({
                 </fieldset>
               </section>;
             })()}
-            <label>
-              Theme(s)
-              <details className="theme-dropdown">
-                <summary>
-                  {idea.themes.length
-                    ? `${idea.themes.length} theme${idea.themes.length === 1 ? "" : "s"} selected`
-                    : "No theme selected"}
-                </summary>
-                <div>
-                  {themes.map((theme) => (
-                    <label key={theme.id}>
-                      <input
-                        type="checkbox"
-                        checked={idea.themes.some(
-                          (selectedTheme) => theme.id === selectedTheme.id,
-                        )}
-                        onChange={() => toggleTheme(theme.id)}
-                      />
-                      {theme.name}
-                    </label>
-                  ))}
+            {!idea.structuredIdeaBrief && (
+              <section className="development-section">
+                <div className="development-section-heading">
+                  <p className="eyebrow">MAIN IDEA</p>
+                  <h3>Refine the original thought</h3>
+                  <p>This is the saved source for a free-form capture. A new Board run uses the latest saved wording; earlier Board runs keep their own immutable snapshot.</p>
                 </div>
-              </details>
-            </label>
+                <label>
+                  Main idea
+                  <textarea value={idea.rawNotes} onChange={(event) => setSelected({ ...idea, rawNotes: event.target.value })} minLength={2} maxLength={50_000} />
+                </label>
+              </section>
+            )}
+            {(() => {
+              const brief = idea.structuredIdeaBrief ?? {};
+              const setBrief = (changes: NonNullable<Detail["structuredIdeaBrief"]>) =>
+                setSelected({ ...idea, structuredIdeaBrief: { ...brief, ...changes } });
+              return <details className="structured-idea-brief" open>
+                <summary>
+                  <span>Narrative template</span>
+                  <small>Optional structured brief</small>
+                </summary>
+                <p>Use this for any topic when you want a sharper, more grounded first draft. Situation, Assumption, Discovery, and Principle are required before a Board run. Put extra angles, phrases, sources, or leftovers in Add what you know. The short guide is in <Link href="/content-status">Knowledge sources</Link>.</p>
+                <div className="structured-brief-grid">
+                  <label>
+                    Working title
+                    <input value={brief.workingTitle ?? ""} onChange={(event) => setBrief({ workingTitle: event.target.value })} placeholder="A plain label, not a promise" maxLength={300} />
+                  </label>
+                  <label>
+                    Situation <small>Required for this template</small>
+                    <textarea value={brief.situation ?? ""} onChange={(event) => setBrief({ situation: event.target.value })} placeholder="What happened, and where? Use one real situation, not a composite." maxLength={8_000} />
+                  </label>
+                  <label>
+                    Assumption <small>Required for this template</small>
+                    <textarea value={brief.assumption ?? ""} onChange={(event) => setBrief({ assumption: event.target.value })} placeholder="The belief that was in the room, stated as someone would say it out loud." maxLength={4_000} />
+                  </label>
+                  <label>
+                    Discovery <small>Required for this template</small>
+                    <textarea value={brief.discovery ?? ""} onChange={(event) => setBrief({ discovery: event.target.value })} placeholder="What turned out to be true instead? Be specific about what it took, what existed first, or what it cost." maxLength={12_000} />
+                  </label>
+                  <label>
+                    Principle <small>Required for this template</small>
+                    <textarea value={brief.principle ?? ""} onChange={(event) => setBrief({ principle: event.target.value })} placeholder="What would you tell someone facing the same thing? One plain line." maxLength={2_000} />
+                  </label>
+                </div>
+              </details>;
+            })()}
             <label>
               Add what you know
               <textarea
                 value={note}
                 onChange={(event) => setNote(event.target.value)}
-                placeholder="Notes, a source link, research you found, an example, or an early draft."
+                placeholder="Notes, #tags, a source link, research you found, an example, or an early draft."
                 maxLength={20_000}
               />
             </label>
@@ -1541,7 +1562,7 @@ export function IdeaDetailView({
               </button>
             </div>
             {liveRunDisabledReason && (
-              <p className="run-disabled-reason"><strong>Live provider run only:</strong> {liveRunDisabledReason}</p>
+              <p className="run-disabled-reason"><strong>{structuredBriefMissing.length ? "Board preflight:" : "Live provider run only:"}</strong> {liveRunDisabledReason}</p>
             )}
             {(executionStatus || (executionProgress && executionProgress.status !== "waiting")) && (
               <details className="editorial-progress" open={Boolean(executionStatus)}>
@@ -1608,7 +1629,10 @@ export function IdeaDetailView({
         <>
           {persistedRunStages && (
             <details className="editorial-progress saved-run-status" open={reviewIncomplete}>
-              <summary>Saved run status · {reviewIncomplete ? "incomplete" : "complete"}</summary>
+              <summary>
+                Saved run status · {reviewIncomplete ? "incomplete" : "complete"}
+                {savedBoardCalls.length > 0 && ` · est. $${savedBoardRecordedCost.toFixed(4)} across ${savedBoardCalls.length} ${savedBoardCalls.length === 1 ? "attempt" : "attempts"}`}
+              </summary>
               <p>Saved workflow results, not the model’s private reasoning.</p>
               {derivedShortFailureRecovered && (
                 <p>A later derived-short recovery completed successfully. The original Board history remains unchanged; this recovery is recorded separately.</p>
@@ -1629,7 +1653,7 @@ export function IdeaDetailView({
                 <>
                   <p className="grounded-note"><b>Recorded run cost:</b> est. ${savedBoardRecordedCost.toFixed(4)} across {savedBoardCalls.length} recorded {savedBoardCalls.length === 1 ? "attempt" : "attempts"}. This is a local estimate, not a provider invoice.</p>
                   <details className="provenance-calls">
-                    <summary>View cost and usage by attempt</summary>
+                    <summary>Cost and usage · {savedBoardCalls.length} recorded {savedBoardCalls.length === 1 ? "attempt" : "attempts"} · est. ${savedBoardRecordedCost.toFixed(4)}</summary>
                   <p className="grounded-note">Recorded cost is a local estimate, not a provider invoice. It includes failed attempts when usage was recorded; the Board cap is only the maximum allowed spend, not an additional charge.</p>
                   {savedBoardCalls.map((call, index) => (
                     <p key={`${call.role}-${index}`}>
@@ -2280,9 +2304,21 @@ export function IdeaDetailView({
             {!idea.visualCompanion ? (
               <>
                 {!idea.visualBrief && <>
-                  <label className="visual-direction-field">What visual are you thinking of? <small>Optional. The app uses the saved article to propose a clean diagram; choose custom only for a literal scene or illustration concept.</small><textarea value={visualDirection} maxLength={1000} placeholder="For example: show a building with a reliable foundation beneath visible AI activity." onChange={(event) => setVisualDirection(event.target.value)} /></label>
-                  <label className="visual-custom-choice"><input type="checkbox" checked={customIllustration} onChange={(event) => setCustomIllustration(event.target.checked)} /> This is a custom illustration concept, not a diagram</label>
-                  <p>{customIllustration ? "Save one article-grounded creative direction without substituting a diagram. You will review the concept and its explicit image price before generation." : "Prepare a local recommendation from this exact saved output. It will select one faithful diagram grammar or say that none fits."}</p>
+                  <fieldset className="visual-template-picker initial-visual-template-picker" disabled={busy || draftDirty || primaryPublished}>
+                    <legend>Choose how this article should be visualized <small>The suggested option is a zero-cost reading of this exact saved article. No image has been created.</small></legend>
+                    {(["decision_fork", "contrast", "vertical_path", "flow"] as const).map((template) => (
+                      <label key={template} className={template === suggestedPrimaryVisualTemplate ? "suggested" : undefined}>
+                        <input type="radio" name="initial-visual-template" checked={!customIllustration && selectedPrimaryVisualTemplate === template} onChange={() => { setCustomIllustration(false); setVisualTemplate(template); }} />
+                        <span><b>{visualTemplateLabel(template)}{template === suggestedPrimaryVisualTemplate && <em>Suggested for this article</em>}</b><small>{visualTemplateDescriptions[template]}</small></span>
+                      </label>
+                    ))}
+                  </fieldset>
+                  {!customIllustration && <p className="visual-selection-preview"><b>{visualTemplateLabel(selectedPrimaryVisualTemplate)} would show:</b> {visualTemplateDescriptions[selectedPrimaryVisualTemplate]}</p>}
+                  <section className="custom-visual-choice">
+                    <label className="visual-custom-choice"><input type="checkbox" checked={customIllustration} onChange={(event) => { setCustomIllustration(event.target.checked); if (event.target.checked) setVisualTemplate(undefined); }} /> I want a custom illustration instead</label>
+                    <p>A custom illustration creates one article-grounded creative scene, not a diagram template. It is prepared first and shows its configured image cost before generation.</p>
+                    {customIllustration && <label className="visual-direction-field">What should the illustration emphasize? <small>Optional. Ordinary direction is enough; the saved article remains the source of the concept.</small><textarea value={visualDirection} maxLength={1000} placeholder="For example: a calm bridge from a promising pilot to dependable operations." onChange={(event) => setVisualDirection(event.target.value)} /></label>}
+                  </section>
                 </>}
                 {idea.visualBrief && <p>{idea.visualBrief.rationale}</p>}
                 {idea.visualBrief && <p><b>Saved reader contract:</b> {idea.visualBrief.readerContract.audienceProfile} · {idea.visualBrief.readerContract.outputShape.replaceAll("_", " ")}.</p>}
@@ -2315,14 +2351,14 @@ export function IdeaDetailView({
                     </details>
                   </>
                 ) : (
-                  <>{visualCostDisclosure(primaryOutputLabel)}<button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual(
+                  <>{customIllustration ? customIllustrationCostDisclosure() : visualCostDisclosure(primaryOutputLabel)}<button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual(
                     !idea.visualBrief
-                      ? { operation: "recommend", format: primaryFormat, placement: "lead", authorDirection: visualDirection.trim() || undefined, customIllustration }
+                      ? { operation: "recommend", format: primaryFormat, placement: "lead", template: customIllustration ? undefined : selectedPrimaryVisualTemplate, authorDirection: customIllustration ? visualDirection.trim() || undefined : undefined, customIllustration }
                       : idea.visualBrief.status === "recommended"
                         ? { operation: "approve", format: primaryFormat, briefId: idea.visualBrief.id }
                         : { operation: "render", format: primaryFormat, briefId: idea.visualBrief.id },
                   )}>
-                    {!idea.visualBrief ? "Prepare visual brief" : idea.visualBrief.status === "recommended" ? "Approve visual brief" : "Render approved visual"}
+                    {!idea.visualBrief ? customIllustration ? "Prepare custom illustration" : selectedPrimaryVisualTemplate === suggestedPrimaryVisualTemplate ? "Prepare suggested visual brief" : "Prepare selected visual brief" : idea.visualBrief.status === "recommended" ? "Approve visual brief" : "Render approved visual"}
                   </button></>
                 )}
               </>
@@ -2409,7 +2445,23 @@ export function IdeaDetailView({
           <summary><span>Derived short-post visual companion</span><small>Separate optional asset for exact derived short-post version {idea.derivedShortPost.version}</small></summary>
           <div className="visual-companion-content">
             <p>{idea.derivedShortVisualBrief?.rationale ?? "This is a separate visual decision for the current derived short post; it does not reuse the article visual."}</p>
-            {!idea.derivedShortVisualBrief && <><label className="visual-direction-field">What visual are you thinking of? <small>Optional. The app uses this exact derived post to propose a clean diagram; choose custom only for a literal scene or illustration concept.</small><textarea value={derivedVisualDirection} maxLength={1000} placeholder="For example: show the contrast between a pilot and dependable work." onChange={(event) => setDerivedVisualDirection(event.target.value)} /></label><label className="visual-custom-choice"><input type="checkbox" checked={derivedCustomIllustration} onChange={(event) => setDerivedCustomIllustration(event.target.checked)} /> This is a custom illustration concept, not a diagram</label></>}
+            {!idea.derivedShortVisualBrief && <>
+              <fieldset className="visual-template-picker initial-visual-template-picker" disabled={busy || derivedShortDirty || derivedShortPublished}>
+                <legend>Choose how this derived short post should be visualized <small>The suggested option is based on this exact saved output. No image has been created.</small></legend>
+                {(["decision_fork", "contrast", "vertical_path", "flow"] as const).map((template) => (
+                  <label key={template} className={template === suggestedDerivedVisualTemplate ? "suggested" : undefined}>
+                    <input type="radio" name="initial-derived-visual-template" checked={!derivedCustomIllustration && selectedDerivedVisualTemplate === template} onChange={() => { setDerivedCustomIllustration(false); setDerivedVisualTemplate(template); }} />
+                    <span><b>{visualTemplateLabel(template)}{template === suggestedDerivedVisualTemplate && <em>Suggested for this post</em>}</b><small>{visualTemplateDescriptions[template]}</small></span>
+                  </label>
+                ))}
+              </fieldset>
+              {!derivedCustomIllustration && <p className="visual-selection-preview"><b>{visualTemplateLabel(selectedDerivedVisualTemplate)} would show:</b> {visualTemplateDescriptions[selectedDerivedVisualTemplate]}</p>}
+              <section className="custom-visual-choice">
+                <label className="visual-custom-choice"><input type="checkbox" checked={derivedCustomIllustration} onChange={(event) => { setDerivedCustomIllustration(event.target.checked); if (event.target.checked) setDerivedVisualTemplate(undefined); }} /> I want a custom illustration instead</label>
+                <p>A custom illustration creates one article-grounded creative scene, not a diagram template. It is prepared first and shows its configured image cost before generation.</p>
+                {derivedCustomIllustration && <label className="visual-direction-field">What should the illustration emphasize? <small>Optional. Ordinary direction is enough; the saved post remains the source of the concept.</small><textarea value={derivedVisualDirection} maxLength={1000} placeholder="For example: show the contrast between a pilot and dependable work." onChange={(event) => setDerivedVisualDirection(event.target.value)} /></label>}
+              </section>
+            </>}
             {idea.derivedShortVisualBrief?.status === "recommended" && idea.derivedShortVisualBrief.recommendation === "visual" && updateVisualBrief && visualBriefEditor(idea.derivedShortVisualBrief, derivedVisualTemplate)}
             {!idea.derivedShortVisualCompanion ? (
               idea.derivedShortVisualBrief?.recommendation === "no_visual" ? (
@@ -2433,14 +2485,14 @@ export function IdeaDetailView({
                 </>
               ) : (
                 <>
-                  {visualCostDisclosure("derived short post")}
+                  {derivedCustomIllustration ? customIllustrationCostDisclosure() : visualCostDisclosure("derived short post")}
                   <button disabled={busy || derivedShortDirty || derivedShortPublished} onClick={() => void createVisual(
                     !idea.derivedShortVisualBrief
-                      ? { operation: "recommend", format: "derived_short", placement: "lead", authorDirection: derivedVisualDirection.trim() || undefined, customIllustration: derivedCustomIllustration }
+                      ? { operation: "recommend", format: "derived_short", placement: "lead", template: derivedCustomIllustration ? undefined : selectedDerivedVisualTemplate, authorDirection: derivedCustomIllustration ? derivedVisualDirection.trim() || undefined : undefined, customIllustration: derivedCustomIllustration }
                       : idea.derivedShortVisualBrief.status === "recommended"
                         ? { operation: "approve", format: "derived_short", briefId: idea.derivedShortVisualBrief.id }
                         : { operation: "render", format: "derived_short", briefId: idea.derivedShortVisualBrief.id },
-                  )}>{!idea.derivedShortVisualBrief ? "Prepare derived short visual brief" : idea.derivedShortVisualBrief.status === "recommended" ? "Approve derived short visual brief" : "Render approved derived short visual"}</button>
+                  )}>{!idea.derivedShortVisualBrief ? derivedCustomIllustration ? "Prepare custom illustration" : selectedDerivedVisualTemplate === suggestedDerivedVisualTemplate ? "Prepare suggested derived short visual brief" : "Prepare selected derived short visual brief" : idea.derivedShortVisualBrief.status === "recommended" ? "Approve derived short visual brief" : "Render approved derived short visual"}</button>
                 </>
               )
             ) : (

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { IdeaDetailView, type Detail, type Theme } from "../../queue-client";
+import { IdeaDetailView, type Detail } from "../../queue-client";
 import { AppNav } from "../../app-nav";
 import type { EditorialRunProgress } from "@/editorial/run-progress";
 import { boardRoleStageStatus, derivedShortCreationStageStatus, primaryDraftCreationStageStatus, reconcileDerivedShortEditorState } from "@/editorial/board-status";
@@ -25,7 +25,6 @@ export function IdeaWorkspaceClient({
 }) {
   const router = useRouter();
   const [idea, setIdea] = useState<Detail>();
-  const [themes, setThemes] = useState<Theme[]>([]);
   const [livePreview, setLivePreview] = useState<{
     provider: string;
     model: string;
@@ -64,11 +63,12 @@ export function IdeaWorkspaceClient({
   const savedDevelopmentSnapshot = useRef<string | undefined>(undefined);
   function developmentSnapshot(value: Detail) {
     return JSON.stringify({
+      rawNotes: value.rawNotes,
       audienceProfileKey: value.audienceProfileKey ?? "professional",
       audienceNotes: value.audienceNotes ?? "",
       outputShape: value.outputShape,
       outputPreferences: value.outputPreferences ?? null,
-      themeIds: value.themes.map((theme) => theme.id).sort(),
+      structuredIdeaBrief: value.structuredIdeaBrief ?? null,
     });
   }
   function hasUnsavedDevelopmentChanges(value: Detail) {
@@ -84,21 +84,18 @@ export function IdeaWorkspaceClient({
     setDerivedShortDirty(dirty);
   }
   async function load() {
-    const [ideaResponse, listResponse, previewResponse] = await Promise.all([
+    const [ideaResponse, previewResponse] = await Promise.all([
       fetch(`/api/ideas/${ideaId}`),
-      fetch("/api/ideas"),
       fetch(`/api/ideas/${ideaId}?execution=live_preview`),
     ]);
     const ideaData = (await ideaResponse.json()) as {
       idea?: Detail;
       error?: string;
     };
-    const listData = (await listResponse.json()) as { themes: Theme[] };
     if (!ideaResponse.ok || !ideaData.idea)
       throw new Error(ideaData.error ?? "Idea not found.");
     setIdea(ideaData.idea);
     savedDevelopmentSnapshot.current = developmentSnapshot(ideaData.idea);
-    setThemes(listData.themes);
     if (previewResponse.ok) {
       const previewData = (await previewResponse.json()) as { preview?: typeof livePreview };
       if (previewData.preview) setLivePreview(previewData.preview);
@@ -483,7 +480,6 @@ export function IdeaWorkspaceClient({
         <section className="detail-panel">
           <IdeaDetailView
             idea={idea}
-            themes={themes}
             note={note}
             setNote={setNote}
             setSelected={setIdea}
@@ -514,12 +510,13 @@ export function IdeaWorkspaceClient({
               return run(async () => {
                 await request({
                   title: idea.title,
+                  rawNotes: idea.rawNotes,
                   outputShape: idea.outputShape,
                   audienceProfileKey: idea.audienceProfileKey,
                   audienceNotes: idea.audienceNotes ?? null,
                   outputPreferences: idea.outputPreferences,
-                  themeIds: idea.themes.map((theme) => theme.id),
                   note: note || undefined,
+                  structuredIdeaBrief: idea.structuredIdeaBrief ?? {},
                 });
                 setNote("");
                 setMessage("Details saved locally.");
@@ -547,9 +544,23 @@ export function IdeaWorkspaceClient({
             }
             createGroundedDraft={() =>
               run(async () => {
+                const brief = idea.structuredIdeaBrief;
+                const templateStarted = Boolean(brief && Object.values(brief).some((value) => Boolean(value?.trim())));
+                const missing = templateStarted
+                  ? [
+                    !brief?.situation?.trim() ? "Situation" : undefined,
+                    !brief?.assumption?.trim() ? "Assumption" : undefined,
+                    !brief?.discovery?.trim() ? "Discovery" : undefined,
+                    !brief?.principle?.trim() ? "Principle" : undefined,
+                  ].filter((value): value is string => Boolean(value))
+                  : [];
+                if (missing.length) {
+                  setMessage(`Before the Editorial Board runs, answer these narrative-template questions: ${missing.join(", ")}.`);
+                  return;
+                }
                 if (hasUnsavedDevelopmentChanges(idea)) {
                   const saveBeforeBoard = window.confirm(
-                    "You have unsaved Develop changes. The Editorial Board can use only saved audience, output shape, ranges, themes, and notes.\n\nSelect OK to save these changes and continue to the Editorial Board. Select Cancel to stay here.",
+                    "You have unsaved Develop changes. The Editorial Board can use only saved audience, output shape, ranges, and notes.\n\nSelect OK to save these changes and continue to the Editorial Board. Select Cancel to stay here.",
                   );
                   if (!saveBeforeBoard) {
                     setMessage("Your Develop changes have not been saved. Save them before continuing to the Editorial Board.");
@@ -557,12 +568,13 @@ export function IdeaWorkspaceClient({
                   }
                   await request({
                     title: idea.title,
+                    rawNotes: idea.rawNotes,
                     outputShape: idea.outputShape,
                     audienceProfileKey: idea.audienceProfileKey,
                     audienceNotes: idea.audienceNotes ?? null,
                     outputPreferences: idea.outputPreferences,
-                    themeIds: idea.themes.map((theme) => theme.id),
                     note: note || undefined,
+                    structuredIdeaBrief: idea.structuredIdeaBrief ?? {},
                   });
                   setNote("");
                 }

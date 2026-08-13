@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { renderVisualSvg, visualCompanionFor, visualSvgDataUrl } from "@/visual/companion";
+import { renderVisualSvg, suggestedVisualTemplateFor, visualCompanionFor, visualSvgDataUrl } from "@/visual/companion";
 
 describe("visual companion selection", () => {
+  it("suggests one existing deterministic grammar without creating visual assets", () => {
+    expect(suggestedVisualTemplateFor("AI activity", "Licenses, pilots, and experiments can coexist with low operational maturity.")).toBe("contrast");
+    expect(suggestedVisualTemplateFor("From pilot", "A promising pilot becomes a dependable workflow through ownership and operating discipline.")).toBe("flow");
+  });
+
   it("uses a distinct maturity framework for activity-versus-maturity content", () => {
     const visual = visualCompanionFor("Activity is not maturity", "Licenses, pilots, and experiments can coexist with low operational maturity.");
     expect(visual.type).toBe("contrast");

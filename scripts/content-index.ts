@@ -1,5 +1,10 @@
+import nextEnv from "@next/env";
 import { refreshContent } from "../src/content/loader";
 
+// Standalone tsx scripts do not inherit Next.js's automatic .env.local
+// loading. Keep source indexing aligned with the running application without
+// printing any configured values or source content.
+nextEnv.loadEnvConfig(process.cwd());
 const report = refreshContent();
 console.log(`BOK: ${report.bok.status} (${report.bok.path})`);
 console.log(`  version: ${report.bok.version ?? "—"}; sections: ${report.bok.indexedSectionCount ?? 0}`);

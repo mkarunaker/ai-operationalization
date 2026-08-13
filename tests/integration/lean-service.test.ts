@@ -137,6 +137,8 @@ describe("local visual asset storage", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]?.prompt).toMatch(/Do not include any text, letters/i);
     expect(requests[0]?.prompt).toMatch(/untrusted content/i);
+    expect(requests[0]?.prompt).toMatch(/inclusive group rather than defaulting to men/i);
+    expect(requests[0]?.prompt).toMatch(/variation in gender presentation, age, and skin tone/i);
     expect(result.visualCompanion).toMatchObject({ type: "custom_image", visualBriefId: brief.id });
     const asset = result.visualCompanion!;
     expect(asset.filePath).toMatch(/\.png$/);
@@ -847,6 +849,39 @@ function proofreaderCalls(draftVersionId: string) {
 }
 
 describe("reader-output service contract", () => {
+  it("creates a narrative capture without a duplicate free-form entry and keeps its Principle current", () => {
+    const brief = {
+      workingTitle: "Start with the outcome",
+      situation: "A leadership team began a workflow by comparing providers before naming the outcome.",
+      assumption: "The most capable model will make the choice for us.",
+      discovery: "The team rebuilt the workflow after learning that the selected tool did not fit the actual work or the review path.",
+      principle: "Select the tool after defining the required outcome.",
+    };
+    const created = createIdea({ structuredIdeaBrief: brief });
+    expect(created).toMatchObject({ title: "Start with the outcome", rawNotes: brief.principle, structuredIdeaBrief: brief });
+    const revised = updateIdea(created.id, { structuredIdeaBrief: { ...brief, principle: "The required outcome should decide the tool, not the other way around." } });
+    expect(revised.rawNotes).toBe("The required outcome should decide the tool, not the other way around.");
+    expect(revised.structuredIdeaBrief?.principle).toBe(revised.rawNotes);
+  });
+
+  it("stores a structured author brief separately from ordinary notes and permits an intentional clear", () => {
+    const created = createIdea({ rawNotes: "A structured brief should be durable editorial source material." });
+    const brief = {
+      workingTitle: "Governance should enable scale",
+      situation: "A team involved review only at the end of a workflow.",
+      assumption: "Review is a tax on shipping.",
+      discovery: "The team repeated work because access, controls, and ownership had not been defined before implementation.",
+      principle: "Define the operating boundaries before implementation.",
+    };
+    const saved = updateIdea(created.id, { note: "An ordinary saved note.", structuredIdeaBrief: brief });
+    expect(saved.structuredIdeaBrief).toEqual(brief);
+    expect(saved.notes).toEqual([expect.objectContaining({ body: "An ordinary saved note." })]);
+
+    const cleared = updateIdea(created.id, { structuredIdeaBrief: {} });
+    expect(cleared.structuredIdeaBrief).toBeUndefined();
+    expect(cleared.notes).toEqual([expect.objectContaining({ body: "An ordinary saved note." })]);
+  });
+
   it("returns a privacy-safe per-idea run ledger for queue and workspace summaries", () => {
     const created = createIdea({ rawNotes: "A run ledger should summarize local usage without returning prompts or source text." });
     saveEditedDraft(created.id, "A clear owner and observable outcome make an AI initiative easier to govern.", "short");

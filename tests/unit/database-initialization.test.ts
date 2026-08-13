@@ -25,12 +25,10 @@ describe("runtime database initialization", () => {
     expect(() => openInitializedDatabase(databasePath)).toThrow(/not been initialized/i);
     expect(fs.existsSync(databasePath)).toBe(false);
 
-    const migrationDirectory = path.join(root, "migrations-through-012");
+    const migrationDirectory = path.join(root, "current-baseline");
     fs.mkdirSync(migrationDirectory);
-    for (const source of fs.readdirSync(path.join(process.cwd(), "migrations"))) {
-      if (source < "013_")
-        fs.copyFileSync(path.join(process.cwd(), "migrations", source), path.join(migrationDirectory, source));
-    }
+    for (const source of fs.readdirSync(path.join(process.cwd(), "migrations")))
+      fs.copyFileSync(path.join(process.cwd(), "migrations", source), path.join(migrationDirectory, source));
     const setup = openDatabase(databasePath);
     try {
       migrateDatabase(setup, migrationDirectory);
@@ -41,7 +39,7 @@ describe("runtime database initialization", () => {
     const runtime = openInitializedDatabase(databasePath);
     try {
       const applied = runtime.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number };
-      expect(applied.count).toBe(12);
+      expect(applied.count).toBe(1);
     } finally {
       runtime.close();
     }

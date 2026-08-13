@@ -91,6 +91,7 @@ export function safeRouteError(error: unknown) {
     /^This exact output already has a publication record/,
     /^Run and acknowledge the final human-voice check/,
     /^Output shape must match the (complete )?selected reader-output preferences/,
+    /^Before the Editorial Board runs, answer these narrative-template questions:/,
     /^The selected output does not match this idea's reader-output shape/,
     /^The selected draft version is no longer current/,
     /^Create a current derived short post from this article before recording/,

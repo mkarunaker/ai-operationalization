@@ -14,45 +14,51 @@ export type ModelRoute = {
   pricingAssumption: string;
 };
 
-export const DEFAULT_RUN_BUDGET_USD = 0.05;
-export const MAXIMUM_RUN_BUDGET_USD = 0.25;
+export const DEFAULT_RUN_BUDGET_USD = 0.75;
+export const MAXIMUM_RUN_BUDGET_USD = 0.75;
 // The initial draft is the only long structured response in the standard
 // Board run. Keep a generous default for provider-managed reasoning while
 // retaining a hard server-side ceiling that cost reservation can enforce.
-export const DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS = 4_000;
+export const DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS = 2_400;
 export const MINIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS = 2_000;
 export const MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS = 5_000;
 
 const openaiPricing = (modelClass: string, input: string, cached: string, output: string) =>
   `OpenAI ${modelClass} standard API pricing assumption: USD ${input} / MTok input, USD ${cached} / MTok cached input, and USD ${output} / MTok output. Reasoning tokens are included in reported output tokens, not charged a second time. Verify against OpenAI billing.`;
 
+const documentedOpenAiModelForTier: Record<ModelTier, string> = {
+  low: "gpt-5.6-luna",
+  medium: "gpt-5.6-terra",
+  high: "gpt-5.6-sol",
+};
+
 const openaiRoutes: Record<ModelTier, ModelRoute> = {
   low: {
     provider: "openai",
     model: process.env.OPENAI_LOW_MODEL ?? "",
     tier: "low",
-    inputUsdPerMillion: Number(process.env.OPENAI_LOW_INPUT_USD_PER_MILLION ?? "0.05"),
-    cachedInputUsdPerMillion: Number(process.env.OPENAI_LOW_CACHED_INPUT_USD_PER_MILLION ?? "0.005"),
-    outputUsdPerMillion: Number(process.env.OPENAI_LOW_OUTPUT_USD_PER_MILLION ?? "0.4"),
-    pricingAssumption: openaiPricing("GPT-5 nano", "0.05", "0.005", "0.40"),
+    inputUsdPerMillion: Number(process.env.OPENAI_LOW_INPUT_USD_PER_MILLION ?? "0.2"),
+    cachedInputUsdPerMillion: Number(process.env.OPENAI_LOW_CACHED_INPUT_USD_PER_MILLION ?? "0.02"),
+    outputUsdPerMillion: Number(process.env.OPENAI_LOW_OUTPUT_USD_PER_MILLION ?? "1.2"),
+    pricingAssumption: openaiPricing("GPT-5.6 Luna", "0.20", "0.02", "1.20"),
   },
   medium: {
     provider: "openai",
     model: process.env.OPENAI_MEDIUM_MODEL ?? "",
     tier: "medium",
-    inputUsdPerMillion: Number(process.env.OPENAI_MEDIUM_INPUT_USD_PER_MILLION ?? "0.2"),
-    cachedInputUsdPerMillion: Number(process.env.OPENAI_MEDIUM_CACHED_INPUT_USD_PER_MILLION ?? "0.02"),
-    outputUsdPerMillion: Number(process.env.OPENAI_MEDIUM_OUTPUT_USD_PER_MILLION ?? "1.2"),
-    pricingAssumption: openaiPricing("GPT-5.6 Luna", "0.20", "0.02", "1.20"),
+    inputUsdPerMillion: Number(process.env.OPENAI_MEDIUM_INPUT_USD_PER_MILLION ?? "2"),
+    cachedInputUsdPerMillion: Number(process.env.OPENAI_MEDIUM_CACHED_INPUT_USD_PER_MILLION ?? "0.2"),
+    outputUsdPerMillion: Number(process.env.OPENAI_MEDIUM_OUTPUT_USD_PER_MILLION ?? "12"),
+    pricingAssumption: openaiPricing("GPT-5.6 Terra", "2.00", "0.20", "12.00"),
   },
   high: {
     provider: "openai",
     model: process.env.OPENAI_HIGH_MODEL ?? "",
     tier: "high",
-    inputUsdPerMillion: Number(process.env.OPENAI_HIGH_INPUT_USD_PER_MILLION ?? "0.75"),
-    cachedInputUsdPerMillion: Number(process.env.OPENAI_HIGH_CACHED_INPUT_USD_PER_MILLION ?? "0.075"),
-    outputUsdPerMillion: Number(process.env.OPENAI_HIGH_OUTPUT_USD_PER_MILLION ?? "4.5"),
-    pricingAssumption: openaiPricing("GPT-5.4 mini", "0.75", "0.075", "4.50"),
+    inputUsdPerMillion: Number(process.env.OPENAI_HIGH_INPUT_USD_PER_MILLION ?? "5"),
+    cachedInputUsdPerMillion: Number(process.env.OPENAI_HIGH_CACHED_INPUT_USD_PER_MILLION ?? "0.5"),
+    outputUsdPerMillion: Number(process.env.OPENAI_HIGH_OUTPUT_USD_PER_MILLION ?? "30"),
+    pricingAssumption: openaiPricing("GPT-5.6 Sol", "5.00", "0.50", "30.00"),
   },
 };
 
@@ -126,7 +132,19 @@ export function routeForProviderTier(provider: LiveProviderName, tier: ModelTier
   // the selected model at the server boundary so a restarted local process
   // and deterministic tests see the same route that dispatch and recovery
   // comparison enforce. Pricing remains the explicit route assumption.
-  return { ...route, model: process.env[modelEnvironmentVariable(route)] ?? "" };
+  const model = process.env[modelEnvironmentVariable(route)] ?? "";
+  if (provider === "openai" && process.env.NODE_ENV !== "test" && model) {
+    const expectedModel = documentedOpenAiModelForTier[tier];
+    const pricePrefix = `OPENAI_${tier.toUpperCase()}`;
+    const priceKeys = ["INPUT_USD_PER_MILLION", "CACHED_INPUT_USD_PER_MILLION", "OUTPUT_USD_PER_MILLION"];
+    const hasEveryExplicitRate = priceKeys.every((suffix) => process.env[`${pricePrefix}_${suffix}`] !== undefined);
+    const hasAnyExplicitRate = priceKeys.some((suffix) => process.env[`${pricePrefix}_${suffix}`] !== undefined);
+    if (hasAnyExplicitRate && !hasEveryExplicitRate)
+      throw new Error(`OpenAI ${tier}-tier pricing must set all three USD-per-million values or none of them.`);
+    if (model !== expectedModel && !model.startsWith(`${expectedModel}-`) && !hasEveryExplicitRate)
+      throw new Error(`OpenAI ${tier}-tier model pricing is not configured. Use ${expectedModel}, its dated snapshot, or set all three explicit ${pricePrefix}_*_USD_PER_MILLION values.`);
+  }
+  return { ...route, model };
 }
 
 export function modelEnvironmentVariable(route: ModelRoute) {
@@ -150,12 +168,12 @@ export function estimateRouteCost(route: ModelRoute, usage: TokenUsage): CostEst
 
 export function defaultRunBudgetUsd(): number {
   const value = Number(process.env.EDITORIAL_RUN_BUDGET_USD ?? String(DEFAULT_RUN_BUDGET_USD));
-  return Number.isFinite(value) && value > 0 ? value : DEFAULT_RUN_BUDGET_USD;
+  return Number.isFinite(value) && value > 0 ? Math.min(value, maximumRunBudgetUsd()) : DEFAULT_RUN_BUDGET_USD;
 }
 
 export function maximumRunBudgetUsd(): number {
   const value = Number(process.env.EDITORIAL_MAX_RUN_BUDGET_USD ?? String(MAXIMUM_RUN_BUDGET_USD));
-  return Number.isFinite(value) && value > 0 ? value : MAXIMUM_RUN_BUDGET_USD;
+  return Number.isFinite(value) && value > 0 ? Math.min(value, MAXIMUM_RUN_BUDGET_USD) : MAXIMUM_RUN_BUDGET_USD;
 }
 
 /**

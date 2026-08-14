@@ -15,7 +15,7 @@ import { openInitializedDatabase, openReadOnlyDatabase } from "@/persistence/dat
 import { checkHumanVoice } from "@/voice/final-check";
 import { assertPlainPublicationProse } from "@/editorial/plain-text";
 import { renderVisualSvg, type VisualColorScheme, type VisualCompanion, type VisualTemplate, visualCompanionFor } from "@/visual/companion";
-import { customIllustrationPrompt, customImagePreview, OpenAICustomImageProvider, requireCustomImageRoute, type CustomImageProvider } from "@/visual/custom-image";
+import { customIllustrationPrompt, customImagePreview, OpenAICustomImageProvider, requireCustomImageRoute, type CustomImageProvider, type GeneratedCustomImage } from "@/visual/custom-image";
 import { estimateRouteCost, maximumRunBudgetUsd, routeFor } from "@/ai/model-routing";
 
 const statuses = [
@@ -74,9 +74,12 @@ const createInput = z.object({
   audienceNotes: z.string().trim().max(1_000).optional(),
 }).strict().superRefine((value, context) => {
   const brief = value.structuredIdeaBrief;
+  const structuredPrinciple = brief?.principle?.trim();
   const templateStarted = Boolean(brief && Object.values(brief).some((item) => item?.trim()));
   if (!value.rawNotes && !brief?.principle?.trim())
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["rawNotes"], message: "Write a free-form idea or complete the narrative template's Principle." });
+  if (structuredPrinciple && value.rawNotes !== undefined && value.rawNotes !== structuredPrinciple)
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["rawNotes"], message: "A structured Principle conflicts with the supplied original capture. Save the Principle as the authoritative capture instead." });
   if (templateStarted) {
     const required = [["situation", "Situation"], ["assumption", "Assumption"], ["discovery", "Discovery"], ["principle", "Principle"]] as const;
     for (const [field, label] of required)
@@ -395,6 +398,12 @@ export type EditorialBrief = {
   unclear: string;
   counterargument: string;
   evidenceNeeded: string;
+  evidenceBackbone?: {
+    sourceHeading: string;
+    operatingDistinction: string;
+    draftingUse: string;
+    uncertaintyBoundary: string;
+  };
   recommendedChanges: string[];
   nextStep: string;
   reviews: Array<{
@@ -788,6 +797,9 @@ export function createApplicationResearchBrief(ideaId: string, input: unknown) {
 }
 export function updateIdea(ideaId: string, input: unknown) {
   const value = updateInput.parse(input);
+  const structuredPrinciple = value.structuredIdeaBrief?.principle?.trim();
+  if (structuredPrinciple && value.rawNotes !== undefined && value.rawNotes !== structuredPrinciple)
+    throw new Error("A structured Principle conflicts with the supplied original capture. Save the Principle as the authoritative capture instead.");
   const database = db();
   try {
     ensureLocalProject(database);
@@ -831,7 +843,7 @@ export function updateIdea(ideaId: string, input: unknown) {
         )
         .run(
           value.title ?? null,
-          value.rawNotes ?? (value.structuredIdeaBrief?.principle?.trim() || null),
+          structuredPrinciple ?? value.rawNotes ?? null,
           value.status ?? null,
           value.priority ?? null,
           resultingShape,
@@ -1740,6 +1752,12 @@ function readBrief(
         unclear?: string;
         counterargument?: string;
         evidence_needed?: string;
+        evidence_backbone?: {
+          source_heading?: string;
+          operating_distinction?: string;
+          drafting_use?: string;
+          uncertainty_boundary?: string;
+        };
         recommended_changes?: string[];
         next_step?: string;
       })
@@ -1787,6 +1805,17 @@ function readBrief(
     unclear: grounded?.unclear ?? reviews[1]?.summary ?? "Clarify the key claim.",
     counterargument: grounded?.counterargument ?? "What evidence would change this conclusion?",
     evidenceNeeded: grounded?.evidence_needed ?? "Add one concrete example, source, or explicitly labelled uncertainty.",
+    evidenceBackbone: grounded?.evidence_backbone?.source_heading
+      && grounded.evidence_backbone.operating_distinction
+      && grounded.evidence_backbone.drafting_use
+      && grounded.evidence_backbone.uncertainty_boundary
+      ? {
+          sourceHeading: grounded.evidence_backbone.source_heading,
+          operatingDistinction: grounded.evidence_backbone.operating_distinction,
+          draftingUse: grounded.evidence_backbone.drafting_use,
+          uncertaintyBoundary: grounded.evidence_backbone.uncertainty_boundary,
+        }
+      : undefined,
     recommendedChanges:
       grounded?.recommended_changes ??
       data?.top_recommendations ??
@@ -3361,6 +3390,25 @@ export function updateVisualBrief(ideaId: string, input: unknown) {
   } finally { database.close(); }
 }
 
+/** Revises only an unapproved custom concept; no provider dispatch occurs here. */
+export function updateRecommendedCustomVisualConcept(ideaId: string, briefId: string, authorDirection: string) {
+  const direction = authorDirection.trim();
+  if (direction.length > 2_000) throw new Error("Custom illustration direction is too long.");
+  const database = db();
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const brief = database.prepare("SELECT draft_version_id, status, recommendation, custom_illustration FROM visual_briefs WHERE id = ? AND idea_id = ?").get(briefId, ideaId) as { draft_version_id: string; status: string; recommendation: string; custom_illustration: number } | undefined;
+      if (!brief || brief.status !== "recommended" || brief.recommendation !== "no_visual" || !brief.custom_illustration)
+        throw new Error("Only a recommended custom concept can be revised before approval.");
+      assertDraftNotPublished(database, brief.draft_version_id);
+      database.prepare("UPDATE visual_briefs SET author_direction = ?, revision_number = revision_number + 1, updated_at = ? WHERE id = ?").run(direction, now(), briefId);
+      database.exec("COMMIT");
+    } catch (error) { database.exec("ROLLBACK"); throw error; }
+    return getIdea(ideaId)!;
+  } finally { database.close(); }
+}
+
 /** Renders an explicitly approved local SVG framework graphic for its exact saved output. */
 export function createVisualCompanion(ideaId: string, briefId?: string, format?: DraftFormat) {
   const idea = getIdea(ideaId);
@@ -3474,6 +3522,7 @@ export async function createCustomVisualIllustration(
   let brief: VisualBrief | undefined;
   let contentId: string | undefined;
   let prompt: ReturnType<typeof customIllustrationPrompt> | undefined;
+  let generated: GeneratedCustomImage | undefined;
   try {
     database.exec("BEGIN IMMEDIATE");
     try {
@@ -3488,13 +3537,24 @@ export async function createCustomVisualIllustration(
         database.exec("COMMIT");
         return getIdea(ideaId)!;
       }
+      const activeAttempt = database.prepare(
+        "SELECT id FROM custom_visual_attempts WHERE visual_brief_id = ? AND status = 'dispatching' LIMIT 1",
+      ).get(brief.id) as { id: string } | undefined;
+      if (activeAttempt)
+        throw new Error("A custom illustration generation is already active; its provider outcome is unconfirmed.");
       const content = database.prepare("SELECT id FROM content_items WHERE idea_id = ?").get(ideaId) as { id: string } | undefined;
       if (!content) throw new Error("Content record not found.");
       contentId = content.id;
       prompt = customIllustrationPrompt({ title: idea.title, savedOutput: brief.sourceDraftText, authorDirection: brief.authorDirection });
-      database.prepare(
-        "INSERT INTO custom_visual_attempts (id, visual_brief_id, provider, model, pricing_assumption, estimated_cost, reserved_cost, status, injection_signals_json) VALUES (?, ?, ?, ?, ?, ?, ?, 'dispatching', ?)",
-      ).run(attemptId, brief.id, route.provider, route.model, route.pricingAssumption, route.estimatedCost, route.estimatedCost, JSON.stringify(prompt.injectionSignals));
+      try {
+        database.prepare(
+          "INSERT INTO custom_visual_attempts (id, visual_brief_id, provider, model, pricing_assumption, estimated_cost, reserved_cost, status, injection_signals_json) VALUES (?, ?, ?, ?, ?, ?, ?, 'dispatching', ?)",
+        ).run(attemptId, brief.id, route.provider, route.model, route.pricingAssumption, route.estimatedCost, route.estimatedCost, JSON.stringify(prompt.injectionSignals));
+      } catch (error) {
+        if (/UNIQUE constraint failed: custom_visual_attempts\.visual_brief_id/i.test(error instanceof Error ? error.message : ""))
+          throw new Error("A custom illustration generation is already active; its provider outcome is unconfirmed.");
+        throw error;
+      }
       database.exec("COMMIT");
     } catch (error) {
       database.exec("ROLLBACK");
@@ -3505,7 +3565,7 @@ export async function createCustomVisualIllustration(
   }
 
   try {
-    const generated = await customImageProvider.generate({ route, prompt: prompt!.prompt });
+    generated = await customImageProvider.generate({ route, prompt: prompt!.prompt });
     if (generated.provider !== route.provider || generated.model !== route.model)
       throw new Error("The custom-image provider returned a route different from the configured route.");
     const relativePath = customVisualRelativePath(idea.title, idea.id, output.version, brief!.revisionNumber, brief!.id);
@@ -3540,11 +3600,17 @@ export async function createCustomVisualIllustration(
     } finally { writeDatabase.close(); }
     return getIdea(ideaId)!;
   } catch (error) {
+    const verifiedProviderResponse = generated?.provider === route.provider && generated.model === route.model;
     const failureDatabase = db();
     try {
       failureDatabase.prepare(
-        "UPDATE custom_visual_attempts SET status = 'failed', actual_cost = reserved_cost, failure_category = ?, completed_at = ? WHERE id = ? AND status = 'dispatching'",
-      ).run(customImageFailureCategory(error), now(), attemptId);
+        "UPDATE custom_visual_attempts SET status = 'failed', actual_cost = reserved_cost, provider_request_id = ?, latency_ms = ?, failure_category = ?, completed_at = ? WHERE id = ? AND status = 'dispatching'",
+      ).run(
+        verifiedProviderResponse ? generated!.providerRequestId ?? null : null,
+        verifiedProviderResponse ? generated!.latencyMs : null,
+        verifiedProviderResponse ? "provider_succeeded_local_persistence_failed" : customImageFailureCategory(error),
+        now(), attemptId,
+      );
     } finally { failureDatabase.close(); }
     throw new Error("The custom illustration could not be generated. Its saved concept and the failed attempt remain available; review the configured image route or create a new version.");
   }

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -20,6 +21,7 @@ import {
   runFinalDraftReview,
   recommendVisualBrief,
   updateVisualBrief,
+  updateRecommendedCustomVisualConcept,
   runLiveProofreadForExactReviewForTest,
   saveEditedDraft,
   saveDerivedShortPost,
@@ -30,6 +32,7 @@ import {
 import { openDatabase } from "@/persistence/database";
 import { migrateDatabase } from "@/persistence/migrations";
 import { GET as ideaDetailGet, POST as ideaDetailPost } from "../../app/api/ideas/[ideaId]/route";
+import { GET as customVisualImageGet } from "../../app/api/visuals/[visualId]/route";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "aeb-reader-output-"));
 const previousDatabasePath = process.env.DATABASE_PATH;
@@ -120,6 +123,18 @@ function liveRequiredShortOutput(note: string) {
 }
 
 describe("local visual asset storage", () => {
+  it("keeps the database-authorized custom-image route eligible for tracking", () => {
+    const routePath = "app/api/visuals/[visualId]/route.ts";
+
+    expect(() => execFileSync("git", ["check-ignore", "--quiet", routePath], { cwd: process.cwd(), stdio: "ignore" })).toThrow();
+    expect(execFileSync("git", ["ls-files", "--error-unmatch", routePath], { cwd: process.cwd(), encoding: "utf8" })).toBe(`${routePath}\n`);
+    const routes = execFileSync("find", ["app", "-type", "f", "-name", "route.ts"], { cwd: process.cwd(), encoding: "utf8" })
+      .trim().split("\n").filter(Boolean).sort();
+    const trackedRoutes = execFileSync("git", ["ls-files", "--", "app"], { cwd: process.cwd(), encoding: "utf8" })
+      .trim().split("\n").filter((file) => file.endsWith("/route.ts")).sort();
+    expect(trackedRoutes).toEqual(routes);
+  });
+
   it("generates one approved custom illustration without selecting a diagram template", async () => {
     const created = createIdea({ rawNotes: "A custom illustration should clarify one saved article without becoming an SVG diagram." });
     saveEditedDraft(created.id, "A successful AI pilot can still fail when ownership and operating work do not make the learning dependable.", "short");
@@ -143,6 +158,14 @@ describe("local visual asset storage", () => {
     const asset = result.visualCompanion!;
     expect(asset.filePath).toMatch(/\.png$/);
     expect(fs.existsSync(path.join(visualsPath, asset.filePath))).toBe(true);
+    const response = await customVisualImageGet(
+      new Request(`http://127.0.0.1:3100/api/visuals/${asset.id}`),
+      { params: Promise.resolve({ visualId: asset.id }) },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("content-disposition")).toMatch(/^inline; filename="[^\"]+\.png"$/);
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(Buffer.from("synthetic-custom-png"));
     const database = openDatabase(process.env.DATABASE_PATH!);
     try {
       expect(database.prepare("SELECT status, estimated_cost, reserved_cost, actual_cost, provider, model FROM custom_visual_attempts WHERE visual_brief_id = ?").get(brief.id)).toMatchObject({
@@ -161,6 +184,25 @@ describe("local visual asset storage", () => {
     expect(reloaded.visualCandidateBrief?.id).toBe(brief.id);
     expect(reloaded.visualRevisionHistory).toEqual(expect.arrayContaining([expect.objectContaining({ id: brief.id, customIllustration: true })]));
     expect(() => approveVisualBrief(created.id, brief.id)).not.toThrow();
+  });
+
+  it("revises a recommended custom concept before approval without dispatching", () => {
+    const created = createIdea({ rawNotes: "A custom visual direction needs author correction before approval." });
+    saveEditedDraft(created.id, "Accountable ownership and an observable outcome turn a pilot into dependable work.", "short");
+    const brief = recommendVisualBrief(created.id, undefined, "lead", "short", { authorDirection: "Show a bridge.", customIllustration: true }).visualBrief!;
+    const revised = updateRecommendedCustomVisualConcept(created.id, brief.id, "Show a decision moving from a pilot toward accountable operating work.");
+    expect(revised.visualBrief).toMatchObject({ id: brief.id, status: "recommended", authorDirection: "Show a decision moving from a pilot toward accountable operating work." });
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try { expect(database.prepare("SELECT COUNT(*) AS count FROM custom_visual_attempts WHERE visual_brief_id = ?").get(brief.id)).toEqual({ count: 0 }); }
+    finally { database.close(); }
+    approveVisualBrief(created.id, brief.id);
+    const requests: string[] = [];
+    return createCustomVisualIllustration(created.id, brief.id, "short", {
+      async generate(input) {
+        requests.push(input.prompt);
+        return { bytes: Buffer.from("synthetic-custom-png"), provider: "openai", model: "synthetic-custom-image", latencyMs: 1 };
+      },
+    }).then(() => expect(requests).toEqual([expect.stringContaining("Show a decision moving from a pilot toward accountable operating work.")]));
   });
 
   it("does not dispatch a custom image when the explicit route is incomplete", async () => {
@@ -202,6 +244,60 @@ describe("local visual asset storage", () => {
         status: "failed", actual_cost: 0.031, failure_category: "provider_failure",
       });
     } finally { database.close(); }
+  });
+
+  it("retains verified custom-image provider telemetry when local persistence fails", async () => {
+    const created = createIdea({ rawNotes: "A successful image response needs retained telemetry if local persistence fails." });
+    saveEditedDraft(created.id, "Accountable ownership and observable outcomes turn a pilot into dependable work.", "short");
+    const brief = recommendVisualBrief(created.id, undefined, "lead", "short", { authorDirection: "Show a careful bridge.", customIllustration: true }).visualBrief!;
+    approveVisualBrief(created.id, brief.id);
+    const writeFailure = vi.spyOn(fs, "writeFileSync").mockImplementation(() => { throw new Error("synthetic local write failure"); });
+    try {
+      await expect(createCustomVisualIllustration(created.id, brief.id, "short", {
+        async generate() { return { bytes: Buffer.from("synthetic-custom-png"), provider: "openai", model: "synthetic-custom-image", providerRequestId: "received-image-response", latencyMs: 17 }; },
+      })).rejects.toThrow(/custom illustration could not be generated/i);
+    } finally { writeFailure.mockRestore(); }
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      expect(database.prepare("SELECT status, actual_cost, provider_request_id, latency_ms, failure_category FROM custom_visual_attempts WHERE visual_brief_id = ?").get(brief.id)).toMatchObject({
+        status: "failed", actual_cost: 0.031, provider_request_id: "received-image-response", latency_ms: 17, failure_category: "provider_succeeded_local_persistence_failed",
+      });
+    } finally { database.close(); }
+  });
+
+  it("claims one approved custom-image brief before overlapping generation dispatch", async () => {
+    const created = createIdea({ rawNotes: "Concurrent custom-image generation must dispatch at most once for one approved brief." });
+    saveEditedDraft(created.id, "An accountable owner and observable result turn a promising pilot into dependable operating work.", "short");
+    const brief = recommendVisualBrief(created.id, undefined, "lead", "short", { authorDirection: "Show a clear bridge from a pilot to dependable work.", customIllustration: true }).visualBrief!;
+    approveVisualBrief(created.id, brief.id);
+    let dispatches = 0;
+    let startedResolve!: () => void;
+    const started = new Promise<void>((resolve) => { startedResolve = resolve; });
+    let releaseResolve!: () => void;
+    const released = new Promise<void>((resolve) => { releaseResolve = resolve; });
+    const provider = {
+      async generate() {
+        dispatches += 1;
+        if (dispatches === 1) startedResolve();
+        await released;
+        return { bytes: Buffer.from("synthetic-custom-png"), provider: "openai" as const, model: "synthetic-custom-image", providerRequestId: "concurrent-custom-image", latencyMs: 12 };
+      },
+    };
+
+    const first = createCustomVisualIllustration(created.id, brief.id, "short", provider);
+    await started;
+    const second = createCustomVisualIllustration(created.id, brief.id, "short", provider);
+    await Promise.resolve();
+    const claimed = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      expect(claimed.prepare("SELECT status FROM custom_visual_attempts WHERE visual_brief_id = ?").all(brief.id)).toEqual([{ status: "dispatching" }]);
+    } finally { claimed.close(); }
+    releaseResolve();
+    const outcomes = await Promise.allSettled([first, second]);
+
+    expect(dispatches).toBe(1);
+    expect(outcomes[0]?.status).toBe("fulfilled");
+    expect(outcomes[1]).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/already active.*unconfirmed/i) }) });
   });
 
   it("keeps an author-requested custom illustration out of deterministic diagrams until its separate image route is used", () => {
@@ -862,6 +958,26 @@ describe("reader-output service contract", () => {
     const revised = updateIdea(created.id, { structuredIdeaBrief: { ...brief, principle: "The required outcome should decide the tool, not the other way around." } });
     expect(revised.rawNotes).toBe("The required outcome should decide the tool, not the other way around.");
     expect(revised.structuredIdeaBrief?.principle).toBe(revised.rawNotes);
+  });
+
+  it("rejects a stale raw capture beside a revised structured Principle and preserves the authoritative capture", () => {
+    const brief = {
+      workingTitle: "Start with the outcome",
+      situation: "A team chose a tool before deciding what work it had to improve.",
+      assumption: "The most capable model will make the answer obvious.",
+      discovery: "The workflow had to be rebuilt around ownership and review needs.",
+      principle: "Choose the tool after defining the required outcome.",
+    };
+    const created = createIdea({ structuredIdeaBrief: brief });
+    const revisedPrinciple = "The required outcome should decide the tool, not the other way around.";
+
+    expect(() => updateIdea(created.id, { rawNotes: created.rawNotes, structuredIdeaBrief: { ...brief, principle: revisedPrinciple } })).toThrow(/structured Principle conflicts/i);
+    const saved = updateIdea(created.id, { structuredIdeaBrief: { ...brief, principle: revisedPrinciple } });
+    expect(saved).toMatchObject({ rawNotes: revisedPrinciple, structuredIdeaBrief: expect.objectContaining({ principle: revisedPrinciple }) });
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      expect(database.prepare("SELECT raw_notes FROM ideas WHERE id = ?").get(created.id)).toEqual({ raw_notes: revisedPrinciple });
+    } finally { database.close(); }
   });
 
   it("stores a structured author brief separately from ordinary notes and permits an intentional clear", () => {

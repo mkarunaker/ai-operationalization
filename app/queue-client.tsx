@@ -190,6 +190,12 @@ export type Detail = Idea & {
     unclear: string;
     counterargument: string;
     evidenceNeeded: string;
+    evidenceBackbone?: {
+      sourceHeading: string;
+      operatingDistinction: string;
+      draftingUse: string;
+      uncertaintyBoundary: string;
+    };
     recommendedChanges: string[];
     nextStep: string;
     reviews: Array<{
@@ -595,6 +601,8 @@ export function IdeaDetailView({
   createGroundedDraft,
   board,
   livePreview,
+  liveQualityProfile,
+  setLiveQualityProfile,
   liveBoard,
   retryDerivedShort,
   retryInitialDrafter,
@@ -622,6 +630,7 @@ export function IdeaDetailView({
   checkVoice,
   createVisual,
   updateVisualBrief,
+  updateCustomVisualConcept,
   derivedShortDraft,
   setDerivedShortDraft,
   saveDerivedShort,
@@ -652,6 +661,7 @@ export function IdeaDetailView({
     budgetCap: number;
     maximumBudgetCap: number;
     pricingAssumption: string;
+    qualityProfile: { id: "balanced" | "frontier_content"; label: string; description: string };
     available: boolean;
     source: { boardReady: boolean; unavailableReason?: string };
     estimatedCost: number;
@@ -665,7 +675,9 @@ export function IdeaDetailView({
     derivedShortEscalation: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
     proofreader?: { provider: string; model: string; tier: "low" | "medium" | "high"; estimates: { short: number; article: number; derived_short: number }; available: boolean };
   };
-  liveBoard?: (budgetCap: number) => Promise<void>;
+  liveQualityProfile?: "balanced" | "frontier_content";
+  setLiveQualityProfile?: (value: "balanced" | "frontier_content") => void;
+  liveBoard?: (budgetCap: number, qualityProfile: "balanced" | "frontier_content") => Promise<void>;
   retryDerivedShort?: (budgetCap: number, mode: "refresh" | "retry" | "escalation") => Promise<void>;
   retryInitialDrafter?: (budgetCap: number) => Promise<void>;
   executionStatus?: string;
@@ -697,6 +709,7 @@ export function IdeaDetailView({
   checkVoice?: (format: "short" | "article" | "derived_short") => Promise<void>;
   createVisual?: (action: VisualAction) => Promise<void>;
   updateVisualBrief?: (input: { briefId: string; claims: string[]; labels: string[]; caption: string; altText: string; authorDirection?: string; template: VisualTemplate; colorScheme?: "violet" | "forest" | "copper"; placement?: "lead" | "supporting" }) => Promise<void>;
+  updateCustomVisualConcept?: (briefId: string, authorDirection: string) => Promise<void>;
   derivedShortDraft?: string;
   setDerivedShortDraft?: (value: string) => void;
   saveDerivedShort?: () => Promise<void>;
@@ -813,12 +826,16 @@ export function IdeaDetailView({
       !idea.structuredIdeaBrief?.principle?.trim() ? "Principle" : undefined,
     ].filter((value): value is string => Boolean(value))
     : [];
+  const selectedLiveQualityProfile = liveQualityProfile ?? "balanced";
+  const previewMatchesSelectedQualityProfile = livePreview?.qualityProfile.id === selectedLiveQualityProfile;
   const liveRunDisabledReason = hasPublishedOutput
     ? "Editorial Board runs are locked after publication. Create a new revision to develop fresh content."
     : busy
       ? "The current Editorial Board run is still finishing."
       : structuredBriefMissing.length
         ? `Complete the structured brief before running the Board: ${structuredBriefMissing.join(", ")}.`
+      : !previewMatchesSelectedQualityProfile
+        ? "Loading the selected content-quality route and cost estimate."
       : !livePreview?.source.boardReady
       ? livePreview?.source.unavailableReason ?? "The Editorial Board source index is unavailable."
     : !livePreview?.available
@@ -1542,6 +1559,18 @@ export function IdeaDetailView({
             )}
             <div className="run-actions">
               <label>
+                Content quality
+                <select
+                  aria-label="Live Board content quality"
+                  value={selectedLiveQualityProfile}
+                  disabled={busy}
+                  onChange={(event) => setLiveQualityProfile?.(event.target.value as "balanced" | "frontier_content")}
+                >
+                  <option value="balanced">Balanced quality</option>
+                  <option value="frontier_content">Frontier content</option>
+                </select>
+              </label>
+              <label>
                 Run budget cap (USD)
                 <input
                   aria-label="Live run budget cap"
@@ -1553,7 +1582,7 @@ export function IdeaDetailView({
                   onChange={(event) => setLiveBudgetOverride(Number(event.target.value))}
                 />
               </label>
-              <button disabled={Boolean(liveRunDisabledReason)} onClick={() => void liveBoard(liveBudget)}>
+              <button disabled={Boolean(liveRunDisabledReason)} onClick={() => void liveBoard(liveBudget, livePreview.qualityProfile.id)}>
                 {reviewIncomplete
                   ? "Retry complete review"
                   : idea.editorialBrief
@@ -1561,6 +1590,7 @@ export function IdeaDetailView({
                     : "Run live editorial review"}
               </button>
             </div>
+            <p className="model-cost-note">{livePreview.qualityProfile.description} The server resolves the exact provider, model, price, output allowance, and one-repair reservation; this selector cannot supply an arbitrary model.</p>
             {liveRunDisabledReason && (
               <p className="run-disabled-reason"><strong>{structuredBriefMissing.length ? "Board preflight:" : "Live provider run only:"}</strong> {liveRunDisabledReason}</p>
             )}
@@ -1778,6 +1808,15 @@ export function IdeaDetailView({
               <dd>{idea.editorialBrief.evidenceNeeded}</dd>
             </div>
           </dl>
+          {idea.editorialBrief.evidenceBackbone && (
+            <section className="brief-evidence-backbone" aria-label="BOK evidence backbone">
+              <p className="eyebrow">BOK EVIDENCE BACKBONE</p>
+              <p><b>Selected section:</b> {idea.editorialBrief.evidenceBackbone.sourceHeading}</p>
+              <p><b>Operating distinction:</b> {idea.editorialBrief.evidenceBackbone.operatingDistinction}</p>
+              <p><b>How this shapes the draft:</b> {idea.editorialBrief.evidenceBackbone.draftingUse}</p>
+              <p><b>Evidence boundary:</b> {idea.editorialBrief.evidenceBackbone.uncertaintyBoundary}</p>
+            </section>
+          )}
           <section className="brief-recommendations">
             <p className="eyebrow">SUGGESTED CHANGES FOR THIS DRAFT</p>
             <p>Apply the changes that strengthen your point. They are recommendations, not publication requirements.</p>
@@ -2329,8 +2368,10 @@ export function IdeaDetailView({
                 {idea.visualBrief?.recommendation === "no_visual" ? (
                   <>
                     {idea.visualBrief?.customIllustration ? <>
-                      <p><b>Custom editorial illustration.</b> The image will use this exact saved output and your direction as reference, without a diagram template or text in the image. You can revise the direction by creating a new visual version.</p>
+                      <p><b>Custom editorial illustration.</b> The image will use this exact saved output and your direction as reference, without a diagram template or text in the image.</p>
                       <p><b>Concept:</b> a clean editorial scene that clarifies the article’s practical tension{idea.visualBrief.authorDirection ? `, guided by “${idea.visualBrief.authorDirection}”` : ""}.</p>
+                      {idea.visualBrief.status === "recommended" && updateCustomVisualConcept && <label className="visual-direction-field">Revise custom illustration direction before approval <small>This updates only the saved concept. It does not approve or generate an image.</small><textarea value={visualDirection} maxLength={1000} placeholder={idea.visualBrief.authorDirection || "For example: show a clear decision from a pilot to accountable operating work."} onChange={(event) => setVisualDirection(event.target.value)} /></label>}
+                      {idea.visualBrief.status === "recommended" && updateCustomVisualConcept && <button disabled={busy || draftDirty || primaryPublished} onClick={() => void updateCustomVisualConcept(idea.visualBrief!.id, visualDirection.trim() || idea.visualBrief!.authorDirection)}>Save custom concept revision</button>}
                       {customIllustrationCostDisclosure()}
                       <button disabled={busy || draftDirty || primaryPublished || (!idea.customImageRoute.available && idea.visualBrief.status === "approved")} onClick={() => void createVisual(
                         idea.visualBrief?.status === "recommended"

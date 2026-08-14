@@ -15,6 +15,7 @@ type VoiceCheck = {
   disclaimer: string;
   draftVersionId: string;
 };
+type LiveBoardQualityProfile = "balanced" | "frontier_content";
 
 export function IdeaWorkspaceClient({
   ideaId,
@@ -32,6 +33,7 @@ export function IdeaWorkspaceClient({
     budgetCap: number;
     maximumBudgetCap: number;
     pricingAssumption: string;
+    qualityProfile: { id: LiveBoardQualityProfile; label: string; description: string };
     available: boolean;
     source: { boardReady: boolean; unavailableReason?: string };
     estimatedCost: number;
@@ -45,6 +47,11 @@ export function IdeaWorkspaceClient({
     derivedShortEscalation: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
     proofreader?: { provider: string; model: string; tier: "low" | "medium" | "high"; estimates: { short: number; article: number; derived_short: number }; available: boolean };
   }>();
+  const [liveQualityProfile, setLiveQualityProfile] = useState<LiveBoardQualityProfile>("balanced");
+  // A response for a previously selected profile must never become the cost
+  // disclosure for a newer selection. The Board action stays disabled until
+  // the preview itself confirms the currently selected profile.
+  const pendingLiveQualityProfile = useRef<LiveBoardQualityProfile>("balanced");
   const [note, setNote] = useState("");
   const [draft, setDraft] = useState("");
   const [derivedShortDraft, setDerivedShortDraft] = useState("");
@@ -86,7 +93,7 @@ export function IdeaWorkspaceClient({
   async function load() {
     const [ideaResponse, previewResponse] = await Promise.all([
       fetch(`/api/ideas/${ideaId}`),
-      fetch(`/api/ideas/${ideaId}?execution=live_preview`),
+      fetch(`/api/ideas/${ideaId}?execution=live_preview&qualityProfile=${liveQualityProfile}`),
     ]);
     const ideaData = (await ideaResponse.json()) as {
       idea?: Detail;
@@ -98,7 +105,8 @@ export function IdeaWorkspaceClient({
     savedDevelopmentSnapshot.current = developmentSnapshot(ideaData.idea);
     if (previewResponse.ok) {
       const previewData = (await previewResponse.json()) as { preview?: typeof livePreview };
-      if (previewData.preview) setLivePreview(previewData.preview);
+      if (previewData.preview?.qualityProfile.id === pendingLiveQualityProfile.current)
+        setLivePreview(previewData.preview);
     }
     setDraft((ideaData.idea.shortPost ?? ideaData.idea.article)?.body ?? "");
     setDerivedShortEditor(ideaData.idea.derivedShortPost?.body ?? "", false);
@@ -108,6 +116,18 @@ export function IdeaWorkspaceClient({
         ideaData.idea.answers.map((answer) => [answer.question, answer.answer]),
       ),
     );
+  }
+  async function refreshLivePreview(profile: LiveBoardQualityProfile) {
+    const response = await fetch(`/api/ideas/${ideaId}?execution=live_preview&qualityProfile=${profile}`);
+    if (!response.ok) return;
+    const data = (await response.json()) as { preview?: typeof livePreview };
+    if (profile === pendingLiveQualityProfile.current && data.preview?.qualityProfile.id === profile)
+      setLivePreview(data.preview);
+  }
+  function chooseLiveQualityProfile(profile: LiveBoardQualityProfile) {
+    pendingLiveQualityProfile.current = profile;
+    setLiveQualityProfile(profile);
+    void refreshLivePreview(profile);
   }
   function terminalBoardProgress(nextIdea: Detail | undefined, stages: EditorialRunProgress["stages"]): EditorialRunProgress {
     const brief = nextIdea?.editorialBrief;
@@ -271,7 +291,7 @@ export function IdeaWorkspaceClient({
   }
   function safeInitialDrafterRecoveryRejection(error: unknown) {
     const message = error instanceof Error ? error.message : "";
-    if (/^(A positive per-run budget cap is required for the working-draft retry\.|The working-draft retry cap cannot exceed \$|Working-draft recovery must use the configured Initial Drafter route and pricing assumption\.|Only one working-draft retry is permitted for a saved Editorial Board run\.|The saved voice reference is unavailable\.|The configured Initial Drafter route has changed since this Board run\.|The saved Editorial Board (recovery snapshot is invalid|synthesis is unavailable)\.)/.test(message))
+    if (/^(A positive per-run budget cap is required for the working-draft retry\.|The working-draft retry cap cannot exceed \$|Working-draft recovery must use the configured Initial Drafter route and pricing assumption\.|Only one working-draft retry is permitted for a saved Editorial Board run\.|The saved voice reference (is unavailable|has changed)|The configured Initial Drafter route has changed since this Board run\.|The saved Editorial Board (recovery snapshot is invalid|synthesis is unavailable)\.)/.test(message))
       return message;
     return "This recovery was rejected before provider dispatch. Confirm the saved Board route, source references, and retry cap before starting a new Board run.";
   }
@@ -307,6 +327,33 @@ export function IdeaWorkspaceClient({
       window.clearInterval(interval);
     };
   }, [editorialRunLabel, ideaId, runStartedAt]);
+  useEffect(() => {
+    if (!editorialRunLabel) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    const guardInternalNavigation = (event: MouseEvent) => {
+      const link = (event.target as Element | null)?.closest("a[href]") as HTMLAnchorElement | null;
+      if (!link || link.target === "_blank" || !link.href.startsWith(window.location.origin)) return;
+      event.preventDefault();
+      setMessage("Keep this page open until the active request finishes. Leaving, reloading, or using Back can interrupt this request-bound run.");
+    };
+    // App Router history transitions need their own guard: they can stay in
+    // the document and therefore do not reliably trigger beforeunload.
+    const originalState = window.history.state;
+    window.history.pushState({ ...originalState, aebActiveRequestGuard: true }, "", window.location.href);
+    const guardHistoryNavigation = () => {
+      window.history.go(1);
+      setMessage("Keep this page open until the active request finishes. Leaving, reloading, or using Back can interrupt this request-bound run.");
+    };
+    window.addEventListener("beforeunload", warn);
+    window.addEventListener("click", guardInternalNavigation, true);
+    window.addEventListener("popstate", guardHistoryNavigation);
+    return () => {
+      window.removeEventListener("beforeunload", warn);
+      window.removeEventListener("click", guardInternalNavigation, true);
+      window.removeEventListener("popstate", guardHistoryNavigation);
+      if (window.history.state?.aebActiveRequestGuard) window.history.back();
+    };
+  }, [editorialRunLabel]);
   async function request(body: unknown) {
     const response = await fetch(`/api/ideas/${ideaId}`, {
       method: "POST",
@@ -510,7 +557,7 @@ export function IdeaWorkspaceClient({
               return run(async () => {
                 await request({
                   title: idea.title,
-                  rawNotes: idea.rawNotes,
+                  ...(idea.structuredIdeaBrief?.principle ? {} : { rawNotes: idea.rawNotes }),
                   outputShape: idea.outputShape,
                   audienceProfileKey: idea.audienceProfileKey,
                   audienceNotes: idea.audienceNotes ?? null,
@@ -568,7 +615,7 @@ export function IdeaWorkspaceClient({
                   }
                   await request({
                     title: idea.title,
-                    rawNotes: idea.rawNotes,
+                    ...(idea.structuredIdeaBrief?.principle ? {} : { rawNotes: idea.rawNotes }),
                     outputShape: idea.outputShape,
                     audienceProfileKey: idea.audienceProfileKey,
                     audienceNotes: idea.audienceNotes ?? null,
@@ -600,7 +647,7 @@ export function IdeaWorkspaceClient({
                 ];
                 setRunProgress({ status: "running", stages: deterministicStages });
                 setEditorialRunLabel("Running free deterministic Board test · $0.00 · no provider call");
-                setMessage("The grounded editorial workflow is running. You can keep this page open.");
+                setMessage("Keep this page open until this request-bound Board run finishes. Reloading, closing the tab, using Back, or navigating away can interrupt it.");
                 const priorRunId = idea.editorialBrief?.runId;
                 try {
                   const updated = await request({ action: "run_grounded_board" });
@@ -626,9 +673,11 @@ export function IdeaWorkspaceClient({
               })
             }
             livePreview={livePreview}
+            liveQualityProfile={liveQualityProfile}
+            setLiveQualityProfile={chooseLiveQualityProfile}
             executionStatus={editorialRunLabel}
             executionProgress={runProgress}
-            liveBoard={(budgetCap) =>
+            liveBoard={(budgetCap, qualityProfile) =>
               run(async () => {
                 const startedAt = new Date().toISOString();
                 const priorRunId = idea.editorialBrief?.runId;
@@ -647,9 +696,9 @@ export function IdeaWorkspaceClient({
                 setRunStartedAt(startedAt);
                 setRunProgress(undefined);
                 setEditorialRunLabel("Running the live Editorial Board");
-                setMessage("The live editorial workflow is running. You can keep this page open.");
+                setMessage("Keep this page open until this request-bound live Board run finishes. Reloading, closing the tab, using Back, or navigating away can interrupt it.");
                 try {
-                  const updated = await request({ action: "run_live_board", budgetCap });
+                  const updated = await request({ action: "run_live_board", budgetCap, qualityProfile });
                   const statusResponse = await fetch(`/api/ideas/${ideaId}?execution=live_status&since=${encodeURIComponent(startedAt)}`);
                   const statusData = (await statusResponse.json()) as { progress?: EditorialRunProgress };
                   if (statusResponse.ok && statusData.progress) setRunProgress(statusData.progress);
@@ -845,6 +894,10 @@ export function IdeaWorkspaceClient({
             updateVisualBrief={(input) => run(async () => {
               await request({ action: "update_visual_brief", ...input });
               setMessage("Visual brief edits saved for this exact output.");
+            })}
+            updateCustomVisualConcept={(briefId, authorDirection) => run(async () => {
+              await request({ action: "update_custom_visual_concept", briefId, authorDirection });
+              setMessage("Custom concept revision saved. No image has been approved or generated.");
             })}
             derivedShortDraft={derivedShortDraft}
             setDerivedShortDraft={(body) => {

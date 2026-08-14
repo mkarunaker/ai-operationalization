@@ -10,6 +10,7 @@ import {
   selectVisualLeadRevision,
   startVisualLeadRevision,
   updateVisualBrief,
+  updateRecommendedCustomVisualConcept,
   saveDerivedShortPost,
   getIdea,
   moveIdea,
@@ -39,7 +40,7 @@ export async function GET(
   const { ideaId } = await params;
   const search = new URL(request.url).searchParams;
   if (search.get("execution") === "live_preview")
-      return Response.json({ preview: liveRunPreview(ideaId) });
+      return Response.json({ preview: liveRunPreview(ideaId, search.get("qualityProfile") ?? undefined) });
     if (search.get("execution") === "live_status")
       return Response.json({ progress: getLiveEditorialProgress(ideaId, search.get("since") ?? undefined) });
     const idea = getIdea(ideaId);
@@ -76,8 +77,10 @@ export async function POST(
       return Response.json({ idea });
     }
     if (body.action === "run_live_board") {
+      if (["provider", "model", "tier", "pricingAssumption", "maxOutputTokens"].some((field) => field in body))
+        throw new Error("Live Board provider, model, tier, pricing, and output allowance are resolved only by the server route.");
       const budgetCap = Number(body.budgetCap);
-      await runLiveEditorialRun(ideaId, { budgetCap });
+      await runLiveEditorialRun(ideaId, { budgetCap, qualityProfile: body.qualityProfile });
       const idea = getIdea(ideaId);
       if (!idea) throw new Error("Idea not found after live editorial run.");
       return Response.json({ idea });
@@ -234,6 +237,8 @@ export async function POST(
       delete visualBrief.action;
       return Response.json({ idea: updateVisualBrief(ideaId, visualBrief) });
     }
+    if (body.action === "update_custom_visual_concept")
+      return Response.json({ idea: updateRecommendedCustomVisualConcept(ideaId, String(body.briefId ?? ""), String(body.authorDirection ?? "")) });
     if (body.action === "publish")
       return Response.json({ idea: publishIdea(ideaId, body) });
     if (body.action === "move_up" || body.action === "move_down")

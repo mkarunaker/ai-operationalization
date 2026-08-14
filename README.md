@@ -30,19 +30,19 @@ npm run content:index
 
 ## Optional live model run
 
-For an explicit live editorial run, place the local-only values in `.env.local`, then restart the server. The file is Git-ignored and is never sent to the browser. The finance-first default reserves GPT-5 nano for future intake, title, and classification work; GPT-5.6 Luna performs the Editorial Board, synthesis, and drafting; GPT-5.4 mini is used only for an explicitly confirmed single-reviewer escalation. Anthropic and ZenMux remain optional providers and are never automatic fallbacks.
+For an explicit live editorial run, place the local-only values in `.env.local`, then restart the server. The file is Git-ignored and is never sent to the browser. The Board defaults to the **Balanced quality** profile: GPT-5.6 Terra for judgment and the main draft, with GPT-5.6 Luna for the low-cost derived short post and proofread. **Frontier content** is an explicit Board choice: GPT-5.6 Sol is used only for the main draft, while the other Board stages stay on Luna so the same hard per-run ceiling applies. Anthropic and ZenMux remain optional providers and are never automatic fallbacks.
 
 ```bash
 OPENAI_API_KEY="…"
-OPENAI_LOW_MODEL="gpt-5-nano"
-OPENAI_MEDIUM_MODEL="gpt-5.6-luna"
-OPENAI_HIGH_MODEL="gpt-5.4-mini"
-EDITORIAL_RUN_BUDGET_USD="0.05"
-EDITORIAL_MAX_RUN_BUDGET_USD="0.25"
-EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS="4000"
+OPENAI_LOW_MODEL="gpt-5.6-luna"
+OPENAI_MEDIUM_MODEL="gpt-5.6-terra"
+OPENAI_HIGH_MODEL="gpt-5.6-sol"
+EDITORIAL_RUN_BUDGET_USD="0.75"
+EDITORIAL_MAX_RUN_BUDGET_USD="0.75"
+EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS="2400"
 ```
 
-The browser never receives a key. The committed provider policy is [src/config/model-routing.ts](src/config/model-routing.ts), while model IDs remain in `.env.local`; capability roles therefore remain separate from providers and model names. The Initial Drafter receives a server-only, cost-reserved 4,000-token allowance by default; an operator may set `EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS` from 2,000 to 5,000 and restart before starting a new Board run. The exact allowance is saved with each Board run, so a recovery cannot silently change it. Current official OpenAI prices are built in as operator-maintained estimates and may be overridden with matching `OPENAI_{LOW|MEDIUM|HIGH}_{INPUT|CACHED_INPUT|OUTPUT}_USD_PER_MILLION` values. Restart the server after configuration changes. Before each live Board run, the review screen displays every planned provider/model, pricing basis, estimate, and editable budget cap. A higher-tier rerun is available only for one reviewer at a time and retains the original Board and draft.
+The browser never receives a key. The committed provider policy is [src/config/model-routing.ts](src/config/model-routing.ts), while model IDs remain in `.env.local`; capability roles therefore remain separate from providers and model names. The Initial Drafter receives a server-only, cost-reserved 2,400-token allowance by default; an operator may set `EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS` from 2,000 to 5,000 and restart before starting a new Board run. The exact allowance is saved with each Board run, so a recovery cannot silently change it. Current official OpenAI prices are built in as operator-maintained estimates and may be overridden with matching `OPENAI_{LOW|MEDIUM|HIGH}_{INPUT|CACHED_INPUT|OUTPUT}_USD_PER_MILLION` values. Restart the server after configuration changes. Before each live Board run, the review screen displays every planned provider/model, pricing basis, estimate, quality profile, and editable budget cap. It refuses to dispatch when the upper-bound reservation exceeds the selected cap, which can never exceed $0.75. A higher-tier rerun remains a one-role action and retains the original Board and draft.
 
 Custom editorial illustrations use a separate explicit route: set both `OPENAI_CUSTOM_IMAGE_MODEL` and a current fixed `OPENAI_CUSTOM_IMAGE_PRICE_USD`, then restart the local server. The app never chooses an image model or price by fallback; it displays the configured estimate before the author approves one generation. Each attempt is retained as local provenance, and generated PNG files remain in the configured ignored `VISUALS_PATH` directory.
 

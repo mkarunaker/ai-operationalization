@@ -6,11 +6,13 @@ import { GroundedTestProvider } from "@/ai/grounded-test-provider";
 import type { CostEstimate, ModelProvider, ModelRequest, ModelResponse, TokenUsage } from "@/ai/provider";
 import { DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, modelEnvironmentVariable, routeFor } from "@/ai/model-routing";
 import { refreshContent } from "@/content/loader";
-import { estimateDerivedShortDraft, estimateInitialDrafterRecovery, hasRecoverableInitialDrafterFailure, initialDrafterRecoveryAvailability, initialDrafterRecoveryOutcome, retryDerivedShortDraftForTest, retryInitialDrafterDraft, retryInitialDrafterDraftForTest, runGroundedEditorialRun, runSingleReviewer, scopedDerivedShortDraftRequestFor } from "@/editorial/grounded-run";
+import { CumulativeBudgetProvider, estimateDerivedShortDraft, estimateInitialDrafterRecovery, hasRecoverableInitialDrafterFailure, initialDrafterRecoveryAvailability, initialDrafterRecoveryOutcome, persistAttempts, retryDerivedShortDraftForTest, retryInitialDrafterDraft, retryInitialDrafterDraftForTest, runGroundedEditorialRun, runSingleReviewer, scopedDerivedShortDraftRequestFor } from "@/editorial/grounded-run";
 import { liveRunPreview } from "@/editorial/live-run";
 import { createIdea, getIdea, listIdeas, proofreadRequestFor, runFinalDraftReview, runLiveProofreadForExactReviewForTest, saveEditedDraft, updateIdea } from "@/lean/service";
 import { openDatabase } from "@/persistence/database";
 import { migrateDatabase } from "@/persistence/migrations";
+import { POST as ideasPost } from "../../app/api/ideas/route";
+import { POST as ideaDetailPost } from "../../app/api/ideas/[ideaId]/route";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "aeb-grounded-reader-output-"));
 const previous = { database: process.env.DATABASE_PATH, bok: process.env.EAIO_BOK_PATH, voice: process.env.KK_VOICE_SKILL_PATH };
@@ -47,6 +49,24 @@ class MalformedStrategistProvider extends RecordingProvider {
       return { ...response, text: '{"invalid":true}', structuredOutput: { invalid: true } };
     }
     return response;
+  }
+}
+
+class InventedEvidenceBackboneProvider extends RecordingProvider {
+  override async generate(request: ModelRequest): Promise<ModelResponse> {
+    const response = await super.generate(request);
+    if (request.metadata?.agentRole !== "synthesizer") return response;
+    const output = {
+      ...(response.structuredOutput as Record<string, unknown>),
+      evidence_backbone: {
+        source_key: "selected_bok_999",
+        source_heading: "Invented BOK heading",
+        operating_distinction: "An ungrounded distinction must never guide the draft.",
+        drafting_use: "Use the invented material.",
+        uncertainty_boundary: "None.",
+      },
+    };
+    return { ...response, structuredOutput: output, text: JSON.stringify(output) };
   }
 }
 
@@ -183,6 +203,27 @@ class FixedDerivedShortProvider extends FixedInitialDrafterProvider {
   }
 }
 
+class LatchedDerivedShortProvider extends RecordingProvider {
+  dispatches = 0;
+  private startedResolve!: () => void;
+  readonly started = new Promise<void>((resolve) => { this.startedResolve = resolve; });
+  private releaseResolve!: () => void;
+  private readonly released = new Promise<void>((resolve) => { this.releaseResolve = resolve; });
+
+  release() {
+    this.releaseResolve();
+  }
+
+  override async generate(request: ModelRequest): Promise<ModelResponse> {
+    if (request.metadata?.agentRole === "final_drafter" && request.metadata?.task === "draft") {
+      this.dispatches += 1;
+      if (this.dispatches === 1) this.startedResolve();
+      await this.released;
+    }
+    return super.generate(request);
+  }
+}
+
 class SkepticTruncationProvider extends RecordingProvider {
   private truncated = false;
 
@@ -243,6 +284,91 @@ describe("grounded reader-output boundaries", () => {
     expect(ledger.estimatedCost).toBe(0);
     expect(Object.keys(ledger).sort()).toEqual(["attempts", "estimatedCost", "totalTokens"]);
     expect(queuedLedger).toEqual(ledger);
+  });
+
+  it("keeps the deterministic working draft readable instead of repeating sentences to fill a target range", async () => {
+    const created = createIdea({ rawNotes: "A customer-support team celebrated strong AI-assistant adoption, but average handling time and customer resolution did not improve. Write for operating leaders about why visible AI activity is not evidence of useful work, and how an owner, a baseline, and a decision rule can make a pilot worth sustaining." });
+    await runGroundedEditorialRun(created.id);
+
+    const body = getIdea(created.id)?.shortPost?.body;
+    if (!body) throw new Error("Expected a deterministic short-post draft.");
+    const sentences = body.match(/[^.!?]+[.!?]/g)?.map((sentence) => sentence.trim()) ?? [];
+    expect(sentences.length).toBeGreaterThan(6);
+    expect(new Set(sentences).size).toBe(sentences.length);
+    expect(getIdea(created.id)?.runLedger.estimatedCost).toBe(0);
+  });
+
+  it("makes one selected BOK section an explicit, saved evidence backbone for the draft", async () => {
+    const created = createIdea({ rawNotes: "A grounded article needs one concrete operating distinction from its selected BOK material." });
+    const provider = new RecordingProvider();
+    await runGroundedEditorialRun(created.id, provider);
+
+    const detail = getIdea(created.id)!;
+    expect(detail.context).not.toHaveLength(0);
+    expect(detail.editorialBrief?.evidenceBackbone).toMatchObject({
+      sourceHeading: detail.context[0]!.headingPath,
+      operatingDistinction: expect.stringMatching(/operating/i),
+      draftingUse: expect.stringMatching(/selected/i),
+      uncertaintyBoundary: expect.stringMatching(/do not claim/i),
+    });
+    const synthesisRequest = provider.requests.find((request) => request.metadata?.agentRole === "synthesizer");
+    expect(synthesisRequest?.messages.map((message) => message.content).join("\n")).toContain(detail.context[0]!.headingPath);
+    const initialDrafterRequest = provider.requests.find((request) => request.metadata?.agentRole === "initial_drafter");
+    expect(initialDrafterRequest?.systemPrompt).toContain("validated evidence_backbone");
+    expect(initialDrafterRequest?.systemPrompt).toContain("distinct authorial argument from the incident");
+    expect(initialDrafterRequest?.messages.map((message) => message.content).join("\n")).toContain(detail.context[0]!.headingPath);
+  });
+
+  it("resolves a selected BOK heading with special characters through its canonical source key", async () => {
+    const specialHeading = "Build & Operate (Field Notes)";
+    fs.writeFileSync(bokPath, `# ${specialHeading}\n\nUse a stable selected-source identity when a heading contains punctuation.`, { mode: 0o600 });
+    refreshContent();
+    try {
+      const created = createIdea({ rawNotes: "Build and operate field notes need a stable source identity." });
+      const provider = new RecordingProvider();
+      await runGroundedEditorialRun(created.id, provider);
+
+      expect(getIdea(created.id)?.editorialBrief?.evidenceBackbone?.sourceHeading).toBe(specialHeading);
+      const synthesisRequest = provider.requests.find((request) => request.metadata?.agentRole === "synthesizer");
+      expect(synthesisRequest?.messages.map((message) => message.content).join("\n")).toContain("Canonical source key: selected_bok_1");
+    } finally {
+      fs.writeFileSync(bokPath, "# Operating discipline\n\nAccountability, controls, and observable outcomes make change dependable.", { mode: 0o600 });
+      refreshContent();
+    }
+  });
+
+  it("stops before drafting when synthesis names a BOK source that was not retrieved", async () => {
+    const created = createIdea({ rawNotes: "An evidence backbone must name only a BOK passage selected for this run." });
+    const provider = new InventedEvidenceBackboneProvider();
+    await expect(runGroundedEditorialRun(created.id, provider)).rejects.toThrow(/model call failed before producing validated editorial output/i);
+    expect(provider.requests.filter((request) => request.metadata?.agentRole === "initial_drafter")).toHaveLength(0);
+    expect(getIdea(created.id)?.editorialBrief).toMatchObject({ runStatus: "failed" });
+  });
+
+  it("maps only named live quality profiles on the server and rejects browser-supplied model routing", async () => {
+    const created = createIdea({ rawNotes: "A live Board profile must keep the mature draft route server-owned and cost-capped." });
+    const frontier = liveRunPreview(created.id, "frontier_content");
+    expect(frontier).toMatchObject({ qualityProfile: { id: "frontier_content" }, maximumBudgetCap: 0.75 });
+    expect(frontier.planned).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "strategist", tier: "low" }),
+      expect.objectContaining({ role: "initial_drafter", tier: "high" }),
+    ]));
+    expect(frontier.estimatedCost).toBeLessThanOrEqual(0.75);
+
+    const context = { params: Promise.resolve({ ideaId: created.id }) };
+    const injected = await ideaDetailPost(new Request(`http://127.0.0.1:3100/api/ideas/${created.id}`, {
+      method: "POST", headers: { "content-type": "application/json", origin: "http://127.0.0.1:3100" },
+      body: JSON.stringify({ action: "run_live_board", budgetCap: 0.75, qualityProfile: "frontier_content", model: "browser-selected-model" }),
+    }), context);
+    expect(injected.status).toBe(400);
+    await expect(injected.json()).resolves.toMatchObject({ error: "The local request could not be completed safely." });
+
+    const invalidProfile = await ideaDetailPost(new Request(`http://127.0.0.1:3100/api/ideas/${created.id}`, {
+      method: "POST", headers: { "content-type": "application/json", origin: "http://127.0.0.1:3100" },
+      body: JSON.stringify({ action: "run_live_board", budgetCap: 0.75, qualityProfile: "browser-selected-model" }),
+    }), context);
+    expect(invalidProfile.status).toBe(400);
+    await expect(invalidProfile.json()).resolves.toMatchObject({ error: "The local request could not be completed safely." });
   });
 
   it("saves a range-variant generated draft for the author while keeping the saved target visible", async () => {
@@ -344,6 +470,7 @@ describe("grounded reader-output boundaries", () => {
         principle: "Governance creates a usable path, not an after-the-fact gate.",
       },
     });
+    expect(getIdea(created.id)?.rawNotes).toBe("Governance creates a usable path, not an after-the-fact gate.");
     const provider = new RecordingProvider();
     await runGroundedEditorialRun(created.id, provider, { tierForRole: () => "medium" });
     const boardRequests = provider.requests.filter((request) => request.metadata?.task === "review" || request.metadata?.task === "draft");
@@ -367,6 +494,11 @@ describe("grounded reader-output boundaries", () => {
     expect(initial.systemPrompt).toContain("standalone plain-text signpost");
     expect(initial.systemPrompt).toContain("recap bridge");
     expect(initial.systemPrompt).toContain("four-part narrative template");
+    expect(initial.messages[0]?.content).toContain("Governance creates a usable path, not an after-the-fact gate.");
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      expect(database.prepare("SELECT original_capture FROM editorial_run_snapshots WHERE idea_id = ? ORDER BY rowid DESC LIMIT 1").get(created.id)).toEqual({ original_capture: "Governance creates a usable path, not an after-the-fact gate." });
+    } finally { database.close(); }
     expect(initial.systemPrompt).not.toContain("Governance creates a usable path");
     expect(initial.messages[0]?.content).toContain("author reader note");
     expect(initial.messages[0]?.content).toContain("Structured author brief");
@@ -376,6 +508,81 @@ describe("grounded reader-output boundaries", () => {
     expect(derived.systemPrompt).toContain("321-357");
     expect(derived.messages[0]?.content).toContain("author reader note");
     expect(getIdea(created.id)?.derivedShortPost).toMatchObject({ stale: false, sourceArticleVersion: getIdea(created.id)?.article?.version });
+  });
+
+  it("keeps a structured Principle authoritative from direct API creation through retrieval and immutable Board snapshots", async () => {
+    const originalPrinciple = "Choose the tool after defining the required outcome.";
+    const revisedPrinciple = "The required outcome should decide the tool, not the other way around.";
+    const brief = {
+      workingTitle: "Outcome first", situation: "A team chose a tool before its outcome.", assumption: "The strongest model will solve the work.", discovery: "The team had to document owners, review gates, and evaluation criteria before choosing a tool.", principle: originalPrinciple,
+    };
+    const ideaCountBeforeConflict = listIdeas().length;
+    const conflictResponse = await ideasPost(new Request("http://127.0.0.1:3100/api/ideas", {
+      method: "POST", headers: { "content-type": "application/json", origin: "http://127.0.0.1:3100" },
+      body: JSON.stringify({ rawNotes: revisedPrinciple, structuredIdeaBrief: brief }),
+    }));
+    expect(conflictResponse.status).toBe(400);
+    expect(listIdeas()).toHaveLength(ideaCountBeforeConflict);
+
+    const createResponse = await ideasPost(new Request("http://127.0.0.1:3100/api/ideas", {
+      method: "POST", headers: { "content-type": "application/json", origin: "http://127.0.0.1:3100" },
+      body: JSON.stringify({ structuredIdeaBrief: brief }),
+    }));
+    expect(createResponse.status).toBe(201);
+    const createPayload = await createResponse.json() as { idea?: NonNullable<ReturnType<typeof getIdea>> };
+    if (!createPayload.idea) throw new Error("Expected the direct creation route to return an idea.");
+    const created = createPayload.idea;
+    expect(created).toMatchObject({ rawNotes: originalPrinciple, structuredIdeaBrief: { principle: originalPrinciple } });
+
+    fs.writeFileSync(bokPath, `# Old principle\n\n${originalPrinciple}\n\n# Revised principle\n\n${revisedPrinciple}`, { mode: 0o600 });
+    refreshContent();
+    await runGroundedEditorialRun(created.id, new RecordingProvider());
+
+    const context = { params: Promise.resolve({ ideaId: created.id }) };
+    const response = await ideaDetailPost(new Request(`http://127.0.0.1:3100/api/ideas/${created.id}`, {
+      method: "POST", headers: { "content-type": "application/json", origin: "http://127.0.0.1:3100" },
+      body: JSON.stringify({ structuredIdeaBrief: { ...brief, principle: revisedPrinciple } }),
+    }), context);
+    expect(response.status).toBe(200);
+    expect((await response.json()).idea).toMatchObject({ rawNotes: revisedPrinciple, structuredIdeaBrief: { principle: revisedPrinciple } });
+
+    const provider = new RecordingProvider();
+    await runGroundedEditorialRun(created.id, provider);
+    expect(provider.requests[0]?.messages[0]?.content).toContain(revisedPrinciple);
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      expect(database.prepare("SELECT original_capture FROM editorial_run_snapshots WHERE idea_id = ? ORDER BY rowid").all(created.id)).toEqual([
+        { original_capture: originalPrinciple },
+        { original_capture: revisedPrinciple },
+      ]);
+      expect(database.prepare("SELECT original_capture FROM editorial_run_snapshots WHERE idea_id = ? ORDER BY rowid DESC LIMIT 1").get(created.id)).toEqual({ original_capture: revisedPrinciple });
+      expect(database.prepare("SELECT raw_notes FROM ideas WHERE id = ?").get(created.id)).toEqual({ raw_notes: revisedPrinciple });
+      expect(database.prepare("SELECT section.text FROM retrieval_records retrieval JOIN model_calls call ON call.id = retrieval.model_call_id JOIN knowledge_sections section ON section.id = retrieval.knowledge_section_id JOIN editorial_run_snapshots snapshot ON snapshot.review_run_id = call.raw_usage->>'$.reviewRunId' WHERE call.agent_role = 'retrieval' AND snapshot.idea_id = ? ORDER BY snapshot.rowid DESC, retrieval.rank LIMIT 1").get(created.id)).toEqual({ text: "The required outcome should decide the tool, not the other way around." });
+    } finally { database.close(); }
+  });
+
+  it("persists confirmed telemetry as unaccepted when actual provider pricing is invalid", async () => {
+    const created = createIdea({ rawNotes: "Confirmed provider telemetry must survive an invalid actual price." });
+    const draft = saveEditedDraft(created.id, "A clear owner and observable outcome keep an AI pilot grounded in operating work.", "short").shortPost!;
+    let estimates = 0;
+    const underlying: ModelProvider = {
+      name: "invalid-price-provider",
+      async generate() { return { provider: "invalid-price-provider", model: "resolved-model", providerRequestId: "received-request", inputTokens: 11, outputTokens: 17, totalTokens: 28, latencyMs: 23, text: "{}", structuredOutput: {} }; },
+      estimateCost() {
+        estimates += 1;
+        return estimates === 1
+          ? { inputCost: 0.003, outputCost: 0.003, totalCost: 0.006, currency: "USD", estimated: true }
+          : { inputCost: Number.NaN, outputCost: 0, totalCost: Number.NaN, currency: "USD", estimated: true };
+      },
+    };
+    const provider = new CumulativeBudgetProvider(underlying, 0.01, true);
+    const request: ModelRequest = { provider: "invalid-price-provider", model: "configured-model", messages: [{ role: "user", content: "test" }], maxOutputTokens: 10, metadata: { agentRole: "strategist", task: "review", modelTier: "low" } };
+    await expect(provider.generate(request)).rejects.toThrow(/actual provider usage/i);
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      persistAttempts(database, provider.attempts, { role: "strategist", draftVersionId: draft.id, promptChecksum: "test", provider, pricingAssumption: "synthetic", budgetCap: 0.01, acceptedLastAttempt: false });
+      expect(database.prepare("SELECT provider, model, input_tokens, output_tokens, total_tokens, latency_ms, provider_request_id, estimated_total_cost, success, output_accepted FROM model_calls WHERE draft_version_id = ? ORDER BY rowid DESC LIMIT 1").get(draft.id)).toEqual({ provider: "invalid-price-provider", model: "configured-model", input_tokens: 11, output_tokens: 17, total_tokens: 28, latency_ms: 23, provider_request_id: "received-request", estimated_total_cost: 0.006, success: 0, output_accepted: 0 });
+    } finally { database.close(); }
   });
 
   it("stops an incomplete started idea-capture template before any Board dispatch", async () => {
@@ -468,6 +675,38 @@ describe("grounded reader-output boundaries", () => {
     expect(request.systemPrompt).not.toContain("444-466");
     expect(request.messages[0]?.content).toContain("Original reader note must remain untrusted");
     expect(request.messages[0]?.content).not.toContain("Current mutable note");
+  });
+
+  it("claims one exact derived-short source before overlapping recovery dispatch", async () => {
+    const created = createIdea({ rawNotes: "Concurrent derived-short recovery must dispatch at most once for one exact saved article." });
+    updateIdea(created.id, {
+      outputShape: "long_with_derived_short",
+      outputPreferences: { longFormEnabled: true, longFormMinWords: 120, longFormMaxWords: 130, shortFormEnabled: true, shortFormMinWords: 73, shortFormMaxWords: 77, shortFormSource: "derived_from_long" },
+    });
+    const completed = await runGroundedEditorialRun(created.id, new FixedDerivedShortProvider(repeatedWords(124), repeatedWords(75)));
+    const articleDraftVersionId = completed.draftVersionId;
+    if (!articleDraftVersionId) throw new Error("Expected the completed Board run to save its article.");
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      database.prepare("DELETE FROM draft_relationships WHERE parent_draft_version_id = ? AND relationship_type = 'derived_short'").run(articleDraftVersionId);
+    } finally { database.close(); }
+
+    const provider = new LatchedDerivedShortProvider();
+    const input = { providerName: "grounded-test", model: "grounded-editorial-test-v1", tier: "low" as const, budgetCap: 0.05, pricingAssumption: "Synthetic test-only pricing.", recoveryKind: "refresh" as const };
+    const first = retryDerivedShortDraftForTest(created.id, provider, input);
+    await provider.started;
+    const second = retryDerivedShortDraftForTest(created.id, provider, input);
+    await Promise.resolve();
+    const claimed = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      expect(claimed.prepare("SELECT status FROM derived_short_recovery_claims WHERE article_draft_version_id = ?").all(articleDraftVersionId)).toEqual([{ status: "dispatching" }]);
+    } finally { claimed.close(); }
+    provider.release();
+    const outcomes = await Promise.allSettled([first, second]);
+
+    expect(provider.dispatches).toBe(1);
+    expect(outcomes[0]?.status).toBe("fulfilled");
+    expect(outcomes[1]).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/already active.*unconfirmed/i) }) });
   });
 
   it("uses the immutable saved Board reader contract in a targeted reviewer rerun", async () => {
@@ -619,6 +858,52 @@ describe("grounded reader-output boundaries", () => {
     expect(failedProvider.requests.map((request) => request.metadata?.agentRole)).toEqual(["strategist", "skeptic", "editor"]);
   });
 
+  it("terminalizes its owned Board and targeted-review runs when attempt persistence fails after dispatch", async () => {
+    const installAttemptWriteFault = () => {
+      const database = openDatabase(process.env.DATABASE_PATH!);
+      try {
+        database.exec("CREATE TRIGGER b3_model_call_fault BEFORE INSERT ON model_calls WHEN NEW.agent_role = 'strategist' BEGIN SELECT RAISE(FAIL, 'synthetic attempt persistence fault'); END;");
+      } finally { database.close(); }
+    };
+    const clearAttemptWriteFault = () => {
+      const database = openDatabase(process.env.DATABASE_PATH!);
+      try { database.exec("DROP TRIGGER IF EXISTS b3_model_call_fault"); } finally { database.close(); }
+    };
+    const latestRunStatus = (ideaId: string) => {
+      const database = openDatabase(process.env.DATABASE_PATH!);
+      try {
+        return database.prepare(
+          "SELECT run.status FROM review_runs run JOIN content_items content ON content.id = run.content_item_id WHERE content.idea_id = ? ORDER BY run.rowid DESC LIMIT 1",
+        ).get(ideaId) as { status: string } | undefined;
+      } finally { database.close(); }
+    };
+
+    const boardIdea = createIdea({ rawNotes: "A persistence fault after a successful reviewer response must still terminalize its Board run." });
+    const boardProvider = new RecordingProvider();
+    installAttemptWriteFault();
+    try {
+      await expect(runGroundedEditorialRun(boardIdea.id, boardProvider)).rejects.toThrow(/synthetic attempt persistence fault/i);
+    } finally { clearAttemptWriteFault(); }
+    expect(boardProvider.requests).toHaveLength(1);
+    expect(latestRunStatus(boardIdea.id)).toMatchObject({ status: "failed" });
+
+    const reviewerIdea = createIdea({ rawNotes: "A persistence fault after a targeted reviewer response must not leave the targeted run active." });
+    await runGroundedEditorialRun(reviewerIdea.id);
+    const reviewerProvider = new RecordingProvider();
+    installAttemptWriteFault();
+    try {
+      await expect(runSingleReviewer(reviewerIdea.id, "strategist", reviewerProvider, {
+        model: "grounded-editorial-test-v1", tier: "medium", budgetCap: 0.05, pricingAssumption: "Synthetic route pricing.", escalationReason: "Verify targeted-run terminalization after a persistence fault.",
+      })).rejects.toThrow(/synthetic attempt persistence fault/i);
+    } finally { clearAttemptWriteFault(); }
+    expect(reviewerProvider.requests).toHaveLength(1);
+    expect(latestRunStatus(reviewerIdea.id)).toMatchObject({ status: "failed" });
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      expect(database.prepare("SELECT COUNT(*) AS count FROM review_runs WHERE status = 'running'").get()).toMatchObject({ count: 0 });
+    } finally { database.close(); }
+  });
+
   it("records one Skeptic truncation, then links an explicit scoped recovery without replacing the Board history", async () => {
     const created = createIdea({ rawNotes: "A reviewer output-limit recovery must remain separate from the original Board history." });
     updateIdea(created.id, {
@@ -701,6 +986,38 @@ describe("grounded reader-output boundaries", () => {
         { success: 1, recovery: "retry", failure: null },
       ]);
     } finally { database.close(); }
+  });
+
+  it("discloses the persisted Frontier Initial Drafter route for its scoped recovery", async () => {
+    const highModelVariable = modelEnvironmentVariable(routeFor("initial_drafter", "high"));
+    const previousHighModel = process.env[highModelVariable];
+    process.env[highModelVariable] = "synthetic-frontier-initial-drafter";
+    try {
+      const frontierRoute = routeFor("initial_drafter", "high");
+      const created = createIdea({ rawNotes: "A failed Frontier working draft must keep its exact saved model route in recovery disclosure." });
+      await expect(runGroundedEditorialRun(created.id, new InitialDrafterTruncationProvider(), {
+        executionMode: "live",
+        budgetCap: 0.75,
+        providerForRole: () => frontierRoute.provider,
+        modelForRole: (role) => role === "initial_drafter" ? frontierRoute.model : "synthetic-low",
+        tierForRole: (role) => role === "initial_drafter" ? frontierRoute.tier : "low",
+        pricingAssumptionForRole: (role) => role === "initial_drafter" ? frontierRoute.pricingAssumption : routeFor("strategist", "low").pricingAssumption,
+      })).rejects.toThrow(/output limit/i);
+
+      expect(initialDrafterRecoveryAvailability(created.id)).toMatchObject({
+        available: true,
+        route: { provider: frontierRoute.provider, model: frontierRoute.model, tier: "high" },
+      });
+      expect(liveRunPreview(created.id).initialDrafterRecovery).toMatchObject({
+        provider: frontierRoute.provider,
+        model: frontierRoute.model,
+        tier: "high",
+        estimatedCost: expect.any(Number),
+      });
+    } finally {
+      if (previousHighModel === undefined) delete process.env[highModelVariable];
+      else process.env[highModelVariable] = previousHighModel;
+    }
   });
 
   it("pins an operator-configured Initial Drafter allowance to the saved Board and its one scoped retry", async () => {
@@ -967,6 +1284,66 @@ describe("grounded reader-output boundaries", () => {
     expect(getIdea(created.id)?.editorialBrief?.runFailures).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "initial_drafter", category: "reader_prose_scaffolding_failed" }),
     ]));
+  });
+
+  it("keeps a reader-prose rejection recoverable for its saved live Initial Drafter route", async () => {
+    const modelVariable = modelEnvironmentVariable(routeFor("initial_drafter", "high"));
+    const previousModel = process.env[modelVariable];
+    process.env[modelVariable] = "synthetic-recoverable-reader-prose-route";
+    try {
+      const route = routeFor("initial_drafter", "high");
+      const capture = "alpha a bridge I carry the signal through a careful operating decision today tomorrow";
+      const created = createIdea({ rawNotes: capture });
+      const body = `${capture.split(" ").slice(1, 13).join(" ")} ${Array.from({ length: 180 }, (_, index) => `reader${index}`).join(" ")}`;
+      await expect(runGroundedEditorialRun(created.id, new FixedInitialDrafterProvider(body), {
+        executionMode: "live",
+        budgetCap: 0.75,
+        providerForRole: () => route.provider,
+        modelForRole: () => route.model,
+        tierForRole: () => route.tier,
+        pricingAssumptionForRole: () => route.pricingAssumption,
+      })).rejects.toThrow(/repeated a long portion of the original capture/i);
+
+      expect(initialDrafterRecoveryAvailability(created.id)).toMatchObject({
+        available: true,
+        route: { provider: route.provider, model: route.model, tier: route.tier },
+      });
+    } finally {
+      if (previousModel === undefined) delete process.env[modelVariable];
+      else process.env[modelVariable] = previousModel;
+    }
+  });
+
+  it("hydrates a legacy exact-heading BOK backbone only from the failed run's persisted retrieval set", async () => {
+    const modelVariable = modelEnvironmentVariable(routeFor("initial_drafter", "high"));
+    const previousModel = process.env[modelVariable];
+    process.env[modelVariable] = "synthetic-legacy-reader-prose-route";
+    try {
+      const route = routeFor("initial_drafter", "high");
+      const capture = "alpha a bridge I carry the signal through a careful operating decision today tomorrow";
+      const created = createIdea({ rawNotes: capture });
+      const body = `${capture.split(" ").slice(1, 13).join(" ")} ${Array.from({ length: 180 }, (_, index) => `reader${index}`).join(" ")}`;
+      await expect(runGroundedEditorialRun(created.id, new FixedInitialDrafterProvider(body), {
+        executionMode: "live",
+        budgetCap: 0.75,
+        providerForRole: () => route.provider,
+        modelForRole: () => route.model,
+        tierForRole: () => route.tier,
+        pricingAssumptionForRole: () => route.pricingAssumption,
+      })).rejects.toThrow(/repeated a long portion of the original capture/i);
+
+      const database = openDatabase(process.env.DATABASE_PATH!);
+      try {
+        database.prepare(
+          "UPDATE agent_reviews SET structured_output = json_remove(structured_output, '$.evidence_backbone.source_key') WHERE review_run_id = ? AND role_id = 'role_synthesizer'",
+        ).run(getIdea(created.id)!.editorialBrief!.runId);
+      } finally { database.close(); }
+
+      expect(initialDrafterRecoveryAvailability(created.id)).toMatchObject({ available: true });
+    } finally {
+      if (previousModel === undefined) delete process.env[modelVariable];
+      else process.env[modelVariable] = previousModel;
+    }
   });
 
   it("rejects an unaligned same-run derived short capture fragment containing one-character words even when its word range is compliant", async () => {

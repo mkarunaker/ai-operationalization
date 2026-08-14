@@ -76,4 +76,35 @@ describe("cumulative live budget", () => {
     expect(estimatedModels).toEqual(["configured-alias", "configured-alias"]);
     expect(provider.attempts[0]?.response?.model).toBe("configured-alias-2025-08-07");
   });
+
+  it.each([Number.NaN, -0.001])("fails closed and retains the reservation when actual pricing is invalid (%s)", async (invalidActualCost) => {
+    let estimateCalls = 0;
+    let dispatches = 0;
+    const underlying: ModelProvider = {
+      name: "invalid-actual-cost",
+      async generate(request) {
+        dispatches += 1;
+        return { provider: "invalid-actual-cost", model: request.model, text: "{}", structuredOutput: {}, inputTokens: 10, outputTokens: 10 };
+      },
+      estimateCost() {
+        estimateCalls += 1;
+        return estimateCalls % 2 === 1
+          ? { inputCost: 0.003, outputCost: 0.003, totalCost: 0.006, currency: "USD", estimated: true }
+          : { inputCost: invalidActualCost, outputCost: 0, totalCost: invalidActualCost, currency: "USD", estimated: true };
+      },
+    };
+    const provider = new CumulativeBudgetProvider(underlying, 0.01, true);
+    const request: ModelRequest = {
+      provider: "invalid-actual-cost",
+      model: "configured-model",
+      messages: [{ role: "user", content: "test" }],
+      maxOutputTokens: 10,
+      metadata: { agentRole: "strategist", task: "review", modelTier: "low" },
+    };
+
+    await expect(provider.generate(request)).rejects.toThrow(/actual provider usage/i);
+    expect(provider.attempts).toEqual([expect.objectContaining({ reservedCost: 0.006, estimatedCost: 0.006, error: expect.any(String), response: expect.objectContaining({ provider: "invalid-actual-cost", model: "configured-model", inputTokens: 10, outputTokens: 10 }) })]);
+    await expect(provider.generate({ ...request, metadata: { ...request.metadata, task: "repair" } })).rejects.toThrow("budget would be exceeded");
+    expect(dispatches).toBe(1);
+  });
 });

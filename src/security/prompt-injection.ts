@@ -18,3 +18,11 @@ export function assessPromptInjection(text: string): PromptInjectionAssessment {
 export function escapeUntrustedContext(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
+
+export function escapeUntrustedAttribute(text: string): string {
+  return escapeUntrustedContext(text)
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;")
+    .replaceAll("\r", "&#13;")
+    .replaceAll("\n", "&#10;");
+}

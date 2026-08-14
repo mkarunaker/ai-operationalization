@@ -31,6 +31,16 @@ export const groundedSynthesisOutputSchema = z.object({
   unclear: z.string().min(1),
   counterargument: z.string().min(1),
   evidence_needed: z.string().min(1),
+  // This is an editorial plan, not a factual source of its own. The
+  // orchestrator resolves source_key to the exact retrieved BOK heading before
+  // it can guide the Initial Drafter.
+  evidence_backbone: z.object({
+    source_key: z.string().min(1).max(100),
+    source_heading: z.string().min(1).max(500),
+    operating_distinction: z.string().min(1).max(1_000),
+    drafting_use: z.string().min(1).max(1_000),
+    uncertainty_boundary: z.string().min(1).max(1_000),
+  }).strict(),
   recommended_changes: z.array(z.string().min(1)).min(1).max(3),
   next_step: z.string().min(1),
   confidence: z.object({ score: z.number().min(0).max(1), reason: z.string() }),

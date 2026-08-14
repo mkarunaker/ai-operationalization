@@ -33,6 +33,12 @@ function fingerprint(request: ModelRequest) {
   return crypto.createHash("sha256").update(material).digest("hex").slice(0, 10);
 }
 
+function selectedBokSourceKeyFromRequest(request: ModelRequest) {
+  const material = request.messages.map((message) => message.content).join("\n");
+  const match = material.match(/Canonical source key: (selected_bok_\d+)/);
+  return match?.[1] ?? "no_selected_bok";
+}
+
 function reviewOutput(role: string, marker: string, bokHeading?: string) {
   const sourceNote = bokHeading
     ? ` The selected BOK material includes ${bokHeading}.`
@@ -83,25 +89,42 @@ function draftOutput(metadata: GroundedMetadata, forceScaffoldingFailure = false
     ? [
         "AI work becomes useful when it changes an observable part of the work.",
         "A clear owner can decide whether the change improves the result.",
+        "Start by naming the baseline rather than relying on enthusiasm or usage alone.",
+        "Choose one outcome that a team can observe without inventing certainty.",
+        "Decide in advance what evidence would justify continuing the work.",
+        "Also make clear what would prompt a pause or a redesign.",
+        "That discipline turns a promising demonstration into an operating decision.",
+        "Controls help when they clarify responsibility and the next action.",
+        "A small pilot can expose missing context, handoffs, or accountability.",
+        "Those findings are valuable even when the first design needs revision.",
+        "Visible activity is not the same thing as a durable improvement.",
         "The practical test is whether people can see the outcome getting better.",
+        "A sustained initiative earns its place when the change remains visible.",
         "What would you check before treating this as dependable work?",
       ]
     : [
         "Capability is only the starting point for useful AI work.",
         "The durable question is what changes in the work people actually do.",
-        "A clear owner, sensible controls, and an observable outcome make that question practical.",
-        "Teams can name the baseline, decide what evidence would justify continuing, and notice when the work needs redesign.",
-        "That approach keeps experimentation useful without mistaking visible activity for progress.",
+        "That question turns a promising demonstration into an operating decision.",
+        "Name the baseline before treating adoption as evidence of value.",
+        "Choose one observable outcome that will show whether the change is helping.",
+        "A clear owner can interpret the signal and decide what happens next.",
+        "Controls matter when they make the work safer and clearer, not when they merely slow it down.",
+        "Small pilots can reveal where context, handoffs, or accountability are missing.",
+        "Those discoveries are useful even when the first design needs to be revised.",
+        "Teams should decide in advance what result would justify expanding the work.",
+        "They should also say what evidence would cause them to pause or redesign it.",
+        "That discipline keeps activity from becoming a substitute for learning.",
+        "People can then see whether the AI changes the work rather than simply adding another interface.",
+        "The aim is not flawless prediction; it is a better decision with clearer consequences.",
+        "A sustained initiative earns its place when the operating change remains visible.",
         "What operating change would make this initiative worth sustaining?",
       ];
-  const outputWords: string[] = [];
-  let sentence = 0;
-  const prefix = forceScaffoldingFailure ? ["The", "following", "themes"] : [];
-  while (outputWords.length + prefix.length < range.min) {
-    outputWords.push(...sentences[sentence % sentences.length]!.split(/\s+/));
-    sentence += 1;
-  }
-  const body = [...prefix, ...outputWords].slice(0, range.max).join(" ");
+  const prefix = forceScaffoldingFailure ? ["<untrusted_context", "source=\"fixture\">"] : [];
+  // A local sample is not a simulated language model. Do not repeat generic
+  // sentences merely to mimic a requested word range; range guidance remains
+  // advisory for an otherwise valid saved output.
+  const body = [...prefix, ...sentences.flatMap((sentence) => sentence.split(/\s+/))].slice(0, range.max).join(" ");
   return {
     role: metadata.agentRole === "final_drafter" ? "final_drafter" : "initial_drafter",
     body,
@@ -117,6 +140,7 @@ export class GroundedTestProvider implements ModelProvider {
     const metadata = (request.metadata ?? {}) as GroundedMetadata & { agentRole?: string };
     const marker = metadata.sourceFingerprint ?? fingerprint(request);
     const task = metadata.task ?? "review";
+    const evidenceSourceKey = task === "synthesis" ? selectedBokSourceKeyFromRequest(request) : undefined;
     const forceScaffoldingFailure = metadata.agentRole === "initial_drafter"
       && request.messages.some((message) => message.content.includes(E2E_SCAFFOLDING_FAILURE_MARKER));
     const structuredOutput =
@@ -131,6 +155,13 @@ export class GroundedTestProvider implements ModelProvider {
               unclear: "The claim still needs a specific boundary or example.",
               counterargument: "The observation may not hold when the workflow already has clear ownership, context, and measurement.",
               evidence_needed: "Add one concrete example, source, or clearly labelled uncertainty.",
+              evidence_backbone: {
+                source_key: evidenceSourceKey!,
+                source_heading: evidenceSourceKey === "no_selected_bok" ? "No selected BOK section" : "Resolved by the server from the selected source key.",
+                operating_distinction: "Visible AI activity is not evidence of an operating change until ownership and the expected outcome are explicit.",
+                drafting_use: "Use the selected operating distinction to interpret the author's incident before explaining what should change.",
+                uncertainty_boundary: "Do not claim that a tool, vendor, or organization has solved the operating work unless the supplied material establishes it.",
+              },
               recommended_changes: [
                 "Lead with the observation and name the operating consequence.",
                 "Keep the evidence boundary visible.",

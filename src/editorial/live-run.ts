@@ -1,4 +1,5 @@
 import { defaultRunBudgetUsd, estimateRouteCost, maximumRunBudgetUsd, modelEnvironmentVariable, routeFor, routeForProviderTier, type LiveProviderName, type ModelTier } from "@/ai/model-routing";
+import { LIVE_BOARD_QUALITY_PROFILES, resolveLiveBoardQualityProfile, tierForLiveBoardRole, type LiveBoardQualityProfile } from "@/config/model-routing";
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
 import { ZenMuxChatCompletionsProvider } from "@/ai/zenmux-provider";
@@ -34,10 +35,8 @@ function providerLabel(provider: LiveProviderName) {
   return provider === "zenmux" ? "ZenMux" : provider === "anthropic" ? "Anthropic" : "OpenAI";
 }
 
-function routeForPlannedRole(role: AgentRole) {
-  // A derived short post is a bounded adaptation of the article, not a
-  // second long-form drafting task. Keep that extra call low-cost.
-  return routeFor(role);
+function routeForPlannedRole(role: AgentRole, profile: LiveBoardQualityProfile = "balanced") {
+  return routeFor(role, tierForLiveBoardRole(role, profile));
 }
 
 function requireConfiguredModel(route: ReturnType<typeof routeFor>, variable: string) {
@@ -81,7 +80,8 @@ export function proofreaderReservationEstimate(body: string, readerContract: Rea
   return estimateRouteCost(route, requestMaximumUsage(request)).totalCost * 2;
 }
 
-export function liveRunPreview(ideaId: string) {
+export function liveRunPreview(ideaId: string, requestedProfile?: unknown) {
+  const qualityProfile = resolveLiveBoardQualityProfile(requestedProfile);
   // A missing local index is an expected setup state after a synthetic-data
   // reset. Keep the Board setup visible and disable only the actions that
   // truly need the source; do not throw from a page-load preview.
@@ -94,7 +94,7 @@ export function liveRunPreview(ideaId: string) {
     : !voiceReady
       ? "The Editorial Board needs a ready voice reference. Index the configured source before starting a Board run."
       : undefined;
-  const route = routeFor("strategist");
+  const route = routeForPlannedRole("strategist", qualityProfile);
   const reviewerRerunRoutes = {
     medium: routeFor("strategist", "medium"),
     high: routeFor("strategist", "high"),
@@ -103,9 +103,9 @@ export function liveRunPreview(ideaId: string) {
     ? estimateGroundedEditorialRun(
         ideaId,
         routedLiveProvider,
-        (role) => routeForPlannedRole(role).model,
-        (role) => routeForPlannedRole(role).provider,
-        (role) => routeForPlannedRole(role).tier,
+        (role) => routeForPlannedRole(role, qualityProfile).model,
+        (role) => routeForPlannedRole(role, qualityProfile).provider,
+        (role) => routeForPlannedRole(role, qualityProfile).tier,
       )
     : 0;
   const reviewerRerunEstimatedCost = bokReady
@@ -148,8 +148,10 @@ export function liveRunPreview(ideaId: string) {
         derivedShortEscalationRoute.tier,
       )
     : 0;
-  const initialDrafterRecoveryRoute = routeForPlannedRole("initial_drafter");
   const initialDrafterRecovery = initialDrafterRecoveryAvailability(ideaId);
+  const initialDrafterRecoveryRoute = initialDrafterRecovery.available
+    ? routeForProviderTier(initialDrafterRecovery.route.provider, initialDrafterRecovery.route.tier)
+    : routeForPlannedRole("initial_drafter", qualityProfile);
   const initialDrafterRecoveryOutcome = initialDrafterRecoveryOutcomeFor(ideaId);
   const initialDrafterRecoveryEstimatedCost = initialDrafterRecovery.available
     ? estimateInitialDrafterRecovery(
@@ -184,12 +186,17 @@ export function liveRunPreview(ideaId: string) {
     pricingAssumption: route.pricingAssumption,
     source: { boardReady: bokReady && voiceReady, unavailableReason: boardUnavailableReason, hasSavedBoardContract },
     available: bokReady && voiceReady && plannedRoutes.every((role) => {
-      const planned = routeForPlannedRole(role);
+      const planned = routeForPlannedRole(role, qualityProfile);
       return providerAvailable(planned.provider) && Boolean(planned.model);
     }),
     estimatedCost,
+    qualityProfile: {
+      id: qualityProfile,
+      label: LIVE_BOARD_QUALITY_PROFILES[qualityProfile].label,
+      description: LIVE_BOARD_QUALITY_PROFILES[qualityProfile].description,
+    },
     planned: plannedRoutes.map((role) => {
-      const planned = routeForPlannedRole(role);
+      const planned = routeForPlannedRole(role, qualityProfile);
       return { role, provider: planned.provider, model: planned.model || "Model configuration required", tier: planned.tier };
     }),
     proofreader: {
@@ -253,13 +260,13 @@ export function liveRunPreview(ideaId: string) {
 
 export async function runLiveEditorialRun(
   ideaId: string,
-  input: { budgetCap?: number; tier?: ModelTier } = {},
+  input: { budgetCap?: number; qualityProfile?: unknown } = {},
 ): Promise<GroundedRunResult> {
   assertPublishedWorkflowUnlocked(ideaId);
-  const strategistTierOverride = input.tier;
+  const qualityProfile = resolveLiveBoardQualityProfile(input.qualityProfile);
   const allRoutes = plannedRolesForIdea(ideaId);
   for (const role of allRoutes) {
-    const planned = role === "strategist" ? routeFor(role, strategistTierOverride) : routeForPlannedRole(role);
+    const planned = routeForPlannedRole(role, qualityProfile);
     requireConfiguredModel(planned, modelEnvironmentVariable(planned));
   }
   const budgetCap = input.budgetCap ?? defaultRunBudgetUsd();
@@ -270,11 +277,11 @@ export async function runLiveEditorialRun(
   return runGroundedEditorialRun(ideaId, routedLiveProvider, {
     executionMode: "live",
     budgetCap,
-    modelForRole: (role: AgentRole) => (role === "strategist" ? routeFor(role, strategistTierOverride) : routeForPlannedRole(role)).model,
-    providerForRole: (role: AgentRole) => (role === "strategist" ? routeFor(role, strategistTierOverride) : routeForPlannedRole(role)).provider,
-    tierForRole: (role: AgentRole) => (role === "strategist" ? routeFor(role, strategistTierOverride) : routeForPlannedRole(role)).tier,
+    modelForRole: (role: AgentRole) => routeForPlannedRole(role, qualityProfile).model,
+    providerForRole: (role: AgentRole) => routeForPlannedRole(role, qualityProfile).provider,
+    tierForRole: (role: AgentRole) => routeForPlannedRole(role, qualityProfile).tier,
     pricingAssumption: "Per-role provider and model pricing assumptions are recorded in the run provenance and each model call.",
-    pricingAssumptionForRole: (role: AgentRole) => (role === "strategist" ? routeFor(role, strategistTierOverride) : routeForPlannedRole(role)).pricingAssumption,
+    pricingAssumptionForRole: (role: AgentRole) => routeForPlannedRole(role, qualityProfile).pricingAssumption,
   });
 }
 
@@ -329,8 +336,6 @@ export async function retryLiveDerivedShort(
 
 /** Retries only a failed Initial Drafter stage through its original server-owned route. */
 export async function retryLiveInitialDrafter(ideaId: string, input: { budgetCap?: number } = {}) {
-  const route = routeForPlannedRole("initial_drafter");
-  requireConfiguredModel(route, modelEnvironmentVariable(route));
   const budgetCap = input.budgetCap ?? defaultRunBudgetUsd();
   if (!Number.isFinite(budgetCap) || budgetCap <= 0)
     throw new Error("A positive per-run budget cap is required for the working-draft retry.");

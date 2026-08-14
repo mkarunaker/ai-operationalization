@@ -4,7 +4,7 @@ coverage/
 playwright-report/
 test-results/
 data/
-visuals/
+/visuals/
 .DS_Store
 *.tsbuildinfo
 .env

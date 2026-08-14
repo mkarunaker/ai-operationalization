@@ -93,6 +93,7 @@ CREATE TABLE visual_companions (
   visual_type TEXT NOT NULL CHECK(visual_type IN ('flow', 'maturity_path', 'contrast', 'decision_fork', 'custom_image')), color_scheme TEXT NOT NULL DEFAULT 'violet', title TEXT NOT NULL, subtitle TEXT NOT NULL, steps_json TEXT NOT NULL, alt_text TEXT NOT NULL, caption TEXT NOT NULL, file_path TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, visual_brief_id TEXT REFERENCES visual_briefs(id) ON DELETE SET NULL
 );
 CREATE TABLE initial_drafter_recovery_claims (review_run_id TEXT PRIMARY KEY REFERENCES review_runs(id) ON DELETE CASCADE, claimed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE derived_short_recovery_claims (id TEXT PRIMARY KEY, article_draft_version_id TEXT NOT NULL REFERENCES draft_versions(id) ON DELETE CASCADE, status TEXT NOT NULL CHECK(status IN ('dispatching', 'completed', 'failed')), claimed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, completed_at TEXT);
 CREATE TABLE custom_visual_attempts (id TEXT PRIMARY KEY, visual_brief_id TEXT NOT NULL REFERENCES visual_briefs(id) ON DELETE CASCADE, provider TEXT NOT NULL, model TEXT NOT NULL, pricing_assumption TEXT NOT NULL, estimated_cost REAL NOT NULL CHECK(estimated_cost >= 0), reserved_cost REAL NOT NULL CHECK(reserved_cost >= 0), actual_cost REAL, status TEXT NOT NULL CHECK(status IN ('dispatching', 'completed', 'failed')), provider_request_id TEXT, latency_ms INTEGER, failure_category TEXT, injection_signals_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, completed_at TEXT);
 CREATE INDEX ideas_project_status_idx ON ideas(project_id, status);
 CREATE INDEX ideas_status_priority_idx ON ideas(status, priority DESC, updated_at DESC);
@@ -116,6 +117,9 @@ CREATE INDEX visual_lead_selections_brief_idx ON visual_lead_selections(visual_b
 CREATE INDEX visual_companions_draft_created_idx ON visual_companions(draft_version_id, created_at DESC);
 CREATE INDEX visual_companions_brief_idx ON visual_companions(visual_brief_id);
 CREATE INDEX custom_visual_attempts_brief_created_idx ON custom_visual_attempts(visual_brief_id, created_at DESC);
+CREATE INDEX derived_short_recovery_claims_article_created_idx ON derived_short_recovery_claims(article_draft_version_id, claimed_at DESC);
+CREATE UNIQUE INDEX derived_short_recovery_claims_one_dispatching_idx ON derived_short_recovery_claims(article_draft_version_id) WHERE status = 'dispatching';
+CREATE UNIQUE INDEX custom_visual_attempts_one_dispatching_per_brief_idx ON custom_visual_attempts(visual_brief_id) WHERE status = 'dispatching';
 CREATE INDEX escalation_outcomes_review_run_idx ON escalation_outcomes(review_run_id);
 CREATE TRIGGER visual_briefs_limit_before_insert BEFORE INSERT ON visual_briefs WHEN NEW.status != 'dismissed' AND NEW.placement IS NOT NULL BEGIN
   SELECT CASE WHEN NEW.placement = 'lead' AND EXISTS (SELECT 1 FROM visual_briefs WHERE draft_version_id = NEW.draft_version_id AND placement = 'lead' AND status != 'dismissed') THEN RAISE(ABORT, 'This exact saved output already has a lead visual brief.') END;

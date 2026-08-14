@@ -44,6 +44,7 @@ function preview(overrides: Record<string, unknown> = {}) {
     budgetCap: 0.05,
     maximumBudgetCap: 0.25,
     pricingAssumption: "synthetic pricing",
+    qualityProfile: { id: "balanced", label: "Balanced quality", description: "Synthetic server-owned quality profile." },
     available: false,
     source: { boardReady: true },
     estimatedCost: 0.001,
@@ -260,6 +261,98 @@ test("keeps the Editorial Board setup visible when its local source index is una
   await expect(page.getByRole("button", { name: "Run live editorial review" })).toBeDisabled();
 });
 
+test("warns and holds all navigation paths while a delayed live Board request is active", async ({ page }) => {
+  const ideaId = await createIdeaThroughWrite(page);
+  const baseline = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: Record<string, unknown> };
+  let releaseRun: (() => void) | undefined;
+  const delayedRun = new Promise<void>((resolve) => { releaseRun = resolve; });
+
+  await page.route(`**/api/ideas/${ideaId}**`, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET" && new URL(request.url()).searchParams.get("execution") === "live_preview")
+      return route.fulfill({ json: { preview: preview({ available: true }) } });
+    if (request.method() === "POST" && JSON.parse(request.postData() ?? "{}").action === "run_live_board") {
+      await delayedRun;
+      return route.fulfill({ json: { idea: baseline.idea } });
+    }
+    return route.continue();
+  });
+
+  await page.goto(`/ideas/${ideaId}/board`);
+  await page.getByText("EDITORIAL BOARD RUN").click();
+  await page.getByRole("button", { name: /Run (live editorial review|Editorial Board again)/ }).click();
+  await expect(page.getByRole("status")).toContainText("Keep this page open until this request-bound live Board run finishes");
+
+  await page.getByRole("navigation").getByRole("link", { name: "Ideas" }).click();
+  await expect(page).toHaveURL(new RegExp(`/ideas/${ideaId}/board$`));
+  await expect(page.getByRole("status")).toContainText("Leaving, reloading, or using Back can interrupt this request-bound run");
+  await page.getByRole("navigation", { name: "Idea workflow stages" }).getByRole("link", { name: /Develop/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/ideas/${ideaId}/board$`));
+
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`/ideas/${ideaId}/board$`));
+  await expect(page.getByRole("status")).toContainText("Leaving, reloading, or using Back can interrupt this request-bound run");
+
+  const reloadDialog = page.waitForEvent("dialog");
+  const reload = page.reload({ waitUntil: "commit", timeout: 1_000 }).catch((error: unknown) => error);
+  const dialog = await reloadDialog;
+  expect(dialog.type()).toBe("beforeunload");
+  await dialog.dismiss();
+  expect(await reload).toBeInstanceOf(Error);
+  await expect(page).toHaveURL(new RegExp(`/ideas/${ideaId}/board$`));
+
+  releaseRun?.();
+  await expect(page.getByRole("status")).toContainText("Live editorial brief and working draft created");
+});
+
+test("offers only the named server-owned live content profiles before a paid Board run", async ({ page }) => {
+  const ideaId = await createIdeaThroughWrite(page);
+  let releaseFrontierPreview: (() => void) | undefined;
+  const frontierPreviewPending = new Promise<void>((resolve) => { releaseFrontierPreview = resolve; });
+  let submittedProfile: unknown;
+  await page.route(`**/api/ideas/${ideaId}**`, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET" && new URL(request.url()).searchParams.get("execution") === "live_preview") {
+      const isFrontier = new URL(request.url()).searchParams.get("qualityProfile") === "frontier_content";
+      if (isFrontier) await frontierPreviewPending;
+      const profile = isFrontier
+        ? { id: "frontier_content", label: "Frontier content", description: "Synthetic Sol-only main-draft route." }
+        : { id: "balanced", label: "Balanced quality", description: "Synthetic Terra main-draft route." };
+      return route.fulfill({ json: { preview: preview({ available: true, qualityProfile: profile }) } });
+    }
+    if (request.method() === "POST") {
+      submittedProfile = request.postDataJSON().qualityProfile;
+      return route.fulfill({ status: 500, json: { error: "Synthetic action capture." } });
+    }
+    return route.continue();
+  });
+
+  await page.goto(`/ideas/${ideaId}/board`);
+  await page.getByText("EDITORIAL BOARD RUN").click();
+  const profile = page.getByLabel("Live Board content quality");
+  const runButton = page.getByRole("button", { name: /Run (live editorial review|Editorial Board again)/ });
+  await expect(profile.locator("option")).toHaveCount(2);
+  await profile.selectOption("frontier_content");
+  await expect(runButton).toBeDisabled();
+  await expect(page.getByText("Loading the selected content-quality route and cost estimate.")).toBeVisible();
+  releaseFrontierPreview?.();
+  await expect(page.getByText("Synthetic Sol-only main-draft route.")).toBeVisible();
+  await runButton.click();
+  await expect.poll(() => submittedProfile).toBe("frontier_content");
+});
+
+test("shows the saved BOK evidence backbone before the author edits a grounded draft", async ({ page }) => {
+  const ideaId = await createIdeaThroughWrite(page, {
+    capture: `${marker("evidence-backbone")}: A team needs an accountable owner and an observable outcome before treating AI adoption as useful work.`,
+  });
+  await page.goto(`/ideas/${ideaId}/board`);
+  const backbone = page.getByRole("region", { name: "BOK evidence backbone" });
+  await expect(backbone).toContainText("Selected section:");
+  await expect(backbone).toContainText("Operating distinction:");
+  await expect(backbone).toContainText("How this shapes the draft:");
+  await expect(backbone).toContainText("Evidence boundary:");
+});
+
 test("shows immutable Board reader provenance separately from mutable Develop preferences", async ({ page }) => {
   await createIdeaThroughWrite(page, {
     shape: "long_with_derived_short",
@@ -409,7 +502,7 @@ test("shows an Initial Drafter output-limit as a scoped, costed recovery without
       reviewerRecoveries: [],
     },
   };
-  await page.route(`**/api/ideas/${ideaId}?execution=live_preview`, async (route) => {
+  await page.route(`**/api/ideas/${ideaId}?execution=live_preview**`, async (route) => {
     await route.fulfill({ json: { preview: preview() } });
   });
   await page.route(`**/api/ideas/${ideaId}`, async (route) => {
@@ -518,7 +611,7 @@ for (const fixture of initialDrafterFailureFixtures) {
         reviewerRecoveries: [],
       },
     };
-    await page.route(`**/api/ideas/${ideaId}?execution=live_preview`, async (route) => {
+    await page.route(`**/api/ideas/${ideaId}?execution=live_preview**`, async (route) => {
       await route.fulfill({ json: { preview: preview() } });
     });
     await page.route(`**/api/ideas/${ideaId}`, async (route) => {
@@ -540,7 +633,7 @@ test("projects a persisted Initial Drafter scaffolding failure into truthful bro
   await page.getByRole("button", { name: "Develop this idea →" }).click();
   const ideaId = new URL(page.url()).pathname.match(/^\/ideas\/([^/]+)/)?.[1];
   expect(ideaId).toBeTruthy();
-  await page.route(`**/api/ideas/${ideaId}?execution=live_preview`, async (route) => {
+  await page.route(`**/api/ideas/${ideaId}?execution=live_preview**`, async (route) => {
     await route.fulfill({ json: { preview: preview() } });
   });
   await page.getByRole("button", { name: "Save development notes" }).click();
@@ -572,7 +665,7 @@ test("removes the Initial Drafter retry control after its one permitted retry ha
       reviewerRecoveries: [],
     },
   };
-  await page.route(`**/api/ideas/${ideaId}?execution=live_preview`, async (route) => {
+  await page.route(`**/api/ideas/${ideaId}?execution=live_preview**`, async (route) => {
     await route.fulfill({ json: { preview: preview({ initialDrafterRecovery: { provider: "test-provider", model: "initial-medium", tier: "medium", estimatedCost: 0, available: false, unavailableReason: "Only one working-draft retry is permitted for a saved Editorial Board run. Start a new Board run after adjusting the configured route or output allowance." } }) } });
   });
   await page.route(`**/api/ideas/${ideaId}`, async (route) => {
@@ -599,7 +692,7 @@ test("reports a persisted Initial Drafter retry failure rather than a pre-dispat
     },
   };
   let retryAttempted = false;
-  await page.route(`**/api/ideas/${ideaId}?execution=live_preview`, async (route) => {
+  await page.route(`**/api/ideas/${ideaId}?execution=live_preview**`, async (route) => {
     await route.fulfill({ json: { preview: preview({ initialDrafterRecovery: retryAttempted
       ? { provider: "test-provider", model: "initial-medium", tier: "medium", estimatedCost: 0, available: false, unavailableReason: "Only one working-draft retry is permitted for a saved Editorial Board run. Start a new Board run after adjusting the configured route or output allowance.", outcome: "persisted_failure" }
       : { provider: "test-provider", model: "initial-medium", tier: "medium", estimatedCost: 0, available: true } }) } });
@@ -629,7 +722,7 @@ test("names the safe reason when an Initial Drafter retry is rejected before dis
       reviewerRecoveries: [],
     },
   };
-  await page.route(`**/api/ideas/${ideaId}?execution=live_preview`, async (route) => {
+  await page.route(`**/api/ideas/${ideaId}?execution=live_preview**`, async (route) => {
     await route.fulfill({ json: { preview: preview({ initialDrafterRecovery: { provider: "test-provider", model: "initial-medium", tier: "medium", estimatedCost: 0, available: true } }) } });
   });
   await page.route(`**/api/ideas/${ideaId}`, async (route) => {
@@ -639,7 +732,7 @@ test("names the safe reason when an Initial Drafter retry is rejected before dis
   await page.goto(`/ideas/${ideaId}/board`);
   await page.getByRole("button", { name: /Retry working draft/ }).click();
   await expect(page.getByText("Working-draft recovery rejected before provider dispatch")).toBeVisible();
-  await expect(page.getByText("The configured Initial Drafter route has changed since this Board run. Run the Editorial Board again before retrying the working draft. No provider failure provenance was created.")).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText("The configured Initial Drafter route has changed since this Board run. Run the Editorial Board again before retrying the working draft.");
 });
 
 test("reports a claimed Initial Drafter retry without persisted telemetry as unconfirmed", async ({ page }) => {
@@ -657,7 +750,7 @@ test("reports a claimed Initial Drafter retry without persisted telemetry as unc
     },
   };
   let retryAttempted = false;
-  await page.route(`**/api/ideas/${ideaId}?execution=live_preview`, async (route) => {
+  await page.route(`**/api/ideas/${ideaId}?execution=live_preview**`, async (route) => {
     await route.fulfill({ json: { preview: preview({ initialDrafterRecovery: retryAttempted
       ? { provider: "test-provider", model: "initial-medium", tier: "medium", estimatedCost: 0, available: false, unavailableReason: "Only one working-draft retry is permitted for a saved Editorial Board run. Start a new Board run after adjusting the configured route or output allowance.", outcome: "unconfirmed" }
       : { provider: "test-provider", model: "initial-medium", tier: "medium", estimatedCost: 0, available: true } }) } });
@@ -688,7 +781,7 @@ test("explains that Initial Drafter route drift requires a new Board run", async
       reviewerRecoveries: [],
     },
   };
-  await page.route(`**/api/ideas/${ideaId}?execution=live_preview`, async (route) => {
+  await page.route(`**/api/ideas/${ideaId}?execution=live_preview**`, async (route) => {
     await route.fulfill({ json: { preview: preview({ initialDrafterRecovery: { provider: "test-provider", model: "initial-medium", tier: "medium", estimatedCost: 0, available: false, unavailableReason: "The configured Initial Drafter route has changed since this Board run. Run the Editorial Board again before retrying the working draft." } }) } });
   });
   await page.route(`**/api/ideas/${ideaId}`, async (route) => {
@@ -713,7 +806,7 @@ test("shows a failed reviewer as a scoped recovery without replacing the saved B
       reviewerRecoveries: [],
     },
   };
-  await page.route(`**/api/ideas/${ideaId}?execution=live_preview`, async (route) => {
+  await page.route(`**/api/ideas/${ideaId}?execution=live_preview**`, async (route) => {
     await route.fulfill({ json: { preview: preview() } });
   });
   await page.route(`**/api/ideas/${ideaId}`, async (route) => {
@@ -747,8 +840,8 @@ test("renders the exact visual asset on the page and downloads it as PNG", async
   await expect(chooser.getByText("Suggested for this article")).toBeVisible();
   await expect(page.getByText(/would show:/)).toBeVisible();
   await page.getByRole("radio", { name: /Three-step flow/ }).check();
-  await page.getByRole("button", { name: "Prepare selected visual brief" }).click();
-  await expect(page.getByText("What should this visual help the reader see?")).toBeVisible();
+  await page.getByRole("button", { name: /Prepare (selected |suggested )?visual brief/ }).click();
+  await expect(page.getByText("Visual brief saved. Review the rationale, then approve it before rendering.")).toBeVisible();
   await expect(page.getByText("Rendering cost:").locator("..")).toContainText("$0.00 local");
   await expect(page.getByRole("button", { name: "Approve visual brief" })).toBeVisible();
   await page.getByRole("button", { name: "Approve visual brief" }).click();
@@ -795,6 +888,32 @@ test("keeps a literal author visual direction out of deterministic templates and
   ]);
 });
 
+test("lets the author revise a custom illustration concept before approval without rendering", async ({ page }) => {
+  const ideaId = await createIdeaThroughWrite(page);
+  const actions: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST" || !request.url().endsWith(`/api/ideas/${ideaId}`)) return;
+    const action = JSON.parse(request.postData() ?? "{}").action;
+    if (typeof action === "string") actions.push(action);
+  });
+  await page.locator(".visual-companion > summary").first().click();
+  await page.getByLabel("I want a custom illustration instead").check();
+  await page.getByLabel("What should the illustration emphasize?").fill("Show an unstable pilot operating without a clear owner.");
+  await page.getByRole("button", { name: "Prepare custom illustration" }).click();
+  const revisedDirection = "Show the accountable owner placing a clear review path beneath a visible AI pilot.";
+  await page.getByLabel(/Revise custom illustration direction before approval/).fill(revisedDirection);
+  await page.getByRole("button", { name: "Save custom concept revision" }).click();
+  await expect(page.getByRole("status")).toContainText("Custom concept revision saved. No image has been approved or generated.");
+  let saved = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: { visualBrief: { authorDirection: string; status: string } } };
+  expect(saved.idea.visualBrief).toMatchObject({ authorDirection: revisedDirection, status: "recommended" });
+  expect(actions).not.toContain("create_custom_visual_illustration");
+
+  await page.getByRole("button", { name: "Approve custom illustration" }).click();
+  saved = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as typeof saved;
+  expect(saved.idea.visualBrief).toMatchObject({ authorDirection: revisedDirection, status: "approved" });
+  expect(actions).not.toContain("create_custom_visual_illustration");
+});
+
 test("keeps an article-only custom illustration visible when the author leaves direction blank", async ({ page }) => {
   await createIdeaThroughWrite(page);
   await page.locator(".visual-companion > summary").first().click();
@@ -809,8 +928,8 @@ test("keeps an article-only custom illustration visible when the author leaves d
 test("keeps a dismissed custom illustration revision visible as saved no-render history after reload", async ({ page }) => {
   await createIdeaThroughWrite(page);
   await page.locator(".visual-companion > summary").first().click();
-  await page.getByLabel("What visual are you thinking of?").fill("Show the practical sequence from AI capability to an observable operating outcome.");
-  await page.getByRole("button", { name: "Prepare visual brief" }).click();
+  await page.getByRole("radio", { name: /Three-step flow/ }).check();
+  await page.getByRole("button", { name: /Prepare (selected |suggested )?visual brief/ }).click();
   await page.getByRole("button", { name: "Approve visual brief" }).click();
   await page.getByRole("button", { name: "Render approved visual" }).click();
   await page.getByText("Create a new visual version").click();
@@ -889,10 +1008,7 @@ test("keeps a legacy unlinked visual readable in Write and Finalize", async ({ p
 test("keeps lead visual versions immutable while retaining an independent derived-short lifecycle", async ({ page }) => {
   const ideaId = await createIdeaThroughWrite(page, { shape: "long_with_derived_short" });
   await page.locator(".visual-companion > summary").first().click();
-  await page.getByRole("button", { name: "Prepare visual brief" }).click();
-  await page.getByText("Try a supported deterministic diagram instead").click();
-  await page.getByRole("radio", { name: /Decision fork/ }).check();
-  await page.getByRole("button", { name: "Request selected visual" }).click();
+  await page.getByRole("button", { name: /Prepare (selected |suggested )?visual brief/ }).click();
   await page.getByRole("button", { name: "Approve visual brief" }).click();
   await page.getByRole("button", { name: "Render approved visual" }).click();
   await expect(page.locator(".visual-companion").first().locator(".visual-flow-actions")).toContainText("$0.00 local");
@@ -926,11 +1042,7 @@ test("keeps lead visual versions immutable while retaining an independent derive
 
   await page.locator(".derived-short-visual > summary").click();
   await expect(page.getByText(/Separate optional asset for exact derived short-post version/)).toBeVisible();
-  await page.getByRole("button", { name: "Prepare derived short visual brief" }).click();
-  const derivedPanel = page.locator(".derived-short-visual");
-  await derivedPanel.getByText("Try a supported deterministic diagram instead").click();
-  await derivedPanel.getByRole("radio", { name: /Decision fork/ }).check();
-  await page.getByRole("button", { name: "Request selected derived short visual" }).click();
+  await page.getByRole("button", { name: /Prepare (selected |suggested )?derived short visual brief/ }).click();
   await expect(page.locator(".derived-short-visual")).toContainText("Rendering cost:");
   await page.getByRole("button", { name: "Approve derived short visual brief" }).click();
   await page.getByRole("button", { name: "Render approved derived short visual" }).click();
@@ -938,7 +1050,7 @@ test("keeps lead visual versions immutable while retaining an independent derive
   await expect(page.locator("img.visual-rendered-asset")).toHaveCount(2);
 });
 
-test("lets an author replace a derived-short no-visual recommendation with its own selected shape", async ({ page }) => {
+test("lets an author select a derived-short visual shape", async ({ page }) => {
   await createIdeaThroughWrite(page, { shape: "long_with_derived_short" });
   await page.locator(".visual-companion").first().locator("summary").click();
   const derived = page.getByLabel("Derived short post draft");
@@ -946,13 +1058,8 @@ test("lets an author replace a derived-short no-visual recommendation with its o
   await page.getByRole("button", { name: "Save derived short version" }).click();
   await page.locator(".derived-short-visual > summary").click();
   const panel = page.locator(".derived-short-visual");
-  await expect(panel.getByRole("radio")).toHaveCount(0);
-  await page.getByRole("button", { name: "Prepare derived short visual brief" }).click();
-  await expect(panel.getByText(/No visual recommended for this exact derived short post/)).toBeVisible();
-  await expect(panel.getByRole("button", { name: "Request selected derived short visual" })).toHaveCount(0);
-  await panel.getByText("Try a supported deterministic diagram instead").click();
-  await panel.getByRole("radio", { name: /Decision fork/ }).check();
-  await page.getByRole("button", { name: "Request selected derived short visual" }).click();
+  await expect(panel.getByRole("radio")).toHaveCount(4);
+  await page.getByRole("button", { name: /Prepare (selected |suggested )?derived short visual brief/ }).click();
   await expect(panel).toContainText("Rendering cost:");
   await expect(page.getByRole("button", { name: "Approve derived short visual brief" })).toBeVisible();
 });
@@ -960,10 +1067,7 @@ test("lets an author replace a derived-short no-visual recommendation with its o
 test("exposes delivery channel only in Finalize and preserves article-first sequencing", async ({ page }) => {
   await createIdeaThroughWrite(page, { shape: "long_with_derived_short" });
   await page.locator(".visual-companion > summary").first().click();
-  await page.getByRole("button", { name: "Prepare visual brief" }).click();
-  await page.getByText("Try a supported deterministic diagram instead").click();
-  await page.getByRole("radio", { name: /Decision fork/ }).check();
-  await page.getByRole("button", { name: "Request selected visual" }).click();
+  await page.getByRole("button", { name: /Prepare (selected |suggested )?visual brief/ }).click();
   await page.getByRole("button", { name: "Approve visual brief" }).click();
   await page.getByRole("button", { name: "Render approved visual" }).click();
   await reviewAllDualOutputs(page);
@@ -1032,7 +1136,7 @@ test("keeps a saved derived short post independently editable and reviewable aft
   await expect(page.getByText(/Derived short post ready for final judgment|Revise derived short post before finalizing/)).toBeVisible();
   await page.locator(".derived-short-visual > summary").click();
   const visualPanel = page.locator(".derived-short-visual");
-  await page.getByRole("button", { name: "Prepare derived short visual brief" }).click();
+  await page.getByRole("button", { name: /Prepare (selected |suggested )?derived short visual brief/ }).click();
   if (await visualPanel.getByText(/No visual recommended for this exact derived short post/).count()) {
     await visualPanel.getByText("Try a supported deterministic diagram instead").click();
     await visualPanel.getByRole("radio", { name: /Three-step flow/ }).check();

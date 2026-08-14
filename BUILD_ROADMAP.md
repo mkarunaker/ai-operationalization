@@ -55,7 +55,7 @@ For additive schema work, the migration and its direct compatibility regression 
 | Full visual companions: Milestone 7 | Complete — Sol approved | 2026-08-10 | Approved, traceable visuals; any delivery-channel choice remains a Finalize concern |
 | Post-Milestone 7.1 authoring and visual-revision hardening | Complete — Sol approved | 2026-08-11 | Independent read-only approval after provenance, failure-projection, unique visual-version, and asset-history regressions |
 | Learning loop: Milestone 8 | Planned | 2026-08-16 | Manual feedback, follow-up ideas, and Notebook history; no Notebook-to-Inbox flow in current scope |
-| Local configuration and settings: Milestone 9 | Planned | 2026-08-19 | One safe home for non-secret model/cost policy, source readiness, and other local configuration; no authoring-workflow coupling |
+| Local configuration and settings: Milestone 9 | Complete — Sol approved | 2026-08-19 | Server-owned Balanced and Frontier-content profiles, exact route/cost disclosure, an approved $0.75 hard per-run ceiling, and a visible selected-BOK backbone before author editing; no provider smoke test without explicit authorization |
 | Local personal MVP release gate: Milestone 10 | Planned | 2026-08-22 | Security, recovery, production-mode validation, and honest technical-debt handoff |
 
 Milestone 5.1 is independently approved following Sol's read-only review. The completed manual-first research work remains valid historical delivery evidence; later milestones still require their own acceptance, validation, and audit gates.
@@ -135,6 +135,8 @@ Establish one unambiguous product contract and vocabulary before further feature
 - Back up the current SQLite database and verify that the backup opens.
 
 ### Acceptance criteria
+
+Current checkpoint: remediation is implemented and staged, but **not approved**. Direct B7 Back/reload, B8 retrieval-provenance, and B11 persisted-telemetry regressions are present. The complete no-provider Playwright gate passed with **44 deterministic browser tests**. Record command-derived results in `IMPLEMENTATION_STATUS.md` and this audit before fresh independent review; live-provider testing remains unauthorized.
 
 - One short decision record states the active product scope and document precedence.
 - BOK, Notebook template, database seed themes, migrations, and UI use the same five exact theme names.
@@ -813,6 +815,93 @@ Move local configuration out of authoring screens into one safe, understandable 
 ### Checkpoint report
 
 Demonstrate a safe theme lifecycle, a rejected invalid local policy mutation with no persistence, a truthful source-readiness state, and a future-run-only configuration change. Stop. Do not create a Notebook-to-Inbox workflow as part of this milestone.
+
+---
+
+## Milestone 9.5 — Integrated audit remediation and paid-run safety
+
+### Status
+
+**Required before Milestone 10.** The 2026-08-13 integrated audit returned `DO NOT APPROVE` with eleven concrete blockers. The full evidence and external-finding disposition are recorded in `docs/AUDIT_2026-08-13_INTEGRATED.md`.
+
+Completion checkpoint: the first fresh review found one remaining B8 direct-creation gap. A conflicting `POST /api/ideas` payload previously stored different raw-capture and structured-Principle identities. The real-route regression observed the prior `201`, the create validator now rejects the conflict before persistence, and the strengthened test proves coherent creation, revised retrieval, and immutable old/new Board snapshots. The complete no-provider gate is green, and the repeat independent read-only audit approved the complete staged B1–B11 patch with no concrete blockers. Milestone 9.5 is complete; live-provider testing remains unauthorized without an explicit owner decision. Stop before Milestone 10.
+
+### Post-checkpoint deterministic draft readability remediation — 2026-08-13
+
+A manual production-mode product test found an adjacent local-fixture defect: the zero-cost deterministic short draft repeated generic sentences merely to fill a requested range. The narrow fix removes range-padding repetition and emits one bounded set of distinct sample sentences; output-range guidance remains advisory. A direct regression uses a realistic operating-leader prompt, proves sentence uniqueness, and asserts the run ledger remains `$0.00`. The complete no-provider gate is green (**25 test files / 167 tests**, **44 Playwright checks**, baseline migration, build, 138-file secret scan, and zero-vulnerability audit); Sol independently approved the final diff with no concrete blocker. This is not a live-provider, pricing, model-routing, or voice-quality change, and does not authorize Milestone 10 or any provider call.
+
+### Objective
+
+Close the verified repository-completeness, prompt-boundary, finance, terminalization, concurrency, destructive-reset, identity, and request-bound UX defects without broadening product scope or weakening existing provenance and cost controls.
+
+### Priority and dependency order
+
+#### P0 — repository, trust, finance, terminalization, and destructive safety
+
+1. **B1 — tracked custom-image route.** Anchor the generated asset ignore rule to `/visuals/`, commit the database-authorized asset route, and prove a clean tracked checkout displays and downloads a synthetic custom PNG.
+2. **B2 and B10 — complete prompt boundaries.** Prevent hostile source attributes from altering boundary structure and move the author-controlled image title into bounded untrusted context.
+3. **B11 — post-response cost validation.** Reject non-finite or negative actual estimates, preserve the attempt, and conservatively retain the reserved maximum.
+4. **B3 — terminalization after persistence failure.** Add an exception-unwind guard for function-owned Board and targeted-reviewer runs; no owned run may remain `running` after the function exits.
+5. **B5 and B6 — duplicate paid-dispatch prevention.** Add atomic, exact-source claims for derived-short recovery and custom-image generation after no-dispatch cost preflight and before provider execution.
+6. **B4 — destructive fresh-start containment.** Test the exact confirmation flag and validate targets using real filesystem containment, including symlink-escape fixtures.
+
+#### P1 — author identity, control, and truthful execution UX
+
+7. **B8 — structured Principle authority.** A structured Principle edit must update the durable capture, retrieval query, and future Board snapshot together while historical Board snapshots remain immutable.
+8. **B9 — custom-concept revision before approval.** Permit no-cost edit or dismiss-and-replace only while the concept is recommended; approved/rendered versions remain immutable.
+9. **B7 — request-bound live-run navigation policy.** State that the page must remain open, guard internal navigation, warn on unload/back/reload, and never imply background queuing or cancellation.
+
+### Required regression matrix
+
+| Blocker | Direct regression boundary |
+|---|---|
+| B1 | Every on-disk application route is tracked; a synthetic custom PNG is served and downloaded byte-for-byte through the real route. |
+| B2 | Quotes, apostrophes, CR/LF, and closing tags in a source label cannot change boundary structure. |
+| B3 | A successful provider response followed by attempt-write/commit failure leaves no owned run `running`; dispatch truth remains accurate. |
+| B4 | Missing confirmation, project root, external paths, and in-project symlinks to external targets are rejected without deleting the target. |
+| B5 | Two latched derived-short recovery requests produce one provider dispatch and one truthful active/unconfirmed claim. |
+| B6 | Two latched custom-image requests for one brief produce one provider dispatch and one active claim. |
+| B7 | Sidebar, stage navigation, reload, and browser back during a delayed live run follow the documented request-bound warning policy. |
+| B8 | Structured Principle save-and-continue aligns raw capture, structured brief, retrieval, and the new immutable Board snapshot. |
+| B9 | A recommended custom direction is revised before approval, persists, and reaches generation with zero earlier dispatch. |
+| B10 | An instruction-shaped idea title remains inside escaped untrusted image context. |
+| B11 | A valid reservation followed by `NaN` or negative actual pricing fails closed and cannot reduce cumulative committed cost. |
+
+### Safety invariants during remediation
+
+- Do not call providers or use the network. Use injected no-network providers and synthetic source fixtures.
+- Preserve server-side provider, model, tier, pricing, and cap authority.
+- Reserve the conservative maximum before every possible provider request, including repair attempts.
+- Persist each confirmed attempt separately; never manufacture provider telemetry from a claim alone.
+- Preserve exact-version draft, Board, review, visual, relationship, and publication provenance.
+- Never rewrite approved or rendered visual history or an earlier Board snapshot.
+- Never present an active/unconfirmed claim as a confirmed provider failure or as a pre-dispatch rejection.
+- Keep the fresh-start command explicit, owner-only, project-local, and unreachable from browser routes.
+- Keep generated assets ignored at the repository root while ensuring every required application route is tracked.
+
+### Acceptance criteria
+
+- All eleven blocker regressions fail against the prior behavior and pass with the narrow corrections.
+- A clean checkout of the exact tracked patch reproduces the tested custom-image workflow.
+- Every untrusted prompt field, including source labels and titles, remains structurally bounded.
+- Invalid pricing or provider usage cannot lower committed cost or bypass a conservative cap.
+- Every function-owned run is terminal after success or exception, including local persistence faults.
+- Concurrent derived-short and custom-image requests cannot produce duplicate paid dispatch.
+- The fresh-start command rejects missing confirmation, root/external targets, and symlink escapes without deleting outside the project.
+- Structured Principle identity is coherent through persistence, retrieval, and new Board provenance.
+- A custom concept can be corrected before approval with no provider call or mutation of approved history.
+- Live-run navigation language and behavior are truthful for the current request-bound implementation.
+- Optional hardening remains separate unless required by one of these regressions.
+
+### Validation and audit gate
+
+Run the complete no-provider gate only after the direct regressions pass: typecheck; lint; full unit/integration suite; validate-only migration checks; secret scan; dependency audit; production build; complete deterministic production-mode E2E; both Git diff checks; and an exact tracked/staged-set review.
+
+Then obtain a fresh independent read-only audit of the complete patch and its direct regressions. Do not authorize a live provider test until this milestone has no remaining blocker, the complete gate is green, and that independent review approves the patch.
+
+### Checkpoint report
+
+For each B1–B11 entry, record the prior failing behavior, exact regression, narrow correction, passing evidence, and interaction with cost, provenance, concurrency, or author-control invariants. Report optional hardening separately. Stop before Milestone 10.
 
 ---
 

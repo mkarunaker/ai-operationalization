@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_RUN_BUDGET_USD, MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS, MAXIMUM_RUN_BUDGET_USD, defaultRunBudgetUsd, estimateRouteCost, initialDrafterOutputTokens, routeFor } from "@/ai/model-routing";
+import { DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_RUN_BUDGET_USD, MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS, MAXIMUM_RUN_BUDGET_USD, defaultRunBudgetUsd, estimateRouteCost, initialDrafterOutputTokens, maximumRunBudgetUsd, routeFor } from "@/ai/model-routing";
+import { DEFAULT_LIVE_BOARD_QUALITY_PROFILE, resolveLiveBoardQualityProfile, tierForLiveBoardRole } from "@/config/model-routing";
 
 describe("model routing", () => {
   it("uses the finance-first role tiers", () => {
@@ -36,9 +37,37 @@ describe("model routing", () => {
     expect(defaultRunBudgetUsd()).toBeGreaterThan(0);
   });
 
-  it("commits the documented safe budget fallbacks", () => {
-    expect(DEFAULT_RUN_BUDGET_USD).toBe(0.05);
-    expect(MAXIMUM_RUN_BUDGET_USD).toBe(0.25);
+  it("commits the approved $0.75 live-run ceiling", () => {
+    expect(DEFAULT_RUN_BUDGET_USD).toBe(0.75);
+    expect(MAXIMUM_RUN_BUDGET_USD).toBe(0.75);
+  });
+
+  it("does not let a local environment value raise the approved hard ceiling", () => {
+    const previousDefault = process.env.EDITORIAL_RUN_BUDGET_USD;
+    const previousMaximum = process.env.EDITORIAL_MAX_RUN_BUDGET_USD;
+    try {
+      process.env.EDITORIAL_RUN_BUDGET_USD = "9";
+      process.env.EDITORIAL_MAX_RUN_BUDGET_USD = "10";
+      expect(maximumRunBudgetUsd()).toBe(0.75);
+      expect(defaultRunBudgetUsd()).toBe(0.75);
+    } finally {
+      if (previousDefault === undefined) delete process.env.EDITORIAL_RUN_BUDGET_USD; else process.env.EDITORIAL_RUN_BUDGET_USD = previousDefault;
+      if (previousMaximum === undefined) delete process.env.EDITORIAL_MAX_RUN_BUDGET_USD; else process.env.EDITORIAL_MAX_RUN_BUDGET_USD = previousMaximum;
+    }
+  });
+
+  it("keeps model selection in two server-owned Board quality profiles", () => {
+    expect(DEFAULT_LIVE_BOARD_QUALITY_PROFILE).toBe("balanced");
+    expect(tierForLiveBoardRole("initial_drafter", "balanced")).toBe("medium");
+    expect(tierForLiveBoardRole("initial_drafter", "frontier_content")).toBe("high");
+    expect(tierForLiveBoardRole("strategist", "frontier_content")).toBe("low");
+    expect(() => resolveLiveBoardQualityProfile("arbitrary-premium-model")).toThrow(/supported live Board quality profile/i);
+  });
+
+  it("records the current OpenAI quality route pricing explicitly", () => {
+    expect(routeFor("proofreader")).toMatchObject({ tier: "low", inputUsdPerMillion: 0.2, cachedInputUsdPerMillion: 0.02, outputUsdPerMillion: 1.2 });
+    expect(routeFor("initial_drafter")).toMatchObject({ tier: "medium", inputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.2, outputUsdPerMillion: 12 });
+    expect(routeFor("initial_drafter", "high")).toMatchObject({ tier: "high", inputUsdPerMillion: 5, cachedInputUsdPerMillion: 0.5, outputUsdPerMillion: 30 });
   });
 
   it("uses a bounded, operator-configurable Initial Drafter output allowance", () => {

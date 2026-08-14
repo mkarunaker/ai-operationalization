@@ -56,7 +56,7 @@ const reviewSchema: JsonSchema = {
 const synthesisSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["role", "summary", "central_thesis", "strongest", "unclear", "counterargument", "evidence_needed", "recommended_changes", "next_step", "confidence"],
+  required: ["role", "summary", "central_thesis", "strongest", "unclear", "counterargument", "evidence_needed", "evidence_backbone", "recommended_changes", "next_step", "confidence"],
   properties: {
     role: { type: "string", enum: ["synthesizer"] },
     summary: stringField,
@@ -65,6 +65,18 @@ const synthesisSchema: JsonSchema = {
     unclear: stringField,
     counterargument: stringField,
     evidence_needed: stringField,
+    evidence_backbone: {
+      type: "object",
+      additionalProperties: false,
+      required: ["source_key", "source_heading", "operating_distinction", "drafting_use", "uncertainty_boundary"],
+      properties: {
+        source_key: stringField,
+        source_heading: stringField,
+        operating_distinction: stringField,
+        drafting_use: stringField,
+        uncertainty_boundary: stringField,
+      },
+    },
     recommended_changes: conciseStringList,
     next_step: stringField,
     confidence: confidenceSchema,

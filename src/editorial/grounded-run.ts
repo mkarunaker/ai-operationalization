@@ -20,7 +20,7 @@ import {
 import { getAppConfig } from "@/config/env";
 import { getContentStatus, refreshContent, searchKnowledge, type KnowledgeSearchResult } from "@/content/loader";
 import type { AgentRole } from "@/domain/roles";
-import { openInitializedDatabase, openReadOnlyDatabase } from "@/persistence/database";
+import { openInitializedDatabase, openRecoveredReadOnlyDatabase } from "@/persistence/database";
 import { checkHumanVoice } from "@/voice/final-check";
 import { assertPublishedWorkflowUnlocked } from "@/lean/service";
 
@@ -547,7 +547,7 @@ function db(): Database {
 }
 
 function readDb(): Database {
-  return openReadOnlyDatabase(getAppConfig().databasePath);
+  return openRecoveredReadOnlyDatabase(getAppConfig().databasePath);
 }
 
 function promptFile(role: AgentRole) {

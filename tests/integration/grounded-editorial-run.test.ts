@@ -8,8 +8,9 @@ import { DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, modelEnvironmentVariable, routeF
 import { refreshContent } from "@/content/loader";
 import { CumulativeBudgetProvider, estimateDerivedShortDraft, estimateInitialDrafterRecovery, hasRecoverableInitialDrafterFailure, initialDrafterRecoveryAvailability, initialDrafterRecoveryOutcome, persistAttempts, retryDerivedShortDraftForTest, retryInitialDrafterDraft, retryInitialDrafterDraftForTest, runGroundedEditorialRun, runSingleReviewer, scopedDerivedShortDraftRequestFor } from "@/editorial/grounded-run";
 import { liveRunPreview } from "@/editorial/live-run";
+import { getLiveEditorialProgress } from "@/editorial/run-progress";
 import { createIdea, getIdea, listIdeas, proofreadRequestFor, runFinalDraftReview, runLiveProofreadForExactReviewForTest, saveEditedDraft, updateIdea } from "@/lean/service";
-import { openDatabase } from "@/persistence/database";
+import { openDatabase, reconcileInterruptedReviewRuns } from "@/persistence/database";
 import { migrateDatabase } from "@/persistence/migrations";
 import { POST as ideasPost } from "../../app/api/ideas/route";
 import { POST as ideaDetailPost } from "../../app/api/ideas/[ideaId]/route";
@@ -902,6 +903,78 @@ describe("grounded reader-output boundaries", () => {
     try {
       expect(database.prepare("SELECT COUNT(*) AS count FROM review_runs WHERE status = 'running'").get()).toMatchObject({ count: 0 });
     } finally { database.close(); }
+  });
+
+  it("reconciles an interrupted live Board run before the browser-facing status projection reloads", async () => {
+    const created = createIdea({ rawNotes: "A server restart must not present an interrupted live Board run as queued continuation." });
+    const olderCompletedBoard = await runGroundedEditorialRun(created.id);
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    const runId = "interrupted-live-board";
+    let expectedSection!: { headingPath: string; sourceLocation: string; rank: number };
+    try {
+      const content = database.prepare("SELECT id FROM content_items WHERE idea_id = ?").get(created.id) as { id: string };
+      const document = database.prepare("SELECT id, version, checksum FROM knowledge_documents WHERE status = 'ready' ORDER BY rowid DESC LIMIT 1").get() as { id: string; version: string; checksum: string };
+      const section = database.prepare("SELECT id, heading_path, json_extract(metadata, '$.sourceLocation') AS source_location FROM knowledge_sections WHERE document_id = ? ORDER BY sequence LIMIT 1").get(document.id) as { id: string; heading_path: string; source_location: string };
+      expectedSection = { headingPath: section.heading_path, sourceLocation: section.source_location, rank: 1 };
+      const voice = database.prepare("SELECT id, version, checksum FROM voice_skill_versions WHERE status = 'ready' ORDER BY rowid DESC LIMIT 1").get() as { id: string; version: string; checksum: string };
+      const liveStartedAt = new Date().toISOString();
+      const interruptedDraftId = "interrupted-development-snapshot";
+      database.prepare("UPDATE review_runs SET started_at = ?, completed_at = ? WHERE id = ?").run(new Date(Date.now() - 120_000).toISOString(), new Date(Date.now() - 60_000).toISOString(), olderCompletedBoard.runId);
+      database.prepare("INSERT INTO draft_versions (id, content_item_id, version_number, body, created_by, change_summary) VALUES (?, ?, COALESCE((SELECT MAX(version_number) + 1 FROM draft_versions WHERE content_item_id = ?), 1), ?, 'development_snapshot', 'Immutable development snapshot for interrupted-run regression.')").run(interruptedDraftId, content.id, content.id, created.rawNotes);
+      database.prepare("INSERT INTO review_runs (id, content_item_id, draft_version_id, review_type, execution_mode, status, estimated_cost, budget_cap, started_at) VALUES (?, ?, ?, 'editorial', 'live', 'running', 0.0004, 0.05, ?)").run(runId, content.id, interruptedDraftId, liveStartedAt);
+      database.prepare("INSERT INTO editorial_run_snapshots (id, review_run_id, idea_id, content_item_id, original_capture, notes_json, clarification_answers_json, output_shape, bok_document_id, bok_version, bok_checksum, voice_skill_version_id, voice_skill_version, voice_skill_checksum, prompt_manifest) VALUES ('interrupted-run-snapshot', ?, ?, ?, ?, '[]', '[]', 'short', ?, ?, ?, ?, ?, ?, ?)").run(
+        runId,
+        created.id,
+        content.id,
+        created.rawNotes,
+        document.id,
+        document.version,
+        document.checksum,
+        voice.id,
+        voice.version,
+        voice.checksum,
+        JSON.stringify({ readerContract: { outputShape: "short", audienceProfile: "professional", shortForm: { min: 180, max: 300, derived: false } } }),
+      );
+      database.prepare("INSERT INTO model_calls (id, provider, model, agent_role, draft_version_id, prompt_template_version, input_tokens, output_tokens, total_tokens, estimated_input_cost, estimated_output_cost, estimated_total_cost, started_at, ended_at, latency_ms, success, retry_count, budget_cap, raw_usage) VALUES ('interrupted-retrieval-call', 'local', 'sqlite-fts5', 'retrieval', ?, 'local', 0, 0, 0, 0, 0, 0, ?, ?, 1, 1, 0, 0.05, ?)").run(interruptedDraftId, liveStartedAt, liveStartedAt, JSON.stringify({ reviewRunId: runId, pricingAssumption: "Local retrieval; no provider request." }));
+      database.prepare("INSERT INTO retrieval_records (id, model_call_id, knowledge_section_id, relevance_score, retrieval_method, rank) VALUES ('interrupted-retrieval-record', 'interrupted-retrieval-call', ?, 1, 'fts5', 1)").run(section.id);
+      database.prepare("INSERT INTO model_calls (id, provider, model, agent_role, draft_version_id, prompt_template_version, input_tokens, output_tokens, total_tokens, estimated_input_cost, estimated_output_cost, estimated_total_cost, started_at, ended_at, latency_ms, success, retry_count, provider_request_id, budget_cap, raw_usage) VALUES ('interrupted-strategist-call', 'openai', 'synthetic-medium', 'strategist', ?, 'test', 10, 20, 30, 0.0001, 0.0002, 0.0003, ?, ?, 12, 1, 0, 'synthetic-strategist-request', 0.05, ?)").run(interruptedDraftId, liveStartedAt, liveStartedAt, JSON.stringify({ reviewRunId: runId, routeTier: "medium", reservedMaximum: 0.0003 }));
+      database.prepare("INSERT INTO model_calls (id, provider, model, agent_role, draft_version_id, prompt_template_version, input_tokens, output_tokens, total_tokens, estimated_input_cost, estimated_output_cost, estimated_total_cost, started_at, ended_at, latency_ms, success, retry_count, error_category, provider_request_id, budget_cap, raw_usage) VALUES ('interrupted-skeptic-call', 'openai', 'synthetic-medium', 'skeptic', ?, 'test', 8, 0, 8, 0.0001, 0, 0.0001, ?, ?, 9, 0, 0, 'provider_failure', 'synthetic-skeptic-request', 0.05, ?)").run(interruptedDraftId, liveStartedAt, liveStartedAt, JSON.stringify({ reviewRunId: runId, routeTier: "medium", reservedMaximum: 0.0001, failureDiagnostic: { failureCode: "provider_failure", rawErrorStored: false } }));
+      database.prepare("INSERT INTO agent_reviews (id, review_run_id, role_id, prompt_version, structured_output, confidence_score, status) VALUES ('interrupted-strategist-review', ?, 'role_strategist', 'test', ?, 0.8, 'completed')").run(runId, JSON.stringify({ summary: "A saved Strategist result.", top_recommendations: ["Preserve only confirmed work."] }));
+      database.prepare("INSERT INTO agent_reviews (id, review_run_id, role_id, prompt_version, text_output, status) VALUES ('interrupted-skeptic-review', ?, 'role_skeptic', 'test', 'The Skeptic failed before the server stopped.', 'failed')").run(runId);
+      // This is the exact startup reconciliation invoked before a new runtime
+      // serves its read-only projections after a server restart.
+      reconcileInterruptedReviewRuns(database);
+    } finally {
+      database.close();
+    }
+
+    const detail = getIdea(created.id);
+    expect(detail?.editorialBrief).toMatchObject({
+      runId,
+      runStatus: "failed",
+      interruptedAt: expect.any(String),
+      attemptedRoles: ["strategist", "skeptic"],
+      runFailures: [{ role: "skeptic" }],
+    });
+    expect(detail?.grounding).toMatchObject({
+      runId,
+      executionMode: "live",
+      bok: { version: expect.any(String), checksum: expect.any(String) },
+      voice: { version: expect.any(String), checksum: expect.any(String) },
+      calls: [
+        { role: "retrieval", provider: "local", success: true },
+        { role: "strategist", provider: "openai", success: true },
+        { role: "skeptic", provider: "openai", success: false, errorCategory: "provider_failure" },
+      ],
+    });
+    expect(detail?.grounding?.sections.map(({ headingPath, sourceLocation, rank }) => ({ headingPath, sourceLocation, rank }))).toEqual([
+      expectedSection,
+    ]);
+    const progress = getLiveEditorialProgress(created.id);
+    expect(progress.status).toBe("failed");
+    expect(progress.interrupted).toBe(true);
+    expect(progress.stages.some((stage) => stage.status === "running")).toBe(false);
+    expect(progress.stages.find((stage) => stage.id === "provenance")).toMatchObject({ status: "failed" });
   });
 
   it("records one Skeptic truncation, then links an explicit scoped recovery without replacing the Board history", async () => {

@@ -56,7 +56,7 @@ For additive schema work, the migration and its direct compatibility regression 
 | Post-Milestone 7.1 authoring and visual-revision hardening | Complete — Sol approved | 2026-08-11 | Independent read-only approval after provenance, failure-projection, unique visual-version, and asset-history regressions |
 | Learning loop: Milestone 8 | Planned | 2026-08-16 | Manual feedback, follow-up ideas, and Notebook history; no Notebook-to-Inbox flow in current scope |
 | Local configuration and settings: Milestone 9 | Complete — Sol approved | 2026-08-19 | Server-owned Balanced and Frontier-content profiles, exact route/cost disclosure, an approved $0.75 hard per-run ceiling, and a visible selected-BOK backbone before author editing; no provider smoke test without explicit authorization |
-| Local personal MVP release gate: Milestone 10 | Planned | 2026-08-22 | Security, recovery, production-mode validation, and honest technical-debt handoff |
+| Local personal MVP release gate: Milestone 10 | Complete — Sol approved | 2026-08-22 | Security, recovery, production-mode validation, and honest technical-debt handoff |
 
 Milestone 5.1 is independently approved following Sol's read-only review. The completed manual-first research work remains valid historical delivery evidence; later milestones still require their own acceptance, validation, and audit gates.
 

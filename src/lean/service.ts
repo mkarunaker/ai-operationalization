@@ -11,7 +11,7 @@ import { createUntrustedContextBlock } from "@/ai/prompt-boundary";
 import { CumulativeBudgetProvider, generateStructured, persistAttempts } from "@/editorial/grounded-run";
 import { searchKnowledge } from "@/content/loader";
 import { getAppConfig } from "@/config/env";
-import { openInitializedDatabase, openReadOnlyDatabase } from "@/persistence/database";
+import { openInitializedDatabase, openRecoveredReadOnlyDatabase } from "@/persistence/database";
 import { checkHumanVoice } from "@/voice/final-check";
 import { assertPlainPublicationProse } from "@/editorial/plain-text";
 import { renderVisualSvg, type VisualColorScheme, type VisualCompanion, type VisualTemplate, visualCompanionFor } from "@/visual/companion";
@@ -383,6 +383,7 @@ export type EditorialBrief = {
   runId: string;
   executionMode?: string;
   runStatus?: "completed" | "partially_completed" | "failed";
+  interruptedAt?: string;
   /** The exact generated article for this Board run, when drafting completed. */
   generatedDraftVersionId?: string;
   /** The exact derived short post produced from this Board run's article, when any. */
@@ -542,7 +543,7 @@ function db() {
   return openInitializedDatabase(config.databasePath);
 }
 function readDb() {
-  return openReadOnlyDatabase(getAppConfig().databasePath);
+  return openRecoveredReadOnlyDatabase(getAppConfig().databasePath);
 }
 function ensureLocalProject(database: ReturnType<typeof db>) {
   database
@@ -1504,9 +1505,9 @@ export function getIdea(ideaId: string): IdeaDetail | undefined {
     const initialRun = content
       ? (database
           .prepare(
-            "SELECT run.id, run.execution_mode, run.status FROM review_runs run WHERE run.content_item_id = ? AND run.review_type = 'editorial' AND run.status IN ('completed', 'partially_completed', 'failed') AND (run.execution_mode = 'simulation' OR EXISTS (SELECT 1 FROM editorial_run_snapshots snapshot WHERE snapshot.review_run_id = run.id)) ORDER BY run.completed_at DESC, run.rowid DESC LIMIT 1",
+            "SELECT run.id, run.execution_mode, run.status, run.interrupted_at FROM review_runs run WHERE run.content_item_id = ? AND run.review_type = 'editorial' AND run.status IN ('completed', 'partially_completed', 'failed') AND (run.execution_mode = 'simulation' OR EXISTS (SELECT 1 FROM editorial_run_snapshots snapshot WHERE snapshot.review_run_id = run.id)) ORDER BY julianday(run.completed_at) DESC, run.rowid DESC LIMIT 1",
           )
-          .get(content.id) as { id: string; execution_mode: string; status: "completed" | "partially_completed" | "failed" } | undefined)
+          .get(content.id) as { id: string; execution_mode: string; status: "completed" | "partially_completed" | "failed"; interrupted_at: string | null } | undefined)
       : undefined;
     const finalRun =
       content && primary
@@ -1615,7 +1616,7 @@ export function getIdea(ideaId: string): IdeaDetail | undefined {
         voiceSkillVersion: derivedShortPost.voice_skill_version ?? undefined,
       } : undefined,
       editorialBrief: initialRun
-        ? readBrief(database, initialRun.id, idea, initialRun.execution_mode, initialRun.status)
+        ? readBrief(database, initialRun.id, idea, initialRun.execution_mode, initialRun.status, initialRun.interrupted_at ?? undefined)
         : undefined,
       shortPostFinalReview:
         finalRun && primary && primaryFormat === "short"
@@ -1686,6 +1687,7 @@ function readBrief(
   idea: IdeaSummary,
   executionMode = "simulation",
   runStatus: "completed" | "partially_completed" | "failed" = "completed",
+  interruptedAt?: string,
 ): EditorialBrief | undefined {
   const rows = database
     .prepare(
@@ -1698,7 +1700,7 @@ function readBrief(
     confidence_score: number | null;
     status: string;
   }>;
-  if (!rows.length) return undefined;
+  if (!rows.length && !interruptedAt) return undefined;
   const generatedDraftVersionId = (database
     .prepare("SELECT generated_draft_version_id FROM editorial_run_snapshots WHERE review_run_id = ?")
     .get(runId) as { generated_draft_version_id: string | null } | undefined)?.generated_draft_version_id ?? undefined;
@@ -1795,6 +1797,7 @@ function readBrief(
     runId,
     executionMode,
     runStatus,
+    interruptedAt,
     generatedDraftVersionId,
     generatedDerivedShortDraftVersionId,
     runFailures,
@@ -1854,9 +1857,9 @@ function readGroundingProvenance(
   } catch { readerContract = undefined; }
   const sections = database
     .prepare(
-      "SELECT section.heading_path, json_extract(section.metadata, '$.sourceLocation') AS source_location, section.text, record.relevance_score, record.rank FROM retrieval_records record JOIN model_calls call ON call.id = record.model_call_id JOIN knowledge_sections section ON section.id = record.knowledge_section_id WHERE call.draft_version_id = ? AND call.agent_role = 'retrieval' ORDER BY record.rank ASC",
+      "SELECT section.heading_path, json_extract(section.metadata, '$.sourceLocation') AS source_location, section.text, record.relevance_score, record.rank FROM retrieval_records record JOIN model_calls call ON call.id = record.model_call_id JOIN knowledge_sections section ON section.id = record.knowledge_section_id WHERE call.draft_version_id = ? AND call.agent_role = 'retrieval' AND json_extract(COALESCE(call.raw_usage, '{}'), '$.reviewRunId') = ? ORDER BY record.rank ASC",
     )
-    .all(snapshot.draft_version_id) as Array<{
+    .all(snapshot.draft_version_id, runId) as Array<{
     heading_path: string;
     source_location: string;
     text: string;

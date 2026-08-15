@@ -180,6 +180,7 @@ export type Detail = Idea & {
     runId: string;
     executionMode?: string;
     runStatus?: "completed" | "partially_completed" | "failed";
+    interruptedAt?: string;
     generatedDraftVersionId?: string;
     generatedDerivedShortDraftVersionId?: string;
     runFailures: Array<{ role: string; summary: string; category?: "output_limit" | "reader_range_contract_failed" | "reader_prose_scaffolding_failed" | "execution_failure" }>;
@@ -788,6 +789,7 @@ export function IdeaDetailView({
   const finalDrafterFailed = failedBoardRoles.some((failure) => failure.role === "final_drafter");
   const synthesizerFailed = failedBoardRoles.some((failure) => failure.role === "synthesizer");
   const initialDrafterFailed = failedBoardRoles.some((failure) => failure.role === "initial_drafter");
+  const interruptedBoardRun = Boolean(idea.editorialBrief?.interruptedAt);
   // A scoped retry deliberately preserves the original failed model-call and
   // review record for provenance. Once it has created a current derived short
   // post for the exact article, that historical failure must not keep the
@@ -806,6 +808,7 @@ export function IdeaDetailView({
     failures: failedBoardRoles,
     finalDrafterRecovered: derivedShortFailureRecovered,
     reviewerRecoveredRoles: idea.editorialBrief.reviewerRecoveries.map((recovery) => recovery.role),
+    interrupted: interruptedBoardRun,
   }));
   const primaryPublished = Boolean(
     (idea.shortPost ?? idea.article) && idea.publications.some((publication) => publication.draftVersionId === (idea.shortPost ?? idea.article)!.id),
@@ -902,6 +905,7 @@ export function IdeaDetailView({
   };
   const executionSummary = () => {
     if (executionStatus) return executionStatus;
+    if (executionProgress?.interrupted) return "Live Editorial Board interrupted";
     if (executionProgress?.kind === "derived_short_recovery") {
       if (executionProgress.status === "completed") return "Derived-short recovery complete";
       return executionProgress.recoveryFailure === "persisted_provider_failure"
@@ -922,7 +926,9 @@ export function IdeaDetailView({
         ? "Live Editorial Board incomplete"
         : "Live Editorial Board stopped";
   };
-  const executionProgressNote = executionProgress?.kind === "initial_drafter_recovery"
+  const executionProgressNote = executionProgress?.interrupted
+    ? "The local server stopped before this request-bound Board run reached a confirmed terminal outcome. The run is incomplete; no work is presented as queued continuation."
+    : executionProgress?.kind === "initial_drafter_recovery"
     && executionProgress.recoveryFailure === "outcome_unconfirmed"
     ? "The retry claim prevents another attempt, but no persisted provider outcome is available. Start a new Board run before attempting another working draft."
     : (executionProgress?.kind === "derived_short_recovery" || executionProgress?.kind === "initial_drafter_recovery")
@@ -986,7 +992,7 @@ export function IdeaDetailView({
             finalDrafterFailed,
           })!,
         }] : []),
-        { id: "provenance", label: "Save provenance, usage, latency, and cost", status: "completed" as const },
+        { id: "provenance", label: "Save provenance, usage, latency, and cost", status: interruptedBoardRun ? "failed" as const : "completed" as const },
       ]
     : undefined;
   const primaryFormat: "short" | "article" = idea.outputShape === "short" ? "short" : "article";
@@ -1037,7 +1043,10 @@ export function IdeaDetailView({
   const customIllustrationCostDisclosure = () => idea.customImageRoute.available ? (
     <p className="visual-cost-disclosure"><b>Custom illustration:</b> one explicit OpenAI image request · estimated ${idea.customImageRoute.estimatedCost.toFixed(4)}. {idea.customImageRoute.pricingAssumption}</p>
   ) : (
-    <p className="visual-cost-disclosure"><b>Custom illustration unavailable:</b> {idea.customImageRoute.unavailableReason}</p>
+    <p className="visual-cost-disclosure custom-illustration-warning" role="status"><b>Custom illustration unavailable:</b> {idea.customImageRoute.unavailableReason} Nothing is running and no image request or charge has been created. After configuration, recheck the setup and then generate this saved, approved concept.</p>
+  );
+  const recheckCustomIllustrationSetup = (disabled: boolean) => !idea.customImageRoute.available && (
+    <button type="button" className="recheck-custom-illustration" disabled={disabled} onClick={() => window.location.reload()}>Recheck custom-image setup</button>
   );
   const articlePublished = Boolean(
     idea.article && idea.publications.some((publication) => publication.draftVersionId === idea.article!.id),
@@ -1341,7 +1350,7 @@ export function IdeaDetailView({
                 </label>
               </section>
             )}
-            {(() => {
+            {idea.structuredIdeaBrief ? (() => {
               const brief = idea.structuredIdeaBrief ?? {};
               const setBrief = (changes: NonNullable<Detail["structuredIdeaBrief"]>) =>
                 setSelected({ ...idea, structuredIdeaBrief: { ...brief, ...changes } });
@@ -1374,7 +1383,11 @@ export function IdeaDetailView({
                   </label>
                 </div>
               </details>;
-            })()}
+            })() : (
+              <button className="add-narrative-template" type="button" onClick={() => setSelected({ ...idea, structuredIdeaBrief: {} })}>
+                Use the narrative template instead
+              </button>
+            )}
             <label>
               Add what you know
               <textarea
@@ -1590,10 +1603,10 @@ export function IdeaDetailView({
                     : "Run live editorial review"}
               </button>
             </div>
-            <p className="model-cost-note">{livePreview.qualityProfile.description} The server resolves the exact provider, model, price, output allowance, and one-repair reservation; this selector cannot supply an arbitrary model.</p>
             {liveRunDisabledReason && (
               <p className="run-disabled-reason"><strong>{structuredBriefMissing.length ? "Board preflight:" : "Live provider run only:"}</strong> {liveRunDisabledReason}</p>
             )}
+            <p className="model-cost-note">{livePreview.qualityProfile.description} The server resolves the exact provider, model, price, output allowance, and one-repair reservation; this selector cannot supply an arbitrary model.</p>
             {(executionStatus || (executionProgress && executionProgress.status !== "waiting")) && (
               <details className="editorial-progress" open={Boolean(executionStatus)}>
                 <summary>{executionSummary()}</summary>
@@ -1667,6 +1680,9 @@ export function IdeaDetailView({
               {derivedShortFailureRecovered && (
                 <p>A later derived-short recovery completed successfully. The original Board history remains unchanged; this recovery is recorded separately.</p>
               )}
+              {interruptedBoardRun && (
+                <p className="review-recovery-note"><b>Run interrupted.</b> The local server stopped before this request-bound Board run reached a confirmed terminal outcome. It was marked failed on restart; no work is presented as queued continuation. Start a new Board run when ready.</p>
+              )}
               {idea.editorialBrief.reviewerRecoveries.length > 0 && (
                 <p>A later scoped reviewer recovery completed for {idea.editorialBrief.reviewerRecoveries.map((recovery) => recovery.role).join(", ")}. The original Board history remains unchanged.</p>
               )}
@@ -1718,7 +1734,7 @@ export function IdeaDetailView({
           {reviewIncomplete && (
             <section className="review-recovery-note" aria-label="Run status">
               <p className="eyebrow">RUN STATUS · INCOMPLETE</p>
-              <p>This run completed incompletely. Completed outputs are preserved; retry only the failed stage when available.</p>
+              <p>{interruptedBoardRun ? "The server interruption left this request outcome unconfirmed. No later stage is presented as completed; start a new Board run when ready." : "This run completed incompletely. Completed outputs are preserved; retry only the failed stage when available."}</p>
               <b>Failed or incomplete calls</b>
               {failedBoardRoles.length > 0 ? (
                 <ul>
@@ -1726,7 +1742,7 @@ export function IdeaDetailView({
                     <li key={failure.role}><strong>{failure.role}:</strong> {displayedFailureSummary(failure)}</li>
                   ))}
                 </ul>
-              ) : <p>The Board review completed, but a later drafting output did not.</p>}
+              ) : interruptedBoardRun ? <p>No failed role was recorded before the interruption.</p> : <p>The Board review completed, but a later drafting output did not.</p>}
               {finalDrafterFailed && !derivedShortFailureRecovered && retryDerivedShort && livePreview?.derivedShortRefresh && (
                 <>
                   <button className="reviewer-rerun" disabled={busy || !livePreview.derivedShortRefresh.available || liveBudget < livePreview.derivedShortRefresh.estimatedCost} onClick={() => void retryDerivedShort(liveBudget, "retry")}>
@@ -1809,7 +1825,7 @@ export function IdeaDetailView({
             </div>
           </dl>
           {idea.editorialBrief.evidenceBackbone && (
-            <section className="brief-evidence-backbone" aria-label="BOK evidence backbone">
+            <section className="brief-recommendations brief-evidence-backbone" aria-label="BOK evidence backbone">
               <p className="eyebrow">BOK EVIDENCE BACKBONE</p>
               <p><b>Selected section:</b> {idea.editorialBrief.evidenceBackbone.sourceHeading}</p>
               <p><b>Operating distinction:</b> {idea.editorialBrief.evidenceBackbone.operatingDistinction}</p>
@@ -1990,26 +2006,26 @@ export function IdeaDetailView({
             </div>
             <span className={draftDirty ? "output-state stale" : "output-state"}>{primaryPublished ? "Published" : draftDirty ? "Unsaved changes" : `Saved as version ${primaryOutput.version}`}</span>
           </div>
-          {primaryOutput.createdBy === "initial_drafter" && idea.grounding?.draftVersionId === primaryOutput.id && (
-            <p className="grounded-note">
-              {idea.grounding.executionMode === "live"
-                ? "Live grounded output. The selected BOK passages, configured voice skill, provider, model, usage, and pricing assumption are recorded below."
-                : "Grounded deterministic test output. The selected BOK passages and configured voice skill are recorded below; no paid model was called."}
-            </p>
-          )}
-          {primaryOutput.createdBy === "initial_drafter" && idea.grounding?.readerContract && (() => {
+          {primaryOutput.createdBy === "initial_drafter" && (idea.grounding?.draftVersionId === primaryOutput.id || idea.grounding?.readerContract) && (
+            <div className="draft-provenance-summary">
+              {idea.grounding?.draftVersionId === primaryOutput.id && <p className="grounded-note">
+                {idea.grounding.executionMode === "live"
+                  ? "Live grounded output. The selected BOK passages, configured voice skill, provider, model, usage, and pricing assumption are recorded below."
+                  : "Grounded deterministic test output. The selected BOK passages and configured voice skill are recorded below; no paid model was called."}
+              </p>}
+              {idea.grounding?.readerContract && (() => {
             const range = primaryFormat === "article"
               ? idea.grounding.readerContract.longForm
               : idea.grounding.readerContract.shortForm;
             if (!range) return null;
             const generatedWords = wordCount(primaryOutput.body);
             const outsideTarget = generatedWords < range.min || generatedWords > range.max;
-            return (
-              <p className="grounded-note">
+            return <p className="grounded-note">
                 Generated length: {generatedWords} words · reader-range guidance: {range.min}–{range.max} words.{outsideTarget ? " This working draft is saved. Keep it or edit it to the length you want, then save a new version." : ""}
-              </p>
-            );
+              </p>;
           })()}
+            </div>
+          )}
           {primaryOutput.createdBy === "initial_drafter" && !idea.grounding && (
             <p className="simulation-note">
               This starter text is deterministic test content. BOK and kk-spoken-voice have not been applied.
@@ -2032,8 +2048,10 @@ export function IdeaDetailView({
             <button disabled={busy || primaryPublished} onClick={() => void saveDraft()}>
               Save draft version
             </button>
-            <button disabled={busy || draftDirty || primaryPublished} onClick={() => void finalReview(primaryFormat)}>Run draft review</button>
-            {proofreaderDisclosure(primaryFormat)}
+            <div className="review-run-control">
+              <button disabled={busy || draftDirty || primaryPublished} onClick={() => void finalReview(primaryFormat)}>Run draft review</button>
+              {proofreaderDisclosure(primaryFormat)}
+            </div>
             {primaryPublished && <p className="published-lock-note">This exact version is published and now read-only. Its text, reviews, and visual are retained as publication history.</p>}
           </div>
         </section>
@@ -2085,8 +2103,10 @@ export function IdeaDetailView({
               </label>
               <div className="companion-actions output-editor-actions">
                 <button disabled={busy || derivedShortPublished} onClick={() => void saveDerivedShort?.()}>Save derived short version</button>
-                <button disabled={busy || derivedShortDirty || derivedShortPublished} onClick={() => void finalReview("derived_short")}>Run derived short-post review</button>
-                {proofreaderDisclosure("derived_short")}
+                <div className="review-run-control">
+                  <button disabled={busy || derivedShortDirty || derivedShortPublished} onClick={() => void finalReview("derived_short")}>Run derived short-post review</button>
+                  {proofreaderDisclosure("derived_short")}
+                </div>
                 <p>Save when you complete a meaningful edit. Reviews and final checks apply only to saved versions.</p>
                 {derivedShortPublished && <p className="published-lock-note">This exact derived short version is published and now read-only.</p>}
               </div>
@@ -2212,8 +2232,8 @@ export function IdeaDetailView({
                   {primaryReview.polishSuggestions!.map((suggestion) => (
                     <article key={suggestion.id}>
                       <div className="polish-comparison">
-                        <p><span>Current</span>{suggestion.current}</p>
-                        <p><span>Suggested</span>{suggestion.suggested}</p>
+                        <p>Current: {suggestion.current}</p>
+                        <p>Suggested: {suggestion.suggested}</p>
                       </div>
                       <p className="polish-reason">{suggestion.reason}</p>
                       <button
@@ -2304,8 +2324,8 @@ export function IdeaDetailView({
                   {idea.derivedShortPostFinalReview.polishSuggestions.map((suggestion) => (
                     <article key={suggestion.id}>
                       <div className="polish-comparison">
-                        <p><span>Current</span>{suggestion.current}</p>
-                        <p><span>Suggested</span>{suggestion.suggested}</p>
+                        <p>Current: {suggestion.current}</p>
+                        <p>Suggested: {suggestion.suggested}</p>
                       </div>
                       <p className="polish-reason">{suggestion.reason}</p>
                       <button
@@ -2378,6 +2398,7 @@ export function IdeaDetailView({
                           ? { operation: "approve", format: primaryFormat, briefId: idea.visualBrief.id }
                           : { operation: "render_custom", format: primaryFormat, briefId: idea.visualBrief!.id },
                       )}>{idea.visualBrief.status === "recommended" ? "Approve custom illustration" : "Generate custom illustration"}</button>
+                      {recheckCustomIllustrationSetup(busy || draftDirty || primaryPublished)}
                     </> : <p><b>No visual recommended for this exact output.</b> You can still explicitly choose one deterministic diagram if it would materially help the reader.</p>}
                     <details className="visual-template-alternative">
                       <summary>Try a supported deterministic diagram instead</summary>
@@ -2438,6 +2459,7 @@ export function IdeaDetailView({
                           ? { operation: "approve", format: primaryFormat, briefId: idea.visualCandidateBrief!.id }
                           : { operation: "render_custom", format: primaryFormat, briefId: idea.visualCandidateBrief!.id },
                       )}>{idea.visualCandidateBrief.status === "recommended" ? "Approve custom illustration" : "Generate custom illustration"}</button>
+                      {recheckCustomIllustrationSetup(busy || draftDirty || primaryPublished)}
                       <button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual({ operation: "dismiss", format: primaryFormat, briefId: idea.visualCandidateBrief?.id })}>Keep this concept as history and prepare another version</button>
                     </>}
                   </article>
@@ -2513,8 +2535,9 @@ export function IdeaDetailView({
                     <button disabled={busy || derivedShortDirty || derivedShortPublished || (!idea.customImageRoute.available && idea.derivedShortVisualBrief.status === "approved")} onClick={() => void createVisual(
                       idea.derivedShortVisualBrief?.status === "recommended"
                         ? { operation: "approve", format: "derived_short", briefId: idea.derivedShortVisualBrief.id }
-                        : { operation: "render_custom", format: "derived_short", briefId: idea.derivedShortVisualBrief!.id },
+                      : { operation: "render_custom", format: "derived_short", briefId: idea.derivedShortVisualBrief!.id },
                     )}>{idea.derivedShortVisualBrief.status === "recommended" ? "Approve custom illustration" : "Generate custom illustration"}</button>
+                    {recheckCustomIllustrationSetup(busy || derivedShortDirty || derivedShortPublished)}
                   </> : <p><b>No visual recommended for this exact derived short post.</b> You can still choose a deterministic diagram if it would materially help the reader.</p>}
                   <details className="visual-template-alternative"><summary>Try a supported deterministic diagram instead</summary><fieldset className="visual-template-picker derived-visual-template-picker" disabled={busy || derivedShortDirty || derivedShortPublished}>
                     <legend>Choose the derived short-post explanatory shape</legend>

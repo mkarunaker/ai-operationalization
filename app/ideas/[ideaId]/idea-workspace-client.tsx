@@ -68,6 +68,7 @@ export function IdeaWorkspaceClient({
   // of the Board-relevant fields so moving to Board cannot accidentally leave
   // the author looking at a run made from older saved preferences.
   const savedDevelopmentSnapshot = useRef<string | undefined>(undefined);
+  const draftEditorRef = useRef({ body: "", dirty: false });
   function developmentSnapshot(value: Detail) {
     return JSON.stringify({
       rawNotes: value.rawNotes,
@@ -90,6 +91,11 @@ export function IdeaWorkspaceClient({
     setDerivedShortDraft(body);
     setDerivedShortDirty(dirty);
   }
+  function setDraftEditor(body: string, dirty: boolean) {
+    draftEditorRef.current = { body, dirty };
+    setDraft(body);
+    setDraftDirty(dirty);
+  }
   async function load() {
     const [ideaResponse, previewResponse] = await Promise.all([
       fetch(`/api/ideas/${ideaId}`),
@@ -108,9 +114,8 @@ export function IdeaWorkspaceClient({
       if (previewData.preview?.qualityProfile.id === pendingLiveQualityProfile.current)
         setLivePreview(previewData.preview);
     }
-    setDraft((ideaData.idea.shortPost ?? ideaData.idea.article)?.body ?? "");
+    setDraftEditor((ideaData.idea.shortPost ?? ideaData.idea.article)?.body ?? "", false);
     setDerivedShortEditor(ideaData.idea.derivedShortPost?.body ?? "", false);
-    setDraftDirty(false);
     setAnswers(
       Object.fromEntries(
         ideaData.idea.answers.map((answer) => [answer.question, answer.answer]),
@@ -133,8 +138,10 @@ export function IdeaWorkspaceClient({
     const brief = nextIdea?.editorialBrief;
     const failures = new Set(brief?.runFailures.map((failure) => failure.role) ?? []);
     const includesDerivedShort = nextIdea?.outputShape === "long_with_derived_short";
+    const interrupted = Boolean(brief?.interruptedAt);
     return {
       status: brief?.runStatus === "partially_completed" ? "partially_completed" : "failed",
+      interrupted,
       stages: stages.map((stage) => {
         if (!brief) return { ...stage, status: stage.id === "context" ? "failed" : "not_run" };
         if (["strategist", "skeptic", "editor", "synthesizer"].includes(stage.id))
@@ -165,7 +172,7 @@ export function IdeaWorkspaceClient({
               finalDrafterFailed: failures.has("final_drafter"),
             }) ?? "not_run",
           };
-        return { ...stage, status: "completed" };
+        return { ...stage, status: interrupted ? "failed" : "completed" };
       }),
     };
   }
@@ -354,7 +361,7 @@ export function IdeaWorkspaceClient({
       if (window.history.state?.aebActiveRequestGuard) window.history.back();
     };
   }, [editorialRunLabel]);
-  async function request(body: unknown) {
+  async function request(body: unknown, options: { reconcile?: boolean } = {}) {
     const response = await fetch(`/api/ideas/${ideaId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -363,6 +370,7 @@ export function IdeaWorkspaceClient({
     const data = (await response.json()) as { idea?: Detail; error?: string };
     if (!response.ok || !data.idea)
       throw new Error(data.error ?? "The idea could not be saved.");
+    if (options.reconcile === false) return data.idea;
     setIdea(data.idea);
     savedDevelopmentSnapshot.current = developmentSnapshot(data.idea);
     const action =
@@ -378,8 +386,7 @@ export function IdeaWorkspaceClient({
       (action === "run_final_review" && body !== null && typeof body === "object" && (body as { format?: string }).format !== "derived_short") ||
       (action === "publish" && body !== null && typeof body === "object" && (body as { draftFormat?: string }).draftFormat !== "derived_short");
     if (!draftDirty || replacesPrimaryDraft) {
-      setDraft((data.idea.shortPost ?? data.idea.article)?.body ?? "");
-      setDraftDirty(false);
+      setDraftEditor((data.idea.shortPost ?? data.idea.article)?.body ?? "", false);
     }
     const nextDerivedShortEditor = reconcileDerivedShortEditorState({
       action,
@@ -792,9 +799,17 @@ export function IdeaWorkspaceClient({
                 const output = format === "derived_short" ? idea.derivedShortPost : format === "article" ? idea.article : idea.shortPost;
                 if (!output) throw new Error("Save this output before running its review.");
                 const useLiveProofread = Boolean(livePreview?.proofreader?.available);
-                await request({ action: "run_final_review", body: output.body, format, draftVersionId: output.id, proofreadMode: useLiveProofread ? "live_required" : "deterministic" });
-                if (useLiveProofread)
-                  await request({ action: "run_live_proofread", format, draftVersionId: output.id, budgetCap: livePreview?.budgetCap });
+                const reviewed = await request({ action: "run_final_review", body: output.body, format, draftVersionId: output.id, proofreadMode: useLiveProofread ? "live_required" : "deterministic" }, { reconcile: !useLiveProofread });
+                if (useLiveProofread) {
+                  try {
+                    await request({ action: "run_live_proofread", format, draftVersionId: output.id, budgetCap: livePreview?.budgetCap });
+                  } catch (error) {
+                    await load();
+                    throw error;
+                  }
+                } else {
+                  setIdea(reviewed);
+                }
                 setMessage(
                   useLiveProofread ? "Combined editorial review and low-cost proofread saved for this exact version." : "Draft review saved locally. Configure the proofreader route to add the low-cost proofread.",
                 );
@@ -821,14 +836,11 @@ export function IdeaWorkspaceClient({
               })
             }
             draft={draft}
-            setDraft={setDraft}
+            setDraft={(body) => setDraftEditor(body, draftEditorRef.current.dirty)}
             saveDraft={() =>
               run(async () => {
-                await request({ action: "save_draft", body: draft });
-                // The request reconciles the saved exact version first; this
-                // explicit post-success reset prevents a transient controlled
-                // editor dirty flag from disabling the next review action.
-                setDraftDirty(false);
+                const saved = await request({ action: "save_draft", body: draftEditorRef.current.body });
+                setDraftEditor((saved.shortPost ?? saved.article)?.body ?? draftEditorRef.current.body, false);
                 setMessage("Draft version saved locally.");
               })
             }
@@ -912,13 +924,13 @@ export function IdeaWorkspaceClient({
               })
             }
             draftDirty={draftDirty}
-            onDraftChange={() => {
+            onDraftChange={(body) => {
               setVoiceChecks((current) => {
                 const next = { ...current };
                 delete next[idea.outputShape === "short" ? "short" : "article"];
                 return next;
               });
-              setDraftDirty(true);
+              setDraftEditor(body, true);
             }}
             derivedShortDirty={derivedShortDirty}
             onDerivedShortChange={() => {

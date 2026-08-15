@@ -79,11 +79,8 @@ test("uses reader and output shape controls without naming a delivery platform",
   await page.getByRole("button", { name: "Develop this idea →" }).click();
   await expect(page.getByText("Who should this help?")).toBeVisible();
   await expect(page.getByText("What should this Board run create?")).toBeVisible();
-  await expect(page.getByText("Narrative template")).toBeVisible();
-  await expect(page.getByLabel(/Situation/)).toBeVisible();
-  await expect(page.getByLabel(/Assumption/)).toBeVisible();
-  await expect(page.getByLabel(/Discovery/)).toBeVisible();
-  await expect(page.getByLabel(/Principle/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Use the narrative template instead" })).toBeVisible();
+  await expect(page.getByLabel(/Situation/)).toHaveCount(0);
   await expect(page.getByText("View original capture")).toBeVisible();
   await expect(page.locator(".lifecycle-actions")).toContainText("Park this idea");
   await expect(page.locator(".lifecycle-actions")).toContainText("Delete this idea");
@@ -142,6 +139,7 @@ test("saves a generic structured idea brief and blocks its incomplete preflight"
   await page.getByLabel("What are you thinking about?").fill(`${marker("structured-brief")}: A grounded draft begins with a specific claim and evidence.`);
   await page.getByRole("button", { name: "Save to Inbox" }).click();
   await page.getByRole("button", { name: "Develop this idea →" }).click();
+  await page.getByRole("button", { name: "Use the narrative template instead" }).click();
   await page.getByLabel(/Situation/).fill("A team selected a tool before naming the workflow outcome.");
   await page.getByRole("button", { name: "Save development notes" }).click();
   await page.getByRole("button", { name: "Continue to editorial review →" }).click();
@@ -180,15 +178,15 @@ test("rejects incoherent reader-output updates atomically through the local rout
   const ideaId = new URL(page.url()).pathname.match(/^\/ideas\/([^/]+)/)?.[1];
   expect(ideaId).toBeTruthy();
   const original = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: { outputShape: string; outputPreferences: unknown } };
-  const rejected = await page.request.post(`/api/ideas/${ideaId}`, { data: { outputShape: "long" } });
+  const rejected = await page.request.post(`/api/ideas/${ideaId}`, { headers: { origin: "http://127.0.0.1:3100" }, data: { outputShape: "long" } });
   expect(rejected.status()).toBe(400);
   expect(await rejected.json()).toMatchObject({ error: expect.stringMatching(/complete selected reader-output preferences/i) });
   expect((await (await page.request.get(`/api/ideas/${ideaId}`)).json() as typeof original).idea).toMatchObject(original.idea);
   const coherent = { longFormEnabled: true, longFormMinWords: 1234, longFormMaxWords: 1567, shortFormEnabled: true, shortFormMinWords: 321, shortFormMaxWords: 357, shortFormSource: "derived_from_long" };
-  const preferencesOnly = await page.request.post(`/api/ideas/${ideaId}`, { data: { outputPreferences: coherent } });
+  const preferencesOnly = await page.request.post(`/api/ideas/${ideaId}`, { headers: { origin: "http://127.0.0.1:3100" }, data: { outputPreferences: coherent } });
   expect(preferencesOnly.ok()).toBe(true);
   expect(await preferencesOnly.json()).toMatchObject({ idea: { outputShape: "long_with_derived_short", outputPreferences: coherent } });
-  const mismatched = await page.request.post(`/api/ideas/${ideaId}`, { data: { outputShape: "short", outputPreferences: coherent } });
+  const mismatched = await page.request.post(`/api/ideas/${ideaId}`, { headers: { origin: "http://127.0.0.1:3100" }, data: { outputShape: "short", outputPreferences: coherent } });
   expect(mismatched.status()).toBe(400);
   expect((await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: unknown }).idea).toMatchObject({ outputShape: "long_with_derived_short", outputPreferences: coherent });
 });
@@ -201,6 +199,7 @@ test("rejects browser-supplied working-draft routing before any live dispatch", 
   const ideaId = new URL(page.url()).pathname.match(/^\/ideas\/([^/]+)/)?.[1];
   expect(ideaId).toBeTruthy();
   const rejected = await page.request.post(`/api/ideas/${ideaId}`, {
+    headers: { origin: "http://127.0.0.1:3100" },
     data: {
       action: "retry_live_initial_drafter",
       budgetCap: 0.05,
@@ -305,6 +304,58 @@ test("warns and holds all navigation paths while a delayed live Board request is
   await expect(page.getByRole("status")).toContainText("Live editorial brief and working draft created");
 });
 
+test("renders a restarted request-bound Board run as interrupted rather than complete", async ({ page }) => {
+  const ideaId = await createIdeaThroughWrite(page);
+  const baseline = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: Record<string, unknown> };
+  const interrupted = structuredClone(baseline.idea);
+  const brief = interrupted.editorialBrief as Record<string, unknown>;
+  const failedSkepticSummary = "The Skeptic failed before the server stopped.";
+  brief.runId = "interrupted-live-board-browser-fixture";
+  brief.executionMode = "live";
+  brief.runStatus = "failed";
+  brief.interruptedAt = "2026-08-14T12:00:00.000Z";
+  brief.runFailures = [{ role: "skeptic", summary: failedSkepticSummary }];
+  brief.reviewerRecoveries = [];
+  brief.attemptedRoles = ["strategist", "skeptic"];
+  brief.generatedDraftVersionId = undefined;
+  brief.generatedDerivedShortDraftVersionId = undefined;
+  brief.thesis = interrupted.rawNotes;
+  brief.strongest = "A saved Strategist result.";
+  brief.unclear = failedSkepticSummary;
+  brief.evidenceBackbone = undefined;
+  brief.recommendedChanges = ["Preserve only confirmed work."];
+  brief.nextStep = "Start a new Board run after the interruption.";
+  brief.reviews = [
+    { role: "strategist", status: "completed", summary: "A saved Strategist result.", confidence: 0.8, details: ["Preserve only confirmed work."] },
+    { role: "skeptic", status: "failed", summary: failedSkepticSummary, confidence: 0, details: [] },
+  ];
+  const grounding = structuredClone(interrupted.grounding as Record<string, unknown>);
+  grounding.runId = brief.runId;
+  grounding.executionMode = "live";
+  grounding.draftVersionId = undefined;
+  grounding.calls = [
+    { role: "retrieval", provider: "local", model: "sqlite-fts5", success: true, inputTokens: 0, outputTokens: 0, totalTokens: 0, latencyMs: 1, estimatedCost: 0, retryCount: 0 },
+    { role: "strategist", provider: "openai", model: "synthetic-medium", success: true, inputTokens: 10, outputTokens: 20, totalTokens: 30, latencyMs: 12, estimatedCost: 0.0003, retryCount: 0 },
+    { role: "skeptic", provider: "openai", model: "synthetic-medium", success: false, inputTokens: 8, outputTokens: 0, totalTokens: 8, latencyMs: 9, estimatedCost: 0.0001, retryCount: 0, errorCategory: "provider_failure" },
+  ];
+  interrupted.grounding = grounding;
+
+  await page.route(`**/api/ideas/${ideaId}**`, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET" && !new URL(request.url()).search)
+      return route.fulfill({ json: { idea: interrupted } });
+    return route.continue();
+  });
+  await page.goto(`/ideas/${ideaId}/board`);
+  const savedRun = page.locator(".saved-run-status");
+  await expect(savedRun).toContainText("Saved run status · incomplete");
+  await expect(savedRun).toContainText("Run interrupted.");
+  await expect(savedRun).toContainText("3 recorded attempts");
+  await expect(savedRun.locator(".run-stage-list li.running")).toHaveCount(0);
+  await expect(savedRun.locator(".run-stage-list")).toContainText(/Skeptic review.*failed/);
+  await expect(savedRun.locator(".run-stage-list")).toContainText(/Save provenance, usage, latency, and cost.*failed/);
+});
+
 test("offers only the named server-owned live content profiles before a paid Board run", async ({ page }) => {
   const ideaId = await createIdeaThroughWrite(page);
   let releaseFrontierPreview: (() => void) | undefined;
@@ -387,6 +438,16 @@ test("creates generic article and derived-short outputs without a delivery chann
   await expect(page.getByText(/LinkedIn|Medium|Substack/)).toHaveCount(0);
 });
 
+test("enables a short-post review after a saved author edit", async ({ page }) => {
+  await createIdeaThroughWrite(page, { shape: "short" });
+  const editor = page.getByLabel("Working draft");
+  await editor.fill(`${await editor.inputValue()}\n\nA saved author revision keeps the review action available.`);
+  await expect(page.getByRole("button", { name: "Run draft review" })).toBeDisabled();
+  await page.getByRole("button", { name: "Save draft version" }).click();
+  await expect(page.getByText("Unsaved changes")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Run draft review" })).toBeEnabled();
+});
+
 test("organizes Write as one clear setup, matched output editors, and flat review surfaces", async ({ page }) => {
   await createIdeaThroughWrite(page, { shape: "long_with_derived_short" });
   await expect(page.getByRole("region", { name: "Writing setup" })).toContainText("Saved Board-run contract");
@@ -450,6 +511,7 @@ test("explains an unattempted live proofread and points to the exact allowed ret
   const ideaId = await createIdeaThroughWrite(page, { shape: "short" });
   const detail = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: { shortPost: { id: string; body: string } } };
   const response = await page.request.post(`/api/ideas/${ideaId}`, {
+    headers: { origin: "http://127.0.0.1:3100" },
     data: {
       action: "run_final_review",
       format: "short",
@@ -869,6 +931,8 @@ test("keeps a literal author visual direction out of deterministic templates and
   await expect(companion).toContainText("without a diagram template or text in the image");
   await expect(companion.getByRole("button", { name: "Approve custom illustration" })).toHaveCount(1);
   await expect(companion.getByText(/Custom illustration unavailable:/)).toHaveCount(1);
+  await expect(companion.getByText(/Nothing is running and no image request or charge has been created/)).toHaveCount(1);
+  await expect(companion.getByRole("button", { name: "Recheck custom-image setup" })).toHaveCount(1);
   await companion.getByText("Try a supported deterministic diagram instead").click();
   await companion.getByRole("radio", { name: /Decision fork/ }).check();
   await companion.getByRole("button", { name: "Request selected visual" }).click();
@@ -903,7 +967,7 @@ test("lets the author revise a custom illustration concept before approval witho
   const revisedDirection = "Show the accountable owner placing a clear review path beneath a visible AI pilot.";
   await page.getByLabel(/Revise custom illustration direction before approval/).fill(revisedDirection);
   await page.getByRole("button", { name: "Save custom concept revision" }).click();
-  await expect(page.getByRole("status")).toContainText("Custom concept revision saved. No image has been approved or generated.");
+  await expect(page.locator(".notice[role='status']")).toContainText("Custom concept revision saved. No image has been approved or generated.");
   let saved = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: { visualBrief: { authorDirection: string; status: string } } };
   expect(saved.idea.visualBrief).toMatchObject({ authorDirection: revisedDirection, status: "recommended" });
   expect(actions).not.toContain("create_custom_visual_illustration");
@@ -1240,6 +1304,7 @@ test("preserves unsaved derived-short wording when a concurrent response returns
 test("rejects caller-supplied proofreader routing fields through the local mutation route", async ({ page }) => {
   const ideaId = await createIdeaThroughWrite(page);
   const result = await page.request.post(`/api/ideas/${ideaId}`, {
+    headers: { origin: "http://127.0.0.1:3100" },
     data: { action: "run_live_proofread", format: "short", draftVersionId: "arbitrary", budgetCap: 0.05, provider: "injected", model: "injected", tier: "high", pricingAssumption: "injected" },
   });
   expect(result.status()).toBe(400);

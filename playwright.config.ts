@@ -11,11 +11,11 @@ const fixtureRoot = path.resolve(process.cwd(), "tests/fixtures");
 export default defineConfig({
   testDir: "./tests/e2e",
   use: {
-    baseURL: "http://127.0.0.1:3101",
+    baseURL: "http://127.0.0.1:3100",
   },
   webServer: {
-    command: "npm run db:migrate && npm run content:index && npm run build && npx next start --hostname 127.0.0.1 --port 3101",
-    url: "http://127.0.0.1:3101",
+    command: "npm run db:migrate && npm run content:index && npm run build && npx next start --hostname 127.0.0.1 --port 3100",
+    url: "http://127.0.0.1:3100",
     reuseExistingServer: false,
     env: {
       DATABASE_PATH: path.join(e2eRoot, "editorial.sqlite"),

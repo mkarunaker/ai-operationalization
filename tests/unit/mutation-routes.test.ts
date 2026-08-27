@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { POST as boardPost } from "../../app/api/board/[ideaId]/route";
+import { POST as contentStatusPost } from "../../app/api/content/status/route";
 import { POST as notebookPost } from "../../app/api/editorial-notebook/route";
 import { POST as ideaDetailPost } from "../../app/api/ideas/[ideaId]/route";
 import { POST as ideasPost } from "../../app/api/ideas/route";
@@ -11,6 +12,7 @@ const detailContext = { params: Promise.resolve({ ideaId: "test-idea" }) };
 const routes = [
   ["ideas", (request: Request) => ideasPost(request)],
   ["notebook", (request: Request) => notebookPost(request)],
+  ["content status", (request: Request) => contentStatusPost(request)],
   ["intake", (request: Request) => intakePost(request)],
   ["intake detail", (request: Request) => intakeDetailPost(request, detailContext)],
   ["legacy board", (request: Request) => boardPost(request, detailContext)],

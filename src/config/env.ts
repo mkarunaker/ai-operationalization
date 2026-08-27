@@ -4,7 +4,9 @@ export type AppConfig = {
   appBaseUrl: string;
   databasePath: string;
   visualAssetsPath: string;
+  /** Legacy single-file BOK. Kept only so the library never auto-indexes it. */
   bokPath: string;
+  knowledgeLibraryPath: string;
   voiceSkillPath: string;
   editorialNotebookPath: string;
 };
@@ -28,6 +30,11 @@ export function getAppConfig(): AppConfig {
     visualAssetsPath: resolveLocalPath(process.env.VISUALS_PATH ?? "./visuals"),
     bokPath: resolveLocalPath(
       process.env.EAIO_BOK_PATH ?? "./content/knowledge/EAIO_Canonical_Knowledge_Base.md",
+    ),
+    // The library is opt-in per document. The legacy canonical file is
+    // deliberately excluded even when it lives in this directory.
+    knowledgeLibraryPath: resolveLocalPath(
+      process.env.EAIO_BOK_LIBRARY_PATH ?? "./content/knowledge",
     ),
     voiceSkillPath: expandHomePath(process.env.KK_VOICE_SKILL_PATH ?? "~/.codex/skills/kk-spoken-voice"),
     editorialNotebookPath: resolveLocalPath(process.env.EDITORIAL_NOTEBOOK_PATH ?? "./content/editorial-notebook/EDITORIAL_NOTEBOOK.md"),

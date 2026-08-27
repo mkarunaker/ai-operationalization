@@ -312,7 +312,7 @@ export type Detail = Idea & {
     runId: string;
     executionMode: "grounded_test" | "live";
     draftVersionId?: string;
-    bok: { version: string; checksum: string };
+    bok: { version: string; checksum: string; sources?: Array<{ title: string; version: string; checksum: string }> };
     voice: { version: string; checksum: string };
     readerContract?: { outputShape: "short" | "long" | "long_with_derived_short"; audienceProfile: string; audienceNotes?: string; longForm?: { min: number; max: number }; shortForm?: { min: number; max: number; derived: boolean } };
     sections: Array<{
@@ -2668,6 +2668,7 @@ export function IdeaDetailView({
           <p className="grounded-note">
             BOK version {idea.grounding.bok.version} · voice skill version {idea.grounding.voice.version} · {idea.grounding.executionMode === "live" ? "live provider run; per-call usage and pricing assumptions are recorded" : "local deterministic provider · $0.00"}
           </p>
+          {idea.grounding.bok.sources && idea.grounding.bok.sources.length > 0 && <p className="grounded-note">Selected knowledge documents: {idea.grounding.bok.sources.map((source) => `${source.title} · v${source.version}`).join("; ")}</p>}
           {idea.grounding.readerContract && <p className="grounded-note">Reader contract used: {idea.grounding.readerContract.outputShape.replaceAll("_", " ")} · {idea.grounding.readerContract.audienceProfile}{idea.grounding.readerContract.audienceNotes ? ` · ${idea.grounding.readerContract.audienceNotes}` : ""} · {idea.grounding.readerContract.longForm && `article ${idea.grounding.readerContract.longForm.min}–${idea.grounding.readerContract.longForm.max} words`} {idea.grounding.readerContract.shortForm && `short ${idea.grounding.readerContract.shortForm.min}–${idea.grounding.readerContract.shortForm.max} words`}</p>}
           <p className="provenance-label">Selected BOK passages</p>
           {idea.grounding.sections.map((section) => (

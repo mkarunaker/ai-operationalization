@@ -638,6 +638,42 @@ h3 {
   gap: 18px;
   margin-top: 48px;
 }
+.source-library {
+  margin-top: 48px;
+  background: #fff;
+  border: 1px solid #dedfd8;
+  border-radius: 13px;
+  padding: 25px;
+}
+.source-library-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+.source-library-heading h2 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 29px;
+  font-weight: 400;
+  margin: 0 0 7px;
+}
+.source-library-heading p:not(.eyebrow) { color: #61706a; line-height: 1.5; margin: 0; max-width: 680px; }
+.source-library-actions { display: flex; gap: 8px; }
+.source-library-heading button, .source-library-add button, .source-library-table button { border: 1px solid #2d7560; border-radius: 6px; background: #2d7560; color: #fff; padding: 7px 10px; font: inherit; font-size: 12px; font-weight: 750; cursor: pointer; white-space: nowrap; }
+.source-library-heading button:disabled, .source-library-add button:disabled, .source-library-table button:disabled { cursor: wait; opacity: .6; }
+.source-library-table button.quiet-action { background: transparent; border-color: #ccd5cf; color: #47645a; }
+.source-library-add { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 15px; margin: -5px 0 22px; padding: 15px; border: 1px solid #d9e5dc; border-radius: 8px; background: #f7faf6; }
+.source-library-add p { width: 100%; margin: 0; color: #61706a; font-size: 13px; }
+.source-library-add label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.source-library-table-wrap { overflow-x: auto; }
+.source-library-table { width: 100%; min-width: 980px; border-collapse: collapse; text-align: left; }
+.source-library-table th { border-bottom: 1px solid #dfe5df; color: #76827b; font-size: 10px; letter-spacing: .08em; padding: 0 11px 10px; text-transform: uppercase; white-space: nowrap; }
+.source-library-table td { border-bottom: 1px solid #edf0ec; color: #35463e; font-size: 12px; padding: 13px 11px; vertical-align: middle; }
+.source-library-table td:first-child { font-weight: 700; min-width: 190px; }
+.source-library-table td small { display: block; color: #8b5e21; font-weight: 400; margin-top: 4px; max-width: 220px; }
+.source-library-table td:last-child { display: flex; gap: 6px; }
+.source-library-empty { color: #61706a; padding: 25px 11px !important; text-align: center; }
 .source-card {
   background: #fff;
   border: 1px solid #dedfd8;

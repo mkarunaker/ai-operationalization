@@ -12,7 +12,7 @@ export function GET() {
     localOnly: true,
     accessControl: "loopback-only-no-login",
     databaseConfigured: Boolean(config.databasePath),
-    bokReadable: fs.existsSync(config.bokPath),
+    knowledgeLibraryReadable: fs.existsSync(config.knowledgeLibraryPath) && fs.statSync(config.knowledgeLibraryPath).isDirectory(),
     voiceSkillConfigured: Boolean(config.voiceSkillPath),
   });
 }

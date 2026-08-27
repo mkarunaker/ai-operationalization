@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Post-release source library
+
+- Replaced future single-file BOK indexing with an explicitly selected local Markdown library while retiring upgraded legacy BOK records without deleting their files or historical indexed versions.
+- Made source indexing an explicit owner action; Editorial Board runs and targeted reviewer retries use the current indexed state and never refresh files implicitly.
+- Recorded every selected knowledge document version and checksum in the immutable Board snapshot and limited retrieval to selected library records.
+- Exposed path-free inventory metadata in the library UI while keeping bounded passage excerpts behind an explicit local search query.
+
 ### Milestone 4 — actionable final judgment
 
 - Added an optional local visual companion for a saved draft. It creates a calm, text-accurate SVG framework flow, stores the asset outside the draft text under the local data directory, records its link to the exact draft version, and provides caption, alt text, and download.

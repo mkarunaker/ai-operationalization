@@ -310,7 +310,7 @@ export type GroundingProvenance = {
   runId: string;
   executionMode: "grounded_test" | "live";
   draftVersionId?: string;
-  bok: { version: string; checksum: string };
+  bok: { version: string; checksum: string; sources?: Array<{ title: string; version: string; checksum: string }> };
   voice: { version: string; checksum: string };
   readerContract?: ReaderOutputContract;
   sections: Array<{ headingPath: string; sourceLocation: string; text: string; score: number; rank: number }>;
@@ -1834,12 +1834,13 @@ function readGroundingProvenance(
 ): GroundingProvenance | undefined {
   const snapshot = database
     .prepare(
-      "SELECT snapshot.bok_version, snapshot.bok_checksum, snapshot.voice_skill_version, snapshot.voice_skill_checksum, snapshot.generated_draft_version_id, snapshot.prompt_manifest, run.execution_mode, run.draft_version_id FROM editorial_run_snapshots snapshot JOIN review_runs run ON run.id = snapshot.review_run_id WHERE snapshot.review_run_id = ?",
+      "SELECT snapshot.bok_version, snapshot.bok_checksum, snapshot.bok_sources_json, snapshot.voice_skill_version, snapshot.voice_skill_checksum, snapshot.generated_draft_version_id, snapshot.prompt_manifest, run.execution_mode, run.draft_version_id FROM editorial_run_snapshots snapshot JOIN review_runs run ON run.id = snapshot.review_run_id WHERE snapshot.review_run_id = ?",
     )
     .get(runId) as
     | {
         bok_version: string;
         bok_checksum: string;
+        bok_sources_json: string;
         voice_skill_version: string;
         voice_skill_checksum: string;
         generated_draft_version_id: string | null;
@@ -1849,6 +1850,11 @@ function readGroundingProvenance(
       }
     | undefined;
   if (!snapshot) return undefined;
+  let bokSources: Array<{ title: string; version: string; checksum: string }> = [];
+  try {
+    const parsed = JSON.parse(snapshot.bok_sources_json ?? "[]");
+    if (Array.isArray(parsed)) bokSources = parsed.flatMap((item) => typeof item?.title === "string" && typeof item?.version === "string" && typeof item?.checksum === "string" ? [{ title: item.title, version: item.version, checksum: item.checksum }] : []);
+  } catch { /* Legacy snapshots retain their scalar BOK provenance. */ }
   let readerContract: GroundingProvenance["readerContract"];
   try {
     const candidate = JSON.parse(snapshot.prompt_manifest ?? "{}").readerContract;
@@ -1889,7 +1895,7 @@ function readGroundingProvenance(
     executionMode: snapshot.execution_mode,
     draftVersionId: snapshot.generated_draft_version_id ?? undefined,
     readerContract,
-    bok: { version: snapshot.bok_version, checksum: snapshot.bok_checksum },
+    bok: { version: snapshot.bok_version, checksum: snapshot.bok_checksum, sources: bokSources },
     voice: { version: snapshot.voice_skill_version, checksum: snapshot.voice_skill_checksum },
     sections: sections.map((section) => ({
       headingPath: section.heading_path,

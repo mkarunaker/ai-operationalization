@@ -22,6 +22,12 @@ export const MAXIMUM_RUN_BUDGET_USD = 0.75;
 export const DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS = 2_400;
 export const MINIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS = 2_000;
 export const MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS = 5_000;
+// Responses API reasoning tokens share the output allowance with visible
+// structured output. Reserve enough room for low-effort reasoning plus the
+// validated reviewer JSON while retaining a bounded server-owned ceiling.
+export const DEFAULT_REVIEWER_OUTPUT_TOKENS = 1_600;
+export const MINIMUM_REVIEWER_OUTPUT_TOKENS = 1_200;
+export const MAXIMUM_REVIEWER_OUTPUT_TOKENS = 3_000;
 
 const openaiPricing = (modelClass: string, input: string, cached: string, output: string) =>
   `OpenAI ${modelClass} standard API pricing assumption: USD ${input} / MTok input, USD ${cached} / MTok cached input, and USD ${output} / MTok output. Reasoning tokens are included in reported output tokens, not charged a second time. Verify against OpenAI billing.`;
@@ -188,5 +194,19 @@ export function initialDrafterOutputTokens(): number {
   const value = Number(raw);
   if (!Number.isInteger(value) || value < MINIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS || value > MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS)
     throw new Error(`Initial Drafter output allowance must be an integer between ${MINIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS} and ${MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS}.`);
+  return value;
+}
+
+/**
+ * Resolve the server-owned allowance for Strategist, Skeptic, and Editor.
+ * It is deliberately unavailable as a browser control; invalid operator
+ * configuration fails before cost estimation or provider dispatch.
+ */
+export function reviewerOutputTokens(): number {
+  const raw = process.env.EDITORIAL_REVIEWER_MAX_OUTPUT_TOKENS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_REVIEWER_OUTPUT_TOKENS;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < MINIMUM_REVIEWER_OUTPUT_TOKENS || value > MAXIMUM_REVIEWER_OUTPUT_TOKENS)
+    throw new Error(`Reviewer output allowance must be an integer between ${MINIMUM_REVIEWER_OUTPUT_TOKENS} and ${MAXIMUM_REVIEWER_OUTPUT_TOKENS}.`);
   return value;
 }

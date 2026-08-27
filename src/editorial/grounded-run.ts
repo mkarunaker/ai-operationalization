@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { GroundedTestProvider } from "@/ai/grounded-test-provider";
-import { estimateRouteCost, initialDrafterOutputTokens, maximumRunBudgetUsd, routeFor, routeForProviderTier, type LiveProviderName } from "@/ai/model-routing";
+import { estimateRouteCost, initialDrafterOutputTokens, maximumRunBudgetUsd, reviewerOutputTokens, routeFor, routeForProviderTier, type LiveProviderName } from "@/ai/model-routing";
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
 import { ZenMuxChatCompletionsProvider } from "@/ai/zenmux-provider";
@@ -112,7 +112,6 @@ const identifier = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
 const timestamp = () => new Date().toISOString();
 const checksum = (value: string) => crypto.createHash("sha256").update(value).digest("hex");
 const modelName = "grounded-editorial-test-v1";
-const reviewOutputTokens = 900;
 const synthesisOutputTokens = 1_000;
 const derivedShortOutputTokens = 1_200;
 const immutableReaderContractSchema = z
@@ -761,7 +760,7 @@ function selectKnowledge(snapshot: SnapshotInput) {
 function sourceManifest(
   shared: PromptSource[],
   rolePrompts: Record<ReviewerRole | "synthesizer" | "initial_drafter" | "final_drafter", PromptSource>,
-  providerInfo: { name: string; modelForRole: (role: AgentRole) => string; providerForRole?: (role: AgentRole) => string; tierForRole?: (role: AgentRole) => ModelTier; pricingAssumption: string; pricingAssumptionForRole?: (role: AgentRole) => string; initialDrafterMaxOutputTokens: number },
+  providerInfo: { name: string; modelForRole: (role: AgentRole) => string; providerForRole?: (role: AgentRole) => string; tierForRole?: (role: AgentRole) => ModelTier; pricingAssumption: string; pricingAssumptionForRole?: (role: AgentRole) => string; initialDrafterMaxOutputTokens: number; reviewerMaxOutputTokens: number },
   readerContract?: Pick<SnapshotInput, "outputShape" | "audienceProfile" | "audienceNotes" | "longForm" | "shortForm">,
 ) {
   // A provenance reader contract is intentionally smaller than SnapshotInput.
@@ -786,6 +785,7 @@ function sourceManifest(
           tier: providerInfo.tierForRole?.(role as AgentRole) ?? "low",
           pricingAssumption: providerInfo.pricingAssumptionForRole?.(role as AgentRole) ?? providerInfo.pricingAssumption,
           ...(role === "initial_drafter" ? { maxOutputTokens: providerInfo.initialDrafterMaxOutputTokens } : {}),
+          ...(["strategist", "skeptic", "editor"].includes(role) ? { maxOutputTokens: providerInfo.reviewerMaxOutputTokens, reasoningEffort: "low" } : {}),
         }]),
       ),
       pricingAssumption: providerInfo.pricingAssumption,
@@ -1218,13 +1218,14 @@ function projectedCost(
   boundaryCharacters: number,
   includeDerivedShort: boolean,
   initialDrafterMaxOutputTokens: number,
+  reviewerMaxOutputTokens: number,
 ) {
   const inputTokens = boundaryCharacters + 12_000;
   const planned: Array<[AgentRole, number, number]> = [
-    ["strategist", inputTokens, reviewOutputTokens],
-    ["skeptic", inputTokens, reviewOutputTokens],
-    ["editor", inputTokens, reviewOutputTokens],
-    ["synthesizer", 12_000 + 3 * reviewOutputTokens * 4, synthesisOutputTokens],
+    ["strategist", inputTokens, reviewerMaxOutputTokens],
+    ["skeptic", inputTokens, reviewerMaxOutputTokens],
+    ["editor", inputTokens, reviewerMaxOutputTokens],
+    ["synthesizer", 12_000 + 3 * reviewerMaxOutputTokens * 4, synthesisOutputTokens],
     ["initial_drafter", inputTokens + 40_000 + synthesisOutputTokens * 4, initialDrafterMaxOutputTokens],
   ];
   if (includeDerivedShort) {
@@ -1332,6 +1333,7 @@ export function estimateGroundedEditorialRun(
       boundaryFor(snapshot, selected).contextBlock.length,
       hasDerivedShortOutput(snapshot.outputShape),
       initialDrafterOutputTokens(),
+      reviewerOutputTokens(),
     );
   } finally {
     database.close();
@@ -1364,8 +1366,9 @@ export function estimateSingleReviewerRun(
     if (!readerContract) return 0;
     const snapshot = snapshotWithImmutableReaderContract(mutableSnapshot, readerContract);
     const selected = selectKnowledge(snapshot);
+    const reviewerMaxOutputTokens = reviewerOutputTokens();
     const estimate = provider.estimateCost?.(
-      { inputTokens: boundaryFor(snapshot, selected).contextBlock.length + 12_000, outputTokens: reviewOutputTokens, reasoningTokens: reviewOutputTokens },
+      { inputTokens: boundaryFor(snapshot, selected).contextBlock.length + 12_000, outputTokens: reviewerMaxOutputTokens, reasoningTokens: reviewerMaxOutputTokens },
       model,
       { provider: providerName, tier },
     ).totalCost ?? 0;
@@ -1460,6 +1463,7 @@ export async function runGroundedEditorialRun(
   const pricingAssumption = options.pricingAssumption ?? "Deterministic local test provider; estimated and actual cost are USD 0.00.";
   const pricingAssumptionForRole = options.pricingAssumptionForRole ?? (() => pricingAssumption);
   const initialDrafterMaxOutputTokens = initialDrafterOutputTokens();
+  const reviewerMaxOutputTokens = reviewerOutputTokens();
   const config = getAppConfig();
   const sourceStatus = getContentStatus(config);
   if (sourceStatus.bok.status !== "ready") throw new Error("A ready Book of Knowledge index is required for a grounded editorial run.");
@@ -1497,6 +1501,7 @@ export async function runGroundedEditorialRun(
       boundary.contextBlock.length,
       hasDerivedShortOutput(snapshot.outputShape),
       initialDrafterMaxOutputTokens,
+      reviewerMaxOutputTokens,
     );
     if (executionMode === "live" && runEstimate > budgetCap) {
       throw new Error(`Projected live-run cost $${runEstimate.toFixed(4)} exceeds the $${budgetCap.toFixed(2)} budget cap. No provider call was made.`);
@@ -1537,7 +1542,7 @@ export async function runGroundedEditorialRun(
           voice.id,
           voice.version,
           voice.checksum,
-          sourceManifest(shared, prompts, { name: provider.name, modelForRole, providerForRole, tierForRole: (role) => tierForRole(role) ?? "low", pricingAssumption, pricingAssumptionForRole, initialDrafterMaxOutputTokens }, snapshot),
+          sourceManifest(shared, prompts, { name: provider.name, modelForRole, providerForRole, tierForRole: (role) => tierForRole(role) ?? "low", pricingAssumption, pricingAssumptionForRole, initialDrafterMaxOutputTokens, reviewerMaxOutputTokens }, snapshot),
         );
       persistRetrieval(database, snapshotDraftId, selected, runId);
       database.exec("COMMIT");
@@ -1559,7 +1564,8 @@ export async function runGroundedEditorialRun(
             model: modelForRole(role),
           systemPrompt: `${trustedSystemPrompt(prompts[role], shared)}\n\n${trustedReaderContractInstruction(snapshot, "assess")}`,
             messages: [{ role: "user", content: boundary.contextBlock }],
-            maxOutputTokens: reviewOutputTokens,
+            maxOutputTokens: reviewerMaxOutputTokens,
+            reasoningEffort: "low",
             responseFormat: { type: "json_schema" },
             metadata: { agentRole: role, task: "review", modelTier: tierForRole(role), bokHeading, sourceFingerprint },
           },
@@ -2684,8 +2690,9 @@ export async function runSingleReviewer(
     seedRole(database, role, prompt);
     const selected = selectKnowledge(snapshot);
     const boundary = boundaryFor(snapshot, selected);
+    const reviewerMaxOutputTokens = reviewerOutputTokens();
     const projected = (provider.estimateCost?.(
-      { inputTokens: boundary.contextBlock.length + 12_000, outputTokens: reviewOutputTokens, reasoningTokens: reviewOutputTokens },
+      { inputTokens: boundary.contextBlock.length + 12_000, outputTokens: reviewerMaxOutputTokens, reasoningTokens: reviewerMaxOutputTokens },
       input.model,
       { provider: provider.name, tier: input.tier },
     ).totalCost ?? 0) * 2;
@@ -2733,7 +2740,8 @@ export async function runSingleReviewer(
           model: input.model,
           systemPrompt: `${trustedSystemPrompt(prompt, shared)}\n\n${trustedReaderContractInstruction(snapshot, "assess")}`,
           messages: [{ role: "user", content: boundary.contextBlock }],
-          maxOutputTokens: reviewOutputTokens,
+          maxOutputTokens: reviewerMaxOutputTokens,
+          reasoningEffort: "low",
           responseFormat: { type: "json_schema" },
           metadata: { agentRole: role, task: "review_escalation", modelTier: input.tier, sourceFingerprint: checksum(boundary.contextBlock).slice(0, 10) },
         },

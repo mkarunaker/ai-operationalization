@@ -666,10 +666,10 @@ export function IdeaDetailView({
     available: boolean;
     source: { boardReady: boolean; unavailableReason?: string };
     estimatedCost: number;
-    planned: Array<{ role: string; provider: string; model: string; tier: "low" | "medium" | "high" }>;
+    planned: Array<{ role: string; provider: string; model: string; tier: "low" | "medium" | "high"; maxOutputTokens?: number; reasoningEffort?: "low" }>;
     reviewerReruns: {
-      medium: { provider: string; model: string; tier: "medium"; estimatedCost: number; available: boolean };
-      high: { provider: string; model: string; tier: "high"; estimatedCost: number; available: boolean };
+      medium: { provider: string; model: string; tier: "medium"; estimatedCost: number; available: boolean; maxOutputTokens: number; reasoningEffort: "low" };
+      high: { provider: string; model: string; tier: "high"; estimatedCost: number; available: boolean; maxOutputTokens: number; reasoningEffort: "low" };
     };
     initialDrafterRecovery: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean; unavailableReason?: string };
     derivedShortRefresh: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };
@@ -1638,7 +1638,7 @@ export function IdeaDetailView({
               <p>{livePreview.pricingAssumption}</p>
               <ul className="model-plan">
                 {livePreview.planned.map((assignment) => (
-                  <li key={assignment.role}>{assignment.role.replace("_", " ")} · {assignment.tier} · {assignment.provider} / {assignment.model}</li>
+                  <li key={assignment.role}>{assignment.role.replace("_", " ")} · {assignment.tier} · {assignment.provider} / {assignment.model}{assignment.maxOutputTokens ? ` · ${assignment.maxOutputTokens} output tokens · ${assignment.reasoningEffort} reasoning` : ""}</li>
                 ))}
               </ul>
               <div className="deterministic-test-action">
@@ -1783,7 +1783,7 @@ export function IdeaDetailView({
                   <p>The {failure.role} review did not complete. Its original failed attempt is saved. Retry only this reviewer; the Board run and current draft will not be replaced.</p>
                   {rerunReviewer && livePreview?.reviewerReruns.medium && (
                     <button className="reviewer-rerun" disabled={busy || !livePreview.reviewerReruns.medium.available || liveBudget < livePreview.reviewerReruns.medium.estimatedCost} onClick={() => void rerunReviewer(failure.role as "strategist" | "skeptic" | "editor", liveBudget, "medium")}>
-                      Retry {failure.role} review · {livePreview.reviewerReruns.medium.model} · conservative est. ${livePreview.reviewerReruns.medium.estimatedCost.toFixed(4)}
+                      Retry {failure.role} review · {livePreview.reviewerReruns.medium.model} · {livePreview.reviewerReruns.medium.maxOutputTokens} output tokens · {livePreview.reviewerReruns.medium.reasoningEffort} reasoning · conservative est. ${livePreview.reviewerReruns.medium.estimatedCost.toFixed(4)}
                     </button>
                   )}
                 </div>
@@ -1878,7 +1878,7 @@ export function IdeaDetailView({
                       disabled={busy || hasPublishedOutput || !livePreview.reviewerReruns.medium.available}
                       onClick={() => void rerunReviewer(review.role as "strategist" | "skeptic" | "editor", liveBudget, "medium")}
                     >
-                      Rerun {review.role} · {livePreview.reviewerReruns.medium.model} · est. ${livePreview.reviewerReruns.medium.estimatedCost.toFixed(4)}
+                      Rerun {review.role} · {livePreview.reviewerReruns.medium.model} · {livePreview.reviewerReruns.medium.maxOutputTokens} output tokens · {livePreview.reviewerReruns.medium.reasoningEffort} reasoning · est. ${livePreview.reviewerReruns.medium.estimatedCost.toFixed(4)}
                     </button>
                     <label className="high-tier-confirmation">
                       <input
@@ -1894,7 +1894,7 @@ export function IdeaDetailView({
                       disabled={busy || hasPublishedOutput || !livePreview.reviewerReruns.high.available || confirmedHighTierRole !== review.role}
                       onClick={() => void rerunReviewer(review.role as "strategist" | "skeptic" | "editor", liveBudget, "high")}
                     >
-                      High-tier rerun · {livePreview.reviewerReruns.high.model} · est. ${livePreview.reviewerReruns.high.estimatedCost.toFixed(4)}
+                      High-tier rerun · {livePreview.reviewerReruns.high.model} · {livePreview.reviewerReruns.high.maxOutputTokens} output tokens · {livePreview.reviewerReruns.high.reasoningEffort} reasoning · est. ${livePreview.reviewerReruns.high.estimatedCost.toFixed(4)}
                     </button>
                   </details>
                 )}

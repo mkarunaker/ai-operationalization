@@ -1,4 +1,4 @@
-import { defaultRunBudgetUsd, estimateRouteCost, maximumRunBudgetUsd, modelEnvironmentVariable, routeFor, routeForProviderTier, type LiveProviderName, type ModelTier } from "@/ai/model-routing";
+import { defaultRunBudgetUsd, estimateRouteCost, maximumRunBudgetUsd, modelEnvironmentVariable, reviewerOutputTokens, routeFor, routeForProviderTier, type LiveProviderName, type ModelTier } from "@/ai/model-routing";
 import { LIVE_BOARD_QUALITY_PROFILES, resolveLiveBoardQualityProfile, tierForLiveBoardRole, type LiveBoardQualityProfile } from "@/config/model-routing";
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
@@ -82,6 +82,7 @@ export function proofreaderReservationEstimate(body: string, readerContract: Rea
 
 export function liveRunPreview(ideaId: string, requestedProfile?: unknown) {
   const qualityProfile = resolveLiveBoardQualityProfile(requestedProfile);
+  const reviewerMaxOutputTokens = reviewerOutputTokens();
   // A missing local index is an expected setup state after a synthetic-data
   // reset. Keep the Board setup visible and disable only the actions that
   // truly need the source; do not throw from a page-load preview.
@@ -197,7 +198,13 @@ export function liveRunPreview(ideaId: string, requestedProfile?: unknown) {
     },
     planned: plannedRoutes.map((role) => {
       const planned = routeForPlannedRole(role, qualityProfile);
-      return { role, provider: planned.provider, model: planned.model || "Model configuration required", tier: planned.tier };
+      return {
+        role,
+        provider: planned.provider,
+        model: planned.model || "Model configuration required",
+        tier: planned.tier,
+        ...(["strategist", "skeptic", "editor"].includes(role) ? { maxOutputTokens: reviewerMaxOutputTokens, reasoningEffort: "low" as const } : {}),
+      };
     }),
     proofreader: {
       provider: proofreaderRoute.provider,
@@ -215,6 +222,8 @@ export function liveRunPreview(ideaId: string, requestedProfile?: unknown) {
         model: reviewerRerunRoutes.medium.model,
         tier: reviewerRerunRoutes.medium.tier,
         estimatedCost: reviewerRerunEstimatedCost,
+        maxOutputTokens: reviewerMaxOutputTokens,
+        reasoningEffort: "low" as const,
         available: hasSavedBoardContract && bokReady && providerAvailable(reviewerRerunRoutes.medium.provider) && Boolean(reviewerRerunRoutes.medium.model),
       },
       high: {
@@ -222,6 +231,8 @@ export function liveRunPreview(ideaId: string, requestedProfile?: unknown) {
         model: reviewerRerunRoutes.high.model,
         tier: reviewerRerunRoutes.high.tier,
         estimatedCost: highReviewerRerunEstimatedCost,
+        maxOutputTokens: reviewerMaxOutputTokens,
+        reasoningEffort: "low" as const,
         available: hasSavedBoardContract && bokReady && providerAvailable(reviewerRerunRoutes.high.provider) && Boolean(reviewerRerunRoutes.high.model),
       },
     },

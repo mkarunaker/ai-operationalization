@@ -54,8 +54,8 @@ function preview(overrides: Record<string, unknown> = {}) {
     estimatedCost: 0.001,
     planned: [],
     reviewerReruns: {
-      medium: { provider: "test-provider", model: "test-medium", tier: "medium", estimatedCost: 0.01, available: true },
-      high: { provider: "test-provider", model: "test-high", tier: "high", estimatedCost: 0.02, available: true },
+      medium: { provider: "test-provider", model: "test-medium", tier: "medium", estimatedCost: 0.01, available: true, maxOutputTokens: 1_600, reasoningEffort: "low" },
+      high: { provider: "test-provider", model: "test-high", tier: "high", estimatedCost: 0.02, available: true, maxOutputTokens: 1_600, reasoningEffort: "low" },
     },
     initialDrafterRecovery: { provider: "test-provider", model: "initial-medium", tier: "medium", estimatedCost: 0.012, available: true },
     derivedShortRefresh: { provider: "test-provider", model: "derived-low", tier: "low", estimatedCost: 0.001, available: true },
@@ -908,7 +908,7 @@ test("shows a failed reviewer as a scoped recovery without replacing the saved B
   });
   await page.goto(`/ideas/${ideaId}/board`);
   await expect(page.getByText("Retry only this reviewer; the Board run and current draft will not be replaced.")).toBeVisible();
-  const retry = page.getByRole("button", { name: /Retry skeptic review/ });
+  const retry = page.getByRole("button", { name: /Retry skeptic review.*1600 output tokens.*low reasoning/ });
   await expect(retry).toContainText("conservative est. $0.0100");
   await retry.click();
   await expect(page.getByRole("status")).toContainText("Only the skeptic review was rerun at the medium tier. The original Board run and draft remain unchanged.");

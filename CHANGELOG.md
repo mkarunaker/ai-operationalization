@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Post-release live-run reliability
+
+- Increased the bounded server-owned reviewer output allowance, set Luna reviewer reasoning to low, included the allowance in estimates and immutable provenance, and disclosed it on scoped retry controls so structured reviews have room to complete without weakening the run cap or automatic-retry policy.
+
 ### Post-release source library
 
 - Replaced future single-file BOK indexing with an explicitly selected local Markdown library while retiring upgraded legacy BOK records without deleting their files or historical indexed versions.

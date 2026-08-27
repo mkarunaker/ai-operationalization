@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GroundedTestProvider } from "@/ai/grounded-test-provider";
 import type { CostEstimate, ModelProvider, ModelRequest, ModelResponse, TokenUsage } from "@/ai/provider";
-import { DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, modelEnvironmentVariable, routeFor } from "@/ai/model-routing";
+import { DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_REVIEWER_OUTPUT_TOKENS, modelEnvironmentVariable, routeFor } from "@/ai/model-routing";
 import { getAppConfig } from "@/config/env";
 import { getContentStatus, refreshContent, setSelectedKnowledgeDocuments } from "@/content/loader";
 import { CumulativeBudgetProvider, estimateDerivedShortDraft, estimateInitialDrafterRecovery, hasRecoverableInitialDrafterFailure, initialDrafterRecoveryAvailability, initialDrafterRecoveryOutcome, persistAttempts, retryDerivedShortDraftForTest, retryInitialDrafterDraft, retryInitialDrafterDraftForTest, runGroundedEditorialRun, runSingleReviewer, scopedDerivedShortDraftRequestFor } from "@/editorial/grounded-run";
@@ -442,9 +442,13 @@ describe("grounded reader-output boundaries", () => {
     const frontier = liveRunPreview(created.id, "frontier_content");
     expect(frontier).toMatchObject({ qualityProfile: { id: "frontier_content" }, maximumBudgetCap: 0.75 });
     expect(frontier.planned).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "strategist", tier: "low" }),
+      expect.objectContaining({ role: "strategist", tier: "low", maxOutputTokens: DEFAULT_REVIEWER_OUTPUT_TOKENS, reasoningEffort: "low" }),
       expect.objectContaining({ role: "initial_drafter", tier: "high" }),
     ]));
+    expect(frontier.reviewerReruns.medium).toMatchObject({
+      maxOutputTokens: DEFAULT_REVIEWER_OUTPUT_TOKENS,
+      reasoningEffort: "low",
+    });
     expect(frontier.estimatedCost).toBeLessThanOrEqual(0.75);
 
     const context = { params: Promise.resolve({ ideaId: created.id }) };
@@ -822,6 +826,10 @@ describe("grounded reader-output boundaries", () => {
       pricingAssumption: "Synthetic test-only pricing.", escalationReason: "Test the saved reader contract.",
     });
     const request = provider.requests.find((entry) => entry.metadata?.task === "review_escalation")!;
+    expect(request).toMatchObject({
+      maxOutputTokens: DEFAULT_REVIEWER_OUTPUT_TOKENS,
+      reasoningEffort: "low",
+    });
     expect(request.systemPrompt).toContain("executive");
     expect(request.systemPrompt).toContain("long_with_derived_short");
     expect(request.systemPrompt).toContain("1234-1567");
@@ -831,6 +839,42 @@ describe("grounded reader-output boundaries", () => {
     expect(request.systemPrompt).not.toContain("Original targeted-review note");
     expect(request.messages[0]?.content).toContain("Original targeted-review note");
     expect(request.messages[0]?.content).not.toContain("Current mutable targeted-review note");
+  });
+
+  it("applies and records the bounded reviewer allowance with low reasoning for every Board reviewer", async () => {
+    const created = createIdea({ rawNotes: "Each reviewer must reserve enough bounded output for reasoning and its validated review." });
+    const provider = new MalformedStrategistProvider();
+    await runGroundedEditorialRun(created.id, provider);
+
+    const reviewerRequests = provider.requests.filter((request) =>
+      ["strategist", "skeptic", "editor"].includes(String(request.metadata?.agentRole))
+      && request.metadata?.task === "review",
+    );
+    expect(reviewerRequests).toHaveLength(3);
+    for (const request of reviewerRequests) {
+      expect(request).toMatchObject({
+        maxOutputTokens: DEFAULT_REVIEWER_OUTPUT_TOKENS,
+        reasoningEffort: "low",
+      });
+    }
+    expect(provider.requests.find((request) => request.metadata?.agentRole === "strategist" && request.metadata?.task === "repair")).toMatchObject({
+      maxOutputTokens: DEFAULT_REVIEWER_OUTPUT_TOKENS,
+      reasoningEffort: "low",
+    });
+
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      const row = database.prepare(
+        "SELECT prompt_manifest FROM editorial_run_snapshots WHERE idea_id = ? ORDER BY rowid DESC LIMIT 1",
+      ).get(created.id) as { prompt_manifest: string };
+      const assignments = JSON.parse(row.prompt_manifest).provider.roleAssignments;
+      for (const role of ["strategist", "skeptic", "editor"]) {
+        expect(assignments[role]).toMatchObject({
+          maxOutputTokens: DEFAULT_REVIEWER_OUTPUT_TOKENS,
+          reasoningEffort: "low",
+        });
+      }
+    } finally { database.close(); }
   });
 
   it("returns a usable unavailable Board preview instead of throwing when the BOK index is absent", () => {

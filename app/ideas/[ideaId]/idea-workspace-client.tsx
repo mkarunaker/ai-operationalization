@@ -37,10 +37,10 @@ export function IdeaWorkspaceClient({
     available: boolean;
     source: { boardReady: boolean; unavailableReason?: string };
     estimatedCost: number;
-    planned: Array<{ role: string; provider: string; model: string; tier: "low" | "medium" | "high" }>;
+    planned: Array<{ role: string; provider: string; model: string; tier: "low" | "medium" | "high"; maxOutputTokens?: number; reasoningEffort?: "low" }>;
     reviewerReruns: {
-      medium: { provider: string; model: string; tier: "medium"; estimatedCost: number; available: boolean };
-      high: { provider: string; model: string; tier: "high"; estimatedCost: number; available: boolean };
+      medium: { provider: string; model: string; tier: "medium"; estimatedCost: number; available: boolean; maxOutputTokens: number; reasoningEffort: "low" };
+      high: { provider: string; model: string; tier: "high"; estimatedCost: number; available: boolean; maxOutputTokens: number; reasoningEffort: "low" };
     };
     initialDrafterRecovery: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean; unavailableReason?: string; outcome?: "persisted_failure" | "unconfirmed" };
     derivedShortRefresh: { provider: string; model: string; tier: "low" | "medium" | "high"; estimatedCost: number; available: boolean };

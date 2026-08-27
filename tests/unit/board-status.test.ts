@@ -30,6 +30,16 @@ describe("persisted Board and derived-short status", () => {
     })).toBe(true);
   });
 
+  it("keeps a persisted interruption incomplete even when a reviewer already failed or later recovered", () => {
+    expect(isBoardReviewIncomplete({
+      runStatus: "failed",
+      failures: [{ role: "skeptic" }],
+      finalDrafterRecovered: true,
+      reviewerRecoveredRoles: ["skeptic"],
+      interrupted: true,
+    })).toBe(true);
+  });
+
   it("updates the controlled derived short post only when an action replaced it and the author has no unsaved edits", () => {
     expect(shouldResetDerivedShortEditor("refresh_live_derived_short", false)).toBe(true);
     expect(shouldResetDerivedShortEditor("retry_live_derived_short", true)).toBe(false);

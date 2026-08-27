@@ -23,10 +23,46 @@ describe("local mutation request boundary", () => {
       },
       body: "{}",
     });
-    expect(() => requireLocalJsonMutation(loopbackAlias)).not.toThrow();
+    expect(() => requireLocalJsonMutation(loopbackAlias)).toThrow("Cross-origin");
+  });
+
+  it("normalizes the actual Host header before comparing it with Origin", () => {
+    const matchingActualHost = new Request("http://127.0.0.1:3100/api/ideas/test", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        host: "LOCALHOST:3100",
+        origin: "http://localhost:3100",
+        "sec-fetch-site": "same-origin",
+      },
+      body: "{}",
+    });
+    expect(() => requireLocalJsonMutation(matchingActualHost)).not.toThrow();
+
+    const conflictingLoopbackOrigin = new Request("http://127.0.0.1:3100/api/ideas/test", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        host: "localhost:3100",
+        origin: "http://127.0.0.1:3100",
+        "sec-fetch-site": "same-origin",
+      },
+      body: "{}",
+    });
+    expect(() => requireLocalJsonMutation(conflictingLoopbackOrigin)).toThrow("Cross-origin");
   });
 
   it("rejects cross-origin, non-JSON, and non-loopback mutations", () => {
+    expect(() => requireLocalJsonMutation(new Request("http://127.0.0.1:3100/api/test", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }))).toThrow("exact local application origin");
+    expect(() => requireLocalJsonMutation(new Request("http://127.0.0.1:3100/api/test", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:3101", "sec-fetch-site": "same-origin" },
+      body: "{}",
+    }))).toThrow("Cross-origin");
     expect(() => requireLocalJsonMutation(new Request("http://127.0.0.1:3100/api/test", {
       method: "POST",
       headers: { "content-type": "application/json", origin: "https://example.com" },

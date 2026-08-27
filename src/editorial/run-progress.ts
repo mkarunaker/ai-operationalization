@@ -1,5 +1,5 @@
 import { getAppConfig } from "@/config/env";
-import { openReadOnlyDatabase } from "@/persistence/database";
+import { openRecoveredReadOnlyDatabase } from "@/persistence/database";
 import { boardRoleStageStatus } from "@/editorial/board-status";
 
 export type EditorialStageStatus = "waiting" | "running" | "completed" | "failed" | "not_run";
@@ -7,6 +7,7 @@ export type EditorialRunProgress = {
   runId?: string;
   kind?: "board" | "derived_short_recovery" | "initial_drafter_recovery";
   recoveryFailure?: "persisted_provider_failure" | "pre_dispatch_rejection" | "outcome_unconfirmed";
+  interrupted?: boolean;
   /** Application-authored explanation for a recovery rejected before dispatch. */
   recoveryRejectionReason?: string;
   status: "waiting" | "running" | "completed" | "partially_completed" | "failed";
@@ -42,10 +43,10 @@ function includesDerivedShort(value: string | null | undefined) {
 }
 
 export function getLiveEditorialProgress(ideaId: string, since?: string): EditorialRunProgress {
-  const database = openReadOnlyDatabase(getAppConfig().databasePath);
+  const database = openRecoveredReadOnlyDatabase(getAppConfig().databasePath);
   try {
     const run = database.prepare(
-      `SELECT run.id, run.status, snapshot.generated_draft_version_id, snapshot.output_shape
+      `SELECT run.id, run.status, run.interrupted_at, snapshot.generated_draft_version_id, snapshot.output_shape
        FROM review_runs run
        JOIN editorial_run_snapshots snapshot ON snapshot.review_run_id = run.id
        WHERE snapshot.idea_id = ? AND run.execution_mode = 'live'
@@ -53,7 +54,7 @@ export function getLiveEditorialProgress(ideaId: string, since?: string): Editor
        ORDER BY run.started_at DESC
        LIMIT 1`,
     ).get(ideaId, since ?? null, since ?? null) as
-      | { id: string; status: EditorialRunProgress["status"]; generated_draft_version_id: string | null; output_shape: string | null }
+      | { id: string; status: EditorialRunProgress["status"]; interrupted_at: string | null; generated_draft_version_id: string | null; output_shape: string | null }
       | undefined;
     if (!run) {
       const shape = database.prepare("SELECT output_shape FROM ideas WHERE id = ?").get(ideaId) as { output_shape: string | null } | undefined;
@@ -80,6 +81,7 @@ export function getLiveEditorialProgress(ideaId: string, since?: string): Editor
     const terminal = ["completed", "partially_completed", "failed"].includes(run.status);
     const attemptedRoles = reviewRows.map((row) => row.name);
     const failedRoles = reviewRows.filter((row) => row.status === "failed").map((row) => row.name);
+    const interrupted = Boolean(run.interrupted_at);
     const stages: EditorialRunProgress["stages"] = [];
     stages.push({ id: "context", label: baseStageDefinitions[0][1], status: "completed" });
 
@@ -139,9 +141,9 @@ export function getLiveEditorialProgress(ideaId: string, since?: string): Editor
     stages.push({
       id: "provenance",
       label: baseStageDefinitions[6][1],
-      status: terminal ? "completed" : "waiting",
+      status: interrupted ? "failed" : terminal ? "completed" : "waiting",
     });
-    return { runId: run.id, status: run.status, stages };
+    return { runId: run.id, status: run.status, interrupted, stages };
   } finally {
     database.close();
   }

@@ -35,6 +35,7 @@ CREATE TABLE review_runs (
   id TEXT PRIMARY KEY, content_item_id TEXT NOT NULL REFERENCES content_items(id), draft_version_id TEXT NOT NULL REFERENCES draft_versions(id),
   status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'partially_completed', 'failed')),
   estimated_cost REAL NOT NULL DEFAULT 0, actual_cost REAL, budget_cap REAL, started_at TEXT, completed_at TEXT,
+  interrupted_at TEXT,
   review_type TEXT NOT NULL DEFAULT 'editorial' CHECK(review_type IN ('editorial', 'final_draft')),
   execution_mode TEXT NOT NULL DEFAULT 'simulation' CHECK(execution_mode IN ('simulation', 'grounded_test', 'live'))
 );

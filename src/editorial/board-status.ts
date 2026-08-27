@@ -25,7 +25,9 @@ export function isBoardReviewIncomplete(input: {
   failures: Array<{ role: string }>;
   finalDrafterRecovered: boolean;
   reviewerRecoveredRoles?: readonly string[];
+  interrupted?: boolean;
 }) {
+  if (input.interrupted) return true;
   if (input.runStatus === "completed") return false;
   const recoveredRoles = new Set(input.reviewerRecoveredRoles ?? []);
   const unresolved = input.failures.some((failure) =>

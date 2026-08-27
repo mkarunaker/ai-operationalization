@@ -6,6 +6,19 @@ export function requireLocalJsonMutation(request: Request) {
   const requestUrl = new URL(request.url);
   if (!loopbackHosts.has(requestUrl.hostname))
     throw new PublicRequestError("State-changing requests are accepted only on the local application origin.");
+  const host = request.headers.get("host");
+  let requestOrigin = requestUrl.origin;
+  if (host) {
+    try {
+      const hostUrl = new URL(`${requestUrl.protocol}//${host}`);
+      if (!loopbackHosts.has(hostUrl.hostname))
+        throw new PublicRequestError("State-changing requests are accepted only on the local application origin.");
+      requestOrigin = hostUrl.origin;
+    } catch (error) {
+      if (error instanceof PublicRequestError) throw error;
+      throw new PublicRequestError("State-changing requests are accepted only on the local application origin.");
+    }
+  }
 
   const contentType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json")
@@ -16,20 +29,20 @@ export function requireLocalJsonMutation(request: Request) {
     throw new PublicRequestError("Cross-origin state-changing requests are not allowed.");
 
   const origin = request.headers.get("origin");
-  if (origin) {
-    let originUrl: URL;
-    try {
-      originUrl = new URL(origin);
-    } catch {
-      throw new PublicRequestError("Cross-origin state-changing requests are not allowed.");
-    }
-
-    // Browsers may use localhost and 127.0.0.1 interchangeably for this local-only
-    // application. Sec-Fetch-Site above remains the authoritative browser signal;
-    // the Origin check additionally ensures the request came from a loopback page.
-    if (!loopbackHosts.has(originUrl.hostname))
-      throw new PublicRequestError("Cross-origin state-changing requests are not allowed.");
+  if (!origin)
+    throw new PublicRequestError("State-changing requests must include the exact local application origin.");
+  let originUrl: URL;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    throw new PublicRequestError("Cross-origin state-changing requests are not allowed.");
   }
+
+  // Loopback aliases are distinct web origins. Requiring the exact origin
+  // prevents another local listener from using localhost or ::1 to mutate a
+  // page served from 127.0.0.1 (or vice versa).
+  if (originUrl.origin !== requestOrigin)
+    throw new PublicRequestError("Cross-origin state-changing requests are not allowed.");
 }
 
 export function safeRouteError(error: unknown) {
@@ -84,6 +97,9 @@ export function safeRouteError(error: unknown) {
     /^No reviewer returned a validated editorial evaluation\./,
     /^An escalation reason is required/,
     /^A ready (Book of Knowledge|kk-spoken-voice skill)/,
+    /^Select up to sixty knowledge documents\./,
+    /^Choose only documents currently available in the configured knowledge library folder\./,
+    /^Choose a knowledge-library action\./,
     /^Published workflow is locked/,
     /^Published ideas are retained/,
     /^An idea with a publication record cannot be deleted/,

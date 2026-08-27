@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { GroundedTestProvider } from "@/ai/grounded-test-provider";
-import { SYNTHESIZER_OUTPUT_TOKENS, estimateRouteCost, initialDrafterOutputTokens, maximumRunBudgetUsd, reviewerOutputTokens, routeFor, routeForProviderTier, type LiveProviderName } from "@/ai/model-routing";
+import { estimateRouteCost, initialDrafterOutputTokens, maximumRunBudgetUsd, reviewerOutputTokens, routeFor, routeForProviderTier, synthesizerOutputTokens, type LiveProviderName } from "@/ai/model-routing";
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
 import { ZenMuxChatCompletionsProvider } from "@/ai/zenmux-provider";
@@ -759,7 +759,7 @@ function selectKnowledge(snapshot: SnapshotInput) {
 function sourceManifest(
   shared: PromptSource[],
   rolePrompts: Record<ReviewerRole | "synthesizer" | "initial_drafter" | "final_drafter", PromptSource>,
-  providerInfo: { name: string; modelForRole: (role: AgentRole) => string; providerForRole?: (role: AgentRole) => string; tierForRole?: (role: AgentRole) => ModelTier; pricingAssumption: string; pricingAssumptionForRole?: (role: AgentRole) => string; initialDrafterMaxOutputTokens: number; reviewerMaxOutputTokens: number },
+  providerInfo: { name: string; modelForRole: (role: AgentRole) => string; providerForRole?: (role: AgentRole) => string; tierForRole?: (role: AgentRole) => ModelTier; pricingAssumption: string; pricingAssumptionForRole?: (role: AgentRole) => string; initialDrafterMaxOutputTokens: number; reviewerMaxOutputTokens: number; synthesizerMaxOutputTokens: number },
   readerContract?: Pick<SnapshotInput, "outputShape" | "audienceProfile" | "audienceNotes" | "longForm" | "shortForm">,
 ) {
   // A provenance reader contract is intentionally smaller than SnapshotInput.
@@ -785,7 +785,7 @@ function sourceManifest(
           pricingAssumption: providerInfo.pricingAssumptionForRole?.(role as AgentRole) ?? providerInfo.pricingAssumption,
           ...(role === "initial_drafter" ? { maxOutputTokens: providerInfo.initialDrafterMaxOutputTokens } : {}),
           ...(["strategist", "skeptic", "editor"].includes(role) ? { maxOutputTokens: providerInfo.reviewerMaxOutputTokens, reasoningEffort: "low" } : {}),
-          ...(role === "synthesizer" ? { maxOutputTokens: SYNTHESIZER_OUTPUT_TOKENS, reasoningEffort: "low" } : {}),
+          ...(role === "synthesizer" ? { maxOutputTokens: providerInfo.synthesizerMaxOutputTokens, reasoningEffort: "low" } : {}),
         }]),
       ),
       pricingAssumption: providerInfo.pricingAssumption,
@@ -1219,14 +1219,18 @@ function projectedCost(
   includeDerivedShort: boolean,
   initialDrafterMaxOutputTokens: number,
   reviewerMaxOutputTokens: number,
+  synthesizerMaxOutputTokens: number,
 ) {
   const inputTokens = boundaryCharacters + 12_000;
   const planned: Array<[AgentRole, number, number]> = [
     ["strategist", inputTokens, reviewerMaxOutputTokens],
     ["skeptic", inputTokens, reviewerMaxOutputTokens],
     ["editor", inputTokens, reviewerMaxOutputTokens],
-    ["synthesizer", 12_000 + 3 * reviewerMaxOutputTokens * 4, SYNTHESIZER_OUTPUT_TOKENS],
-    ["initial_drafter", inputTokens + 40_000 + SYNTHESIZER_OUTPUT_TOKENS * 4, initialDrafterMaxOutputTokens],
+    ["synthesizer", 12_000 + 3 * reviewerMaxOutputTokens * 4, synthesizerMaxOutputTokens],
+    // The Synthesizer allowance is already a token count. Carry it into the
+    // downstream request as tokens rather than converting it as if it were
+    // character length; the fixed input buffer remains conservative.
+    ["initial_drafter", inputTokens + 40_000 + synthesizerMaxOutputTokens, initialDrafterMaxOutputTokens],
   ];
   if (includeDerivedShort) {
     planned.push(["final_drafter", inputTokens + initialDrafterMaxOutputTokens * 4, derivedShortOutputTokens]);
@@ -1334,6 +1338,7 @@ export function estimateGroundedEditorialRun(
       hasDerivedShortOutput(snapshot.outputShape),
       initialDrafterOutputTokens(),
       reviewerOutputTokens(),
+      synthesizerOutputTokens(),
     );
   } finally {
     database.close();
@@ -1464,6 +1469,7 @@ export async function runGroundedEditorialRun(
   const pricingAssumptionForRole = options.pricingAssumptionForRole ?? (() => pricingAssumption);
   const initialDrafterMaxOutputTokens = initialDrafterOutputTokens();
   const reviewerMaxOutputTokens = reviewerOutputTokens();
+  const synthesizerMaxOutputTokens = synthesizerOutputTokens();
   const config = getAppConfig();
   const sourceStatus = getContentStatus(config);
   if (sourceStatus.bok.status !== "ready") throw new Error("A ready Book of Knowledge index is required for a grounded editorial run.");
@@ -1502,6 +1508,7 @@ export async function runGroundedEditorialRun(
       hasDerivedShortOutput(snapshot.outputShape),
       initialDrafterMaxOutputTokens,
       reviewerMaxOutputTokens,
+      synthesizerMaxOutputTokens,
     );
     if (executionMode === "live" && runEstimate > budgetCap) {
       throw new Error(`Projected live-run cost $${runEstimate.toFixed(4)} exceeds the $${budgetCap.toFixed(2)} budget cap. No provider call was made.`);
@@ -1542,7 +1549,7 @@ export async function runGroundedEditorialRun(
           voice.id,
           voice.version,
           voice.checksum,
-          sourceManifest(shared, prompts, { name: provider.name, modelForRole, providerForRole, tierForRole: (role) => tierForRole(role) ?? "low", pricingAssumption, pricingAssumptionForRole, initialDrafterMaxOutputTokens, reviewerMaxOutputTokens }, snapshot),
+          sourceManifest(shared, prompts, { name: provider.name, modelForRole, providerForRole, tierForRole: (role) => tierForRole(role) ?? "low", pricingAssumption, pricingAssumptionForRole, initialDrafterMaxOutputTokens, reviewerMaxOutputTokens, synthesizerMaxOutputTokens }, snapshot),
         );
       persistRetrieval(database, snapshotDraftId, selected, runId);
       database.exec("COMMIT");
@@ -1657,7 +1664,7 @@ export async function runGroundedEditorialRun(
               content: `Preserve completed reviewer output and make failures visible. The selected BOK passages are supplied as bounded editorial data so you can choose one canonical source key for the evidence backbone.\n\n${synthesisBoundary.contextBlock}`,
             },
           ],
-          maxOutputTokens: SYNTHESIZER_OUTPUT_TOKENS,
+          maxOutputTokens: synthesizerMaxOutputTokens,
           reasoningEffort: "low",
           responseFormat: { type: "json_schema" },
           metadata: { agentRole: "synthesizer", task: "synthesis", modelTier: tierForRole("synthesizer"), bokHeading, sourceFingerprint: checksum(synthesisMaterial).slice(0, 10) },

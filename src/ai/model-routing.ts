@@ -28,7 +28,9 @@ export const MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS = 5_000;
 export const DEFAULT_REVIEWER_OUTPUT_TOKENS = 1_600;
 export const MINIMUM_REVIEWER_OUTPUT_TOKENS = 1_200;
 export const MAXIMUM_REVIEWER_OUTPUT_TOKENS = 3_000;
-export const SYNTHESIZER_OUTPUT_TOKENS = 1_000;
+export const DEFAULT_SYNTHESIZER_OUTPUT_TOKENS = 1_600;
+export const MINIMUM_SYNTHESIZER_OUTPUT_TOKENS = 1_600;
+export const MAXIMUM_SYNTHESIZER_OUTPUT_TOKENS = 3_000;
 
 const openaiPricing = (modelClass: string, input: string, cached: string, output: string) =>
   `OpenAI ${modelClass} standard API pricing assumption: USD ${input} / MTok input, USD ${cached} / MTok cached input, and USD ${output} / MTok output. Reasoning tokens are included in reported output tokens, not charged a second time. Verify against OpenAI billing.`;
@@ -209,5 +211,19 @@ export function reviewerOutputTokens(): number {
   const value = Number(raw);
   if (!Number.isInteger(value) || value < MINIMUM_REVIEWER_OUTPUT_TOKENS || value > MAXIMUM_REVIEWER_OUTPUT_TOKENS)
     throw new Error(`Reviewer output allowance must be an integer between ${MINIMUM_REVIEWER_OUTPUT_TOKENS} and ${MAXIMUM_REVIEWER_OUTPUT_TOKENS}.`);
+  return value;
+}
+
+/**
+ * Resolve the server-owned Synthesizer allowance. Reasoning and visible
+ * structured output share this bound, so the value is reserved in full and
+ * recorded with the immutable Board route contract.
+ */
+export function synthesizerOutputTokens(): number {
+  const raw = process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_SYNTHESIZER_OUTPUT_TOKENS;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < MINIMUM_SYNTHESIZER_OUTPUT_TOKENS || value > MAXIMUM_SYNTHESIZER_OUTPUT_TOKENS)
+    throw new Error(`Synthesizer output allowance must be an integer between ${MINIMUM_SYNTHESIZER_OUTPUT_TOKENS} and ${MAXIMUM_SYNTHESIZER_OUTPUT_TOKENS}.`);
   return value;
 }

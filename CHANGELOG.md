@@ -4,7 +4,7 @@
 
 ### Post-release live-run reliability
 
-- Set the Synthesizer to low reasoning while retaining its 1,000-token allowance and conservative reservation, and disclose that exact request contract in Advanced settings and immutable Board provenance.
+- Set the Synthesizer to low reasoning, raised its default output allowance to 1,600 tokens, and added a validated server-only 1,600-to-3,000 operator setting. Estimates, cost reservations, requests, structured repairs, Advanced settings, and immutable Board provenance use the same resolved value.
 - Increased the bounded server-owned reviewer output allowance, set Luna reviewer reasoning to low, included the allowance in estimates and immutable provenance, and disclosed it on scoped retry controls so structured reviews have room to complete without weakening the run cap or automatic-retry policy.
 
 ### Post-release source library

@@ -1,4 +1,4 @@
-import { SYNTHESIZER_OUTPUT_TOKENS, defaultRunBudgetUsd, estimateRouteCost, maximumRunBudgetUsd, modelEnvironmentVariable, reviewerOutputTokens, routeFor, routeForProviderTier, type LiveProviderName, type ModelTier } from "@/ai/model-routing";
+import { defaultRunBudgetUsd, estimateRouteCost, maximumRunBudgetUsd, modelEnvironmentVariable, reviewerOutputTokens, routeFor, routeForProviderTier, synthesizerOutputTokens, type LiveProviderName, type ModelTier } from "@/ai/model-routing";
 import { LIVE_BOARD_QUALITY_PROFILES, resolveLiveBoardQualityProfile, tierForLiveBoardRole, type LiveBoardQualityProfile } from "@/config/model-routing";
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
@@ -83,6 +83,7 @@ export function proofreaderReservationEstimate(body: string, readerContract: Rea
 export function liveRunPreview(ideaId: string, requestedProfile?: unknown) {
   const qualityProfile = resolveLiveBoardQualityProfile(requestedProfile);
   const reviewerMaxOutputTokens = reviewerOutputTokens();
+  const synthesizerMaxOutputTokens = synthesizerOutputTokens();
   // A missing local index is an expected setup state after a synthetic-data
   // reset. Keep the Board setup visible and disable only the actions that
   // truly need the source; do not throw from a page-load preview.
@@ -204,7 +205,7 @@ export function liveRunPreview(ideaId: string, requestedProfile?: unknown) {
         model: planned.model || "Model configuration required",
         tier: planned.tier,
         ...(["strategist", "skeptic", "editor"].includes(role) ? { maxOutputTokens: reviewerMaxOutputTokens, reasoningEffort: "low" as const } : {}),
-        ...(role === "synthesizer" ? { maxOutputTokens: SYNTHESIZER_OUTPUT_TOKENS, reasoningEffort: "low" as const } : {}),
+        ...(role === "synthesizer" ? { maxOutputTokens: synthesizerMaxOutputTokens, reasoningEffort: "low" as const } : {}),
       };
     }),
     proofreader: {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_REVIEWER_OUTPUT_TOKENS, DEFAULT_RUN_BUDGET_USD, MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS, MAXIMUM_REVIEWER_OUTPUT_TOKENS, MAXIMUM_RUN_BUDGET_USD, defaultRunBudgetUsd, estimateRouteCost, initialDrafterOutputTokens, maximumRunBudgetUsd, reviewerOutputTokens, routeFor } from "@/ai/model-routing";
+import { DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_REVIEWER_OUTPUT_TOKENS, DEFAULT_RUN_BUDGET_USD, DEFAULT_SYNTHESIZER_OUTPUT_TOKENS, MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS, MAXIMUM_REVIEWER_OUTPUT_TOKENS, MAXIMUM_RUN_BUDGET_USD, MAXIMUM_SYNTHESIZER_OUTPUT_TOKENS, defaultRunBudgetUsd, estimateRouteCost, initialDrafterOutputTokens, maximumRunBudgetUsd, reviewerOutputTokens, routeFor, synthesizerOutputTokens } from "@/ai/model-routing";
 import { DEFAULT_LIVE_BOARD_QUALITY_PROFILE, resolveLiveBoardQualityProfile, tierForLiveBoardRole } from "@/config/model-routing";
 
 describe("model routing", () => {
@@ -101,6 +101,23 @@ describe("model routing", () => {
     } finally {
       if (previous === undefined) delete process.env.EDITORIAL_REVIEWER_MAX_OUTPUT_TOKENS;
       else process.env.EDITORIAL_REVIEWER_MAX_OUTPUT_TOKENS = previous;
+    }
+  });
+
+  it("uses a bounded, operator-configurable Synthesizer output allowance", () => {
+    const previous = process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS;
+    try {
+      delete process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS;
+      expect(synthesizerOutputTokens()).toBe(DEFAULT_SYNTHESIZER_OUTPUT_TOKENS);
+
+      process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS = "2400";
+      expect(synthesizerOutputTokens()).toBe(2_400);
+
+      process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS = String(MAXIMUM_SYNTHESIZER_OUTPUT_TOKENS + 1);
+      expect(() => synthesizerOutputTokens()).toThrow(/Synthesizer output allowance/i);
+    } finally {
+      if (previous === undefined) delete process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS;
+      else process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS = previous;
     }
   });
 

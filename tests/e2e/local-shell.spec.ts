@@ -52,7 +52,7 @@ function preview(overrides: Record<string, unknown> = {}) {
     available: false,
     source: { boardReady: true },
     estimatedCost: 0.001,
-    planned: [{ role: "synthesizer", provider: "test-provider", model: "test-low", tier: "low", maxOutputTokens: 1_000, reasoningEffort: "low" }],
+    planned: [{ role: "synthesizer", provider: "test-provider", model: "test-low", tier: "low", maxOutputTokens: 1_600, reasoningEffort: "low" }],
     reviewerReruns: {
       medium: { provider: "test-provider", model: "test-medium", tier: "medium", estimatedCost: 0.01, available: true, maxOutputTokens: 1_600, reasoningEffort: "low" },
       high: { provider: "test-provider", model: "test-high", tier: "high", estimatedCost: 0.02, available: true, maxOutputTokens: 1_600, reasoningEffort: "low" },
@@ -409,7 +409,7 @@ test("offers only the named server-owned live content profiles before a paid Boa
   releaseFrontierPreview?.();
   await expect(page.getByText("Synthetic Sol-only main-draft route.")).toBeVisible();
   await page.getByText("Advanced run settings").click();
-  await expect(page.getByText(/synthesizer.*1000 output tokens.*low reasoning/i)).toBeVisible();
+  await expect(page.getByText(/synthesizer.*1600 output tokens.*low reasoning/i)).toBeVisible();
   await runButton.click();
   await expect.poll(() => submittedProfile).toBe("frontier_content");
 });

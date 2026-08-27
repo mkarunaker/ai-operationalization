@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GroundedTestProvider } from "@/ai/grounded-test-provider";
 import type { CostEstimate, ModelProvider, ModelRequest, ModelResponse, TokenUsage } from "@/ai/provider";
-import { DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_REVIEWER_OUTPUT_TOKENS, SYNTHESIZER_OUTPUT_TOKENS, modelEnvironmentVariable, routeFor } from "@/ai/model-routing";
+import { DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_REVIEWER_OUTPUT_TOKENS, DEFAULT_SYNTHESIZER_OUTPUT_TOKENS, modelEnvironmentVariable, routeFor } from "@/ai/model-routing";
 import { getAppConfig } from "@/config/env";
 import { getContentStatus, refreshContent, setSelectedKnowledgeDocuments } from "@/content/loader";
 import { CumulativeBudgetProvider, estimateDerivedShortDraft, estimateInitialDrafterRecovery, hasRecoverableInitialDrafterFailure, initialDrafterRecoveryAvailability, initialDrafterRecoveryOutcome, persistAttempts, retryDerivedShortDraftForTest, retryInitialDrafterDraft, retryInitialDrafterDraftForTest, runGroundedEditorialRun, runSingleReviewer, scopedDerivedShortDraftRequestFor } from "@/editorial/grounded-run";
@@ -462,7 +462,7 @@ describe("grounded reader-output boundaries", () => {
     expect(frontier).toMatchObject({ qualityProfile: { id: "frontier_content" }, maximumBudgetCap: 0.75 });
     expect(frontier.planned).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "strategist", tier: "low", maxOutputTokens: DEFAULT_REVIEWER_OUTPUT_TOKENS, reasoningEffort: "low" }),
-      expect.objectContaining({ role: "synthesizer", tier: "low", maxOutputTokens: SYNTHESIZER_OUTPUT_TOKENS, reasoningEffort: "low" }),
+      expect.objectContaining({ role: "synthesizer", tier: "low", maxOutputTokens: DEFAULT_SYNTHESIZER_OUTPUT_TOKENS, reasoningEffort: "low" }),
       expect.objectContaining({ role: "initial_drafter", tier: "high" }),
     ]));
     expect(frontier.reviewerReruns.medium).toMatchObject({
@@ -897,32 +897,61 @@ describe("grounded reader-output boundaries", () => {
     } finally { database.close(); }
   });
 
-  it("applies and records low reasoning for Synthesizer and its one bounded repair", async () => {
+  it("applies and records the configured Synthesizer allowance for its request and one bounded repair", async () => {
+    const previousAllowance = process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS;
     const created = createIdea({ rawNotes: "Synthesis should preserve reviewer conclusions without consuming its bounded output on default reasoning." });
     const provider = new MalformedSynthesizerProvider();
-    await runGroundedEditorialRun(created.id, provider);
-
-    const synthesizerRequests = provider.requests.filter((request) => request.metadata?.agentRole === "synthesizer");
-    expect(synthesizerRequests).toHaveLength(2);
-    expect(synthesizerRequests.map((request) => ({
-      task: request.metadata?.task,
-      maxOutputTokens: request.maxOutputTokens,
-      reasoningEffort: request.reasoningEffort,
-    }))).toEqual([
-      { task: "synthesis", maxOutputTokens: SYNTHESIZER_OUTPUT_TOKENS, reasoningEffort: "low" },
-      { task: "repair", maxOutputTokens: SYNTHESIZER_OUTPUT_TOKENS, reasoningEffort: "low" },
-    ]);
-
-    const database = openDatabase(process.env.DATABASE_PATH!);
     try {
-      const row = database.prepare(
-        "SELECT prompt_manifest FROM editorial_run_snapshots WHERE idea_id = ? ORDER BY rowid DESC LIMIT 1",
-      ).get(created.id) as { prompt_manifest: string };
-      expect(JSON.parse(row.prompt_manifest).provider.roleAssignments.synthesizer).toMatchObject({
-        maxOutputTokens: SYNTHESIZER_OUTPUT_TOKENS,
-        reasoningEffort: "low",
-      });
-    } finally { database.close(); }
+      delete process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS;
+      const defaultPreview = liveRunPreview(created.id, "frontier_content");
+      process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS = "2400";
+      const configuredPreview = liveRunPreview(created.id, "frontier_content");
+      expect(configuredPreview.planned).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: "synthesizer", maxOutputTokens: 2_400, reasoningEffort: "low" }),
+      ]));
+      expect(configuredPreview.estimatedCost).toBeGreaterThan(defaultPreview.estimatedCost);
+
+      await runGroundedEditorialRun(created.id, provider);
+
+      const synthesizerRequests = provider.requests.filter((request) => request.metadata?.agentRole === "synthesizer");
+      expect(synthesizerRequests).toHaveLength(2);
+      expect(synthesizerRequests.map((request) => ({
+        task: request.metadata?.task,
+        maxOutputTokens: request.maxOutputTokens,
+        reasoningEffort: request.reasoningEffort,
+      }))).toEqual([
+        { task: "synthesis", maxOutputTokens: 2_400, reasoningEffort: "low" },
+        { task: "repair", maxOutputTokens: 2_400, reasoningEffort: "low" },
+      ]);
+
+      const database = openDatabase(process.env.DATABASE_PATH!);
+      try {
+        const row = database.prepare(
+          "SELECT prompt_manifest FROM editorial_run_snapshots WHERE idea_id = ? ORDER BY rowid DESC LIMIT 1",
+        ).get(created.id) as { prompt_manifest: string };
+        expect(JSON.parse(row.prompt_manifest).provider.roleAssignments.synthesizer).toMatchObject({
+          maxOutputTokens: 2_400,
+          reasoningEffort: "low",
+        });
+      } finally { database.close(); }
+    } finally {
+      if (previousAllowance === undefined) delete process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS;
+      else process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS = previousAllowance;
+    }
+  });
+
+  it("fails invalid Synthesizer allowance configuration before provider dispatch", async () => {
+    const previousAllowance = process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS;
+    process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS = "3001";
+    const created = createIdea({ rawNotes: "Invalid output policy must fail before any paid Editorial Board request." });
+    const provider = new RecordingProvider();
+    try {
+      await expect(runGroundedEditorialRun(created.id, provider)).rejects.toThrow(/Synthesizer output allowance/i);
+      expect(provider.requests).toHaveLength(0);
+    } finally {
+      if (previousAllowance === undefined) delete process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS;
+      else process.env.EDITORIAL_SYNTHESIZER_MAX_OUTPUT_TOKENS = previousAllowance;
+    }
   });
 
   it("returns a usable unavailable Board preview instead of throwing when the BOK index is absent", () => {

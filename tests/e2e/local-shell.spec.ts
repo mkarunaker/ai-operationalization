@@ -6,6 +6,10 @@ function marker(label: string) {
   return `e2e-reader-output-${label}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function originFor(page: Page) {
+  return new URL(page.url()).origin;
+}
+
 async function createIdeaThroughWrite(
   page: Page,
   input: { capture?: string; shape?: OutputShape; audience?: "professional" | "executive" | "practitioner" | "general"; note?: string; shortRange?: [string, string]; longRange?: [string, string] } = {},
@@ -129,6 +133,22 @@ test("keeps the Knowledge sources page inside the shared application navigation"
   await expect(page.getByRole("navigation").getByRole("link", { name: "Editorial Notebook" })).toBeVisible();
   await expect(page.getByRole("navigation").getByRole("link", { name: "Knowledge sources" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("heading", { name: "Content status" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Index selected" })).toBeVisible();
+  await expect(page.getByText("synthetic-bok.md")).toBeVisible();
+  await expect(page.getByText("Included in source refresh")).toBeVisible();
+  await page.getByRole("button", { name: "Remove" }).click();
+  await expect(page.getByRole("status")).toContainText("synthetic-bok.md was removed from the app library.");
+  await expect(page.getByText("No knowledge documents are selected.")).toBeVisible();
+  await page.getByRole("button", { name: "+ Add documents" }).click();
+  await expect(page.getByText("hostile-<img src=x onerror=alert(1)>.md", { exact: true })).toBeVisible();
+  await expect(page.locator('img[src="x"]')).toHaveCount(0);
+  await page.getByLabel("synthetic-bok.md").click({ noWaitAfter: true });
+  await expect(page.locator(".source-library-table")).toContainText("synthetic-bok.md");
+  await page.getByRole("button", { name: "Save selection" }).click();
+  await expect(page.getByRole("status")).toContainText("Selection saved.");
+  await page.getByRole("button", { name: "Index selected" }).click();
+  await expect(page.getByRole("status")).toContainText("Selected knowledge documents and the voice reference were refreshed locally.");
+  await expect(page.getByText("Indexed").first()).toBeVisible();
   await page.getByText("Idea capture template").click();
   await expect(page.getByText(/four fields carry one narrative arc/i)).toBeVisible();
   await expect(page.getByText("Situation · required")).toBeVisible();
@@ -178,15 +198,15 @@ test("rejects incoherent reader-output updates atomically through the local rout
   const ideaId = new URL(page.url()).pathname.match(/^\/ideas\/([^/]+)/)?.[1];
   expect(ideaId).toBeTruthy();
   const original = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: { outputShape: string; outputPreferences: unknown } };
-  const rejected = await page.request.post(`/api/ideas/${ideaId}`, { headers: { origin: "http://127.0.0.1:3100" }, data: { outputShape: "long" } });
+  const rejected = await page.request.post(`/api/ideas/${ideaId}`, { headers: { origin: originFor(page) }, data: { outputShape: "long" } });
   expect(rejected.status()).toBe(400);
   expect(await rejected.json()).toMatchObject({ error: expect.stringMatching(/complete selected reader-output preferences/i) });
   expect((await (await page.request.get(`/api/ideas/${ideaId}`)).json() as typeof original).idea).toMatchObject(original.idea);
   const coherent = { longFormEnabled: true, longFormMinWords: 1234, longFormMaxWords: 1567, shortFormEnabled: true, shortFormMinWords: 321, shortFormMaxWords: 357, shortFormSource: "derived_from_long" };
-  const preferencesOnly = await page.request.post(`/api/ideas/${ideaId}`, { headers: { origin: "http://127.0.0.1:3100" }, data: { outputPreferences: coherent } });
+  const preferencesOnly = await page.request.post(`/api/ideas/${ideaId}`, { headers: { origin: originFor(page) }, data: { outputPreferences: coherent } });
   expect(preferencesOnly.ok()).toBe(true);
   expect(await preferencesOnly.json()).toMatchObject({ idea: { outputShape: "long_with_derived_short", outputPreferences: coherent } });
-  const mismatched = await page.request.post(`/api/ideas/${ideaId}`, { headers: { origin: "http://127.0.0.1:3100" }, data: { outputShape: "short", outputPreferences: coherent } });
+  const mismatched = await page.request.post(`/api/ideas/${ideaId}`, { headers: { origin: originFor(page) }, data: { outputShape: "short", outputPreferences: coherent } });
   expect(mismatched.status()).toBe(400);
   expect((await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: unknown }).idea).toMatchObject({ outputShape: "long_with_derived_short", outputPreferences: coherent });
 });
@@ -199,7 +219,7 @@ test("rejects browser-supplied working-draft routing before any live dispatch", 
   const ideaId = new URL(page.url()).pathname.match(/^\/ideas\/([^/]+)/)?.[1];
   expect(ideaId).toBeTruthy();
   const rejected = await page.request.post(`/api/ideas/${ideaId}`, {
-    headers: { origin: "http://127.0.0.1:3100" },
+    headers: { origin: originFor(page) },
     data: {
       action: "retry_live_initial_drafter",
       budgetCap: 0.05,
@@ -511,7 +531,7 @@ test("explains an unattempted live proofread and points to the exact allowed ret
   const ideaId = await createIdeaThroughWrite(page, { shape: "short" });
   const detail = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: { shortPost: { id: string; body: string } } };
   const response = await page.request.post(`/api/ideas/${ideaId}`, {
-    headers: { origin: "http://127.0.0.1:3100" },
+    headers: { origin: originFor(page) },
     data: {
       action: "run_final_review",
       format: "short",
@@ -1304,7 +1324,7 @@ test("preserves unsaved derived-short wording when a concurrent response returns
 test("rejects caller-supplied proofreader routing fields through the local mutation route", async ({ page }) => {
   const ideaId = await createIdeaThroughWrite(page);
   const result = await page.request.post(`/api/ideas/${ideaId}`, {
-    headers: { origin: "http://127.0.0.1:3100" },
+    headers: { origin: originFor(page) },
     data: { action: "run_live_proofread", format: "short", draftVersionId: "arbitrary", budgetCap: 0.05, provider: "injected", model: "injected", tier: "high", pricingAssumption: "injected" },
   });
   expect(result.status()).toBe(400);

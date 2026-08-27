@@ -943,6 +943,19 @@ Security is tested during every milestone; this milestone is the final release a
 
 Use **“local personal MVP”** only after Milestones 0–5 and 10 pass. Milestones 6–9 may ship afterward without blocking the core writing workflow.
 
+### Post-release follow-ons — owner feedback first
+
+The owner will manually test the local personal MVP before choosing the next implementation milestone. Capture product feedback as concrete observations about workflow friction, trust, source relevance, output quality, cost clarity, and recovery behavior; do not infer a feature roadmap from a single test session.
+
+The following follow-ons are recorded for separate owner-approved work:
+
+1. **Run and cost reports.** Add a read-only reporting surface over the persisted run and attempt ledger: run status, provider/model/tier, estimated and reserved cost, tokens when recorded, latency, retries, and sanitized failure categories. It must include failed attempts, distinguish estimates from provider billing, preserve historical provenance, and never expose prompts, generated text, source contents, credentials, raw request bodies, or arbitrary diagnostics.
+2. **Source refresh and recovery clarity.** Provide an explicit local source-index refresh for the configured BOK and voice skill, with safe readiness/version metadata and a clear outcome. A failed working-draft retry must say whether a refresh can restore availability (for example, an unindexed or temporarily unavailable source) or whether the saved immutable voice checksum, selected source version, or server-owned route has changed and therefore requires a new Board run. It must never silently substitute newly indexed source material into a historical retry, expose source contents or paths, or trigger a provider call.
+
+3. **Author-owned draft path after a Board failure or by choice.** Do not trap an author in a paid recovery loop when they already have a post. Add an explicit “Use my draft” path that saves the exact author-provided text as an author-created version, then permits the normal Write, deterministic visual, approved custom-image, and Finalize workflows. It must clearly distinguish author-created text from Board-generated text: it may not claim BOK grounding, voice-model application, Board approval, or provider provenance. Draft review remains an optional, exact-version action; an author can use the local visual and saving/finalization tools without repeatedly rerunning the Board. A failed Board remains immutable history, and choosing the author-owned path never rewrites or hides its attempts, costs, failures, or source snapshot. The create action must be explicit, bounded, same-origin, JSON-protected, and regression-tested for failed-Board, no-Board, published, hostile-text, provenance, and exact-version branches.
+
+Each follow-on requires its own scope, migration/compatibility decision, no-provider regression plan, complete local gate, and independent review. Do not inspect or automatically ingest newly added local documents without explicit owner direction.
+
 ### Product-test visual-quality follow-on — target 1.1
 
 Manual product testing found that the current deterministic visual renderer can distort letterforms by applying SVG `textLength` with `lengthAdjust="spacingAndGlyphs"`, and can repeat the same source claim in headline, label, and panel detail. Treat this as a quality defect rather than author error or a content-model failure.

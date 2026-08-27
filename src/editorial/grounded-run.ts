@@ -18,7 +18,7 @@ import {
   type GroundedSynthesisOutput,
 } from "@/ai/structured-output";
 import { getAppConfig } from "@/config/env";
-import { getContentStatus, refreshContent, searchKnowledge, type KnowledgeSearchResult } from "@/content/loader";
+import { getContentStatus, readyKnowledgeDocuments, searchKnowledge, type KnowledgeSearchResult } from "@/content/loader";
 import type { AgentRole } from "@/domain/roles";
 import { openInitializedDatabase, openRecoveredReadOnlyDatabase } from "@/persistence/database";
 import { checkHumanVoice } from "@/voice/final-check";
@@ -1461,7 +1461,7 @@ export async function runGroundedEditorialRun(
   const pricingAssumptionForRole = options.pricingAssumptionForRole ?? (() => pricingAssumption);
   const initialDrafterMaxOutputTokens = initialDrafterOutputTokens();
   const config = getAppConfig();
-  const sourceStatus = refreshContent(config);
+  const sourceStatus = getContentStatus(config);
   if (sourceStatus.bok.status !== "ready") throw new Error("A ready Book of Knowledge index is required for a grounded editorial run.");
   if (sourceStatus.voiceSkill.status !== "ready") throw new Error("A ready kk-spoken-voice skill is required for drafting.");
   const database = db();
@@ -1479,13 +1479,13 @@ export async function runGroundedEditorialRun(
       final_drafter: readPrompt(promptFile("final_drafter")),
     };
     for (const [role, prompt] of Object.entries(prompts)) seedRole(database, role as AgentRole, prompt);
-    const document = database
-      .prepare("SELECT id, version, checksum FROM knowledge_documents WHERE source_path = ? AND status = 'ready'")
-      .get(config.bokPath) as { id: string; version: string; checksum: string } | undefined;
+    const documents = readyKnowledgeDocuments(config);
+    const document = documents[0];
     const voice = database
       .prepare("SELECT id, version, checksum, source_path FROM voice_skill_versions WHERE source_path = ? AND status = 'ready' ORDER BY loaded_at DESC LIMIT 1")
       .get(sourceStatus.voiceSkill.path) as { id: string; version: string; checksum: string; source_path: string } | undefined;
     if (!document || !voice) throw new Error("Configured source versions could not be recorded.");
+    const libraryChecksum = checksum(JSON.stringify(documents.map((item) => ({ id: item.id, version: item.version, checksum: item.checksum }))));
     const voiceText = fs.readFileSync(/* turbopackIgnore: true */ voice.source_path, "utf8");
     const selected = selectKnowledge(snapshot);
     const boundary = boundaryFor(snapshot, selected);
@@ -1519,7 +1519,7 @@ export async function runGroundedEditorialRun(
         .run(runId, snapshot.contentItemId, snapshotDraftId, executionMode, runEstimate, executionMode === "grounded_test" ? 0 : null, budgetCap, timestamp());
       database
         .prepare(
-          "INSERT INTO editorial_run_snapshots (id, review_run_id, idea_id, content_item_id, original_capture, notes_json, clarification_answers_json, output_shape, bok_document_id, bok_version, bok_checksum, voice_skill_version_id, voice_skill_version, voice_skill_checksum, prompt_manifest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO editorial_run_snapshots (id, review_run_id, idea_id, content_item_id, original_capture, notes_json, clarification_answers_json, output_shape, bok_document_id, bok_version, bok_checksum, bok_sources_json, voice_skill_version_id, voice_skill_version, voice_skill_checksum, prompt_manifest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .run(
           identifier("snapshot"),
@@ -1531,8 +1531,9 @@ export async function runGroundedEditorialRun(
           JSON.stringify(snapshot.answers),
           snapshot.outputShape,
           document.id,
-          document.version,
-          document.checksum,
+          "library",
+          libraryChecksum,
+          JSON.stringify(documents.map(({ id, title, version, checksum: sourceChecksum }) => ({ id, title, version, checksum: sourceChecksum }))),
           voice.id,
           voice.version,
           voice.checksum,
@@ -2664,7 +2665,7 @@ export async function runSingleReviewer(
   if (!input.escalationReason.trim()) throw new Error("An escalation reason is required.");
   assertPublishedWorkflowUnlocked(ideaId);
   const config = getAppConfig();
-  const sourceStatus = refreshContent(config);
+  const sourceStatus = getContentStatus(config);
   if (sourceStatus.bok.status !== "ready") throw new Error("A ready Book of Knowledge index is required for a reviewer rerun.");
   const database = db();
   let ownedRunId: string | undefined;

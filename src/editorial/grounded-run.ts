@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { GroundedTestProvider } from "@/ai/grounded-test-provider";
-import { estimateRouteCost, initialDrafterOutputTokens, maximumRunBudgetUsd, reviewerOutputTokens, routeFor, routeForProviderTier, type LiveProviderName } from "@/ai/model-routing";
+import { SYNTHESIZER_OUTPUT_TOKENS, estimateRouteCost, initialDrafterOutputTokens, maximumRunBudgetUsd, reviewerOutputTokens, routeFor, routeForProviderTier, type LiveProviderName } from "@/ai/model-routing";
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
 import { ZenMuxChatCompletionsProvider } from "@/ai/zenmux-provider";
@@ -112,7 +112,6 @@ const identifier = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
 const timestamp = () => new Date().toISOString();
 const checksum = (value: string) => crypto.createHash("sha256").update(value).digest("hex");
 const modelName = "grounded-editorial-test-v1";
-const synthesisOutputTokens = 1_000;
 const derivedShortOutputTokens = 1_200;
 const immutableReaderContractSchema = z
   .object({
@@ -786,6 +785,7 @@ function sourceManifest(
           pricingAssumption: providerInfo.pricingAssumptionForRole?.(role as AgentRole) ?? providerInfo.pricingAssumption,
           ...(role === "initial_drafter" ? { maxOutputTokens: providerInfo.initialDrafterMaxOutputTokens } : {}),
           ...(["strategist", "skeptic", "editor"].includes(role) ? { maxOutputTokens: providerInfo.reviewerMaxOutputTokens, reasoningEffort: "low" } : {}),
+          ...(role === "synthesizer" ? { maxOutputTokens: SYNTHESIZER_OUTPUT_TOKENS, reasoningEffort: "low" } : {}),
         }]),
       ),
       pricingAssumption: providerInfo.pricingAssumption,
@@ -1225,8 +1225,8 @@ function projectedCost(
     ["strategist", inputTokens, reviewerMaxOutputTokens],
     ["skeptic", inputTokens, reviewerMaxOutputTokens],
     ["editor", inputTokens, reviewerMaxOutputTokens],
-    ["synthesizer", 12_000 + 3 * reviewerMaxOutputTokens * 4, synthesisOutputTokens],
-    ["initial_drafter", inputTokens + 40_000 + synthesisOutputTokens * 4, initialDrafterMaxOutputTokens],
+    ["synthesizer", 12_000 + 3 * reviewerMaxOutputTokens * 4, SYNTHESIZER_OUTPUT_TOKENS],
+    ["initial_drafter", inputTokens + 40_000 + SYNTHESIZER_OUTPUT_TOKENS * 4, initialDrafterMaxOutputTokens],
   ];
   if (includeDerivedShort) {
     planned.push(["final_drafter", inputTokens + initialDrafterMaxOutputTokens * 4, derivedShortOutputTokens]);
@@ -1657,7 +1657,8 @@ export async function runGroundedEditorialRun(
               content: `Preserve completed reviewer output and make failures visible. The selected BOK passages are supplied as bounded editorial data so you can choose one canonical source key for the evidence backbone.\n\n${synthesisBoundary.contextBlock}`,
             },
           ],
-          maxOutputTokens: synthesisOutputTokens,
+          maxOutputTokens: SYNTHESIZER_OUTPUT_TOKENS,
+          reasoningEffort: "low",
           responseFormat: { type: "json_schema" },
           metadata: { agentRole: "synthesizer", task: "synthesis", modelTier: tierForRole("synthesizer"), bokHeading, sourceFingerprint: checksum(synthesisMaterial).slice(0, 10) },
         },

@@ -1,4 +1,4 @@
-import { defaultRunBudgetUsd, estimateRouteCost, maximumRunBudgetUsd, modelEnvironmentVariable, reviewerOutputTokens, routeFor, routeForProviderTier, type LiveProviderName, type ModelTier } from "@/ai/model-routing";
+import { SYNTHESIZER_OUTPUT_TOKENS, defaultRunBudgetUsd, estimateRouteCost, maximumRunBudgetUsd, modelEnvironmentVariable, reviewerOutputTokens, routeFor, routeForProviderTier, type LiveProviderName, type ModelTier } from "@/ai/model-routing";
 import { LIVE_BOARD_QUALITY_PROFILES, resolveLiveBoardQualityProfile, tierForLiveBoardRole, type LiveBoardQualityProfile } from "@/config/model-routing";
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
@@ -204,6 +204,7 @@ export function liveRunPreview(ideaId: string, requestedProfile?: unknown) {
         model: planned.model || "Model configuration required",
         tier: planned.tier,
         ...(["strategist", "skeptic", "editor"].includes(role) ? { maxOutputTokens: reviewerMaxOutputTokens, reasoningEffort: "low" as const } : {}),
+        ...(role === "synthesizer" ? { maxOutputTokens: SYNTHESIZER_OUTPUT_TOKENS, reasoningEffort: "low" as const } : {}),
       };
     }),
     proofreader: {

@@ -28,6 +28,7 @@ export const MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS = 5_000;
 export const DEFAULT_REVIEWER_OUTPUT_TOKENS = 1_600;
 export const MINIMUM_REVIEWER_OUTPUT_TOKENS = 1_200;
 export const MAXIMUM_REVIEWER_OUTPUT_TOKENS = 3_000;
+export const SYNTHESIZER_OUTPUT_TOKENS = 1_000;
 
 const openaiPricing = (modelClass: string, input: string, cached: string, output: string) =>
   `OpenAI ${modelClass} standard API pricing assumption: USD ${input} / MTok input, USD ${cached} / MTok cached input, and USD ${output} / MTok output. Reasoning tokens are included in reported output tokens, not charged a second time. Verify against OpenAI billing.`;

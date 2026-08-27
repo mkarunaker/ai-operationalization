@@ -4,6 +4,7 @@
 
 ### Post-release live-run reliability
 
+- Set the Synthesizer to low reasoning while retaining its 1,000-token allowance and conservative reservation, and disclose that exact request contract in Advanced settings and immutable Board provenance.
 - Increased the bounded server-owned reviewer output allowance, set Luna reviewer reasoning to low, included the allowance in estimates and immutable provenance, and disclosed it on scoped retry controls so structured reviews have room to complete without weakening the run cap or automatic-retry policy.
 
 ### Post-release source library

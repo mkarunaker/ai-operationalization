@@ -27,6 +27,7 @@ import {
   saveDerivedShortPost,
   saveProvidedResearch,
   setReviewFindingDisposition,
+  startVisualLeadRevision,
   updateIdea,
 } from "@/lean/service";
 import { openDatabase } from "@/persistence/database";
@@ -172,6 +173,34 @@ describe("local visual asset storage", () => {
         status: "completed", estimated_cost: 0.031, reserved_cost: 0.031, actual_cost: 0.031, provider: "openai", model: "synthetic-custom-image",
       });
     } finally { database.close(); }
+  });
+
+  it("keeps replacement custom-concept approval local before a separate generated image request", async () => {
+    const created = createIdea({ rawNotes: "A replacement custom illustration must not dispatch while its concept is only being approved." });
+    saveEditedDraft(created.id, "A dependable AI workflow needs a visible decision path and an accountable owner.", "short");
+    const original = recommendVisualBrief(created.id, "flow", "lead", "short").visualBrief!;
+    approveVisualBrief(created.id, original.id);
+    createVisualCompanion(created.id, original.id, "short");
+
+    const replacement = startVisualLeadRevision(created.id, undefined, "short", {
+      authorDirection: "Show a calm transition from pilot learning to accountable operating work.",
+      customIllustration: true,
+    }).visualCandidateBrief!;
+    approveVisualBrief(created.id, replacement.id);
+    const beforeGeneration = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      expect(beforeGeneration.prepare("SELECT COUNT(*) AS count FROM custom_visual_attempts WHERE visual_brief_id = ?").get(replacement.id)).toEqual({ count: 0 });
+    } finally { beforeGeneration.close(); }
+
+    let dispatches = 0;
+    const generated = await createCustomVisualIllustration(created.id, replacement.id, "short", {
+      async generate() {
+        dispatches += 1;
+        return { bytes: Buffer.from("synthetic-replacement-png"), provider: "openai", model: "synthetic-custom-image", providerRequestId: "replacement-image-request", latencyMs: 8 };
+      },
+    });
+    expect(dispatches).toBe(1);
+    expect(generated.visualCompanion).toMatchObject({ type: "custom_image", visualBriefId: replacement.id });
   });
 
   it("keeps an article-only custom illustration visible and actionable without a direction", () => {
@@ -1204,6 +1233,46 @@ describe("reader-output service contract", () => {
       });
       expect(usage.maximumReservedCost).toBe(0.002);
       expect(call.estimated_total_cost).toBe(0.002);
+    }
+  });
+
+  it("persists the configured Proofreader allowance and low reasoning for normal and repair attempts", async () => {
+    const previousAllowance = process.env.EDITORIAL_PROOFREADER_MAX_OUTPUT_TOKENS;
+    try {
+      process.env.EDITORIAL_PROOFREADER_MAX_OUTPUT_TOKENS = "2200";
+      const { ideaId, output } = liveRequiredShortOutput("Configured proofreader policy must remain visible after every bounded attempt reloads.");
+      const fake = proofreadProvider([
+        proofreadResponse({ providerRequestId: "configured-proofread-invalid", structuredOutput: { wrong: "shape" }, text: '{"wrong":"shape"}' }),
+        proofreadResponse({ providerRequestId: "configured-proofread-repair" }),
+      ]);
+
+      await runLiveProofreadForExactReviewForTest(ideaId, testProofreadInput(output, fake.provider));
+      expect(fake.requests.map((request) => ({
+        task: request.metadata?.task,
+        maxOutputTokens: request.maxOutputTokens,
+        reasoningEffort: request.reasoningEffort,
+      }))).toEqual([
+        { task: "proofread", maxOutputTokens: 2_200, reasoningEffort: "low" },
+        { task: "repair", maxOutputTokens: 2_200, reasoningEffort: "low" },
+      ]);
+
+      const calls = proofreaderCalls(output.id);
+      expect(calls).toHaveLength(2);
+      expect(calls.map((call) => {
+        const usage = JSON.parse(call.raw_usage) as Record<string, unknown>;
+        return {
+          success: call.success,
+          retry: call.retry_count,
+          maxOutputTokens: usage.maxOutputTokens,
+          reasoningEffort: usage.reasoningEffort,
+        };
+      })).toEqual([
+        { success: 0, retry: 0, maxOutputTokens: 2_200, reasoningEffort: "low" },
+        { success: 1, retry: 1, maxOutputTokens: 2_200, reasoningEffort: "low" },
+      ]);
+    } finally {
+      if (previousAllowance === undefined) delete process.env.EDITORIAL_PROOFREADER_MAX_OUTPUT_TOKENS;
+      else process.env.EDITORIAL_PROOFREADER_MAX_OUTPUT_TOKENS = previousAllowance;
     }
   });
 

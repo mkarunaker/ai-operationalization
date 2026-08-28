@@ -80,6 +80,7 @@ export type ScopedDerivedShortRequestInput = {
   provider: string;
   model: string;
   tier?: ModelTier;
+  maxOutputTokens: number;
 };
 export type ScopedInitialDrafterRequestInput = {
   originalCapture: string;
@@ -112,6 +113,10 @@ const identifier = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
 const timestamp = () => new Date().toISOString();
 const checksum = (value: string) => crypto.createHash("sha256").update(value).digest("hex");
 const modelName = "grounded-editorial-test-v1";
+// Board snapshots created before range-aware Final Drafter allowances used
+// this fixed request bound. Preserve that exact historical policy when their
+// immutable manifests predate explicit max/reasoning fields.
+const LEGACY_FINAL_DRAFTER_OUTPUT_TOKENS = 1_200;
 const immutableReaderContractSchema = z
   .object({
     outputShape: z.enum(["short", "long", "long_with_derived_short"]),
@@ -134,6 +139,15 @@ const immutableReaderContractSchema = z
     if (!coherent)
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["outputShape"], message: "Reader contract must coherently match its output shape." });
   });
+const savedFinalDrafterAssignmentSchema = z.object({
+  provider: z.string().trim().min(1),
+  model: z.string().trim().min(1),
+  tier: z.enum(["low", "medium", "high"]),
+  pricingAssumption: z.string().trim().min(1),
+  maxOutputTokens: z.number().int().positive().max(10_000),
+  reasoningEffort: z.literal("low"),
+});
+const legacyFinalDrafterAssignmentSchema = savedFinalDrafterAssignmentSchema.omit({ maxOutputTokens: true, reasoningEffort: true });
 
 function publicExecutionError(error: unknown) {
   const message = error instanceof Error ? error.message : "Model execution failed.";
@@ -374,7 +388,7 @@ export function scopedDerivedShortDraftRequestFor(input: ScopedDerivedShortReque
       model: input.model,
       systemPrompt: `${trustedSystemPrompt(prompts.final_drafter, shared, voiceBoundary.contextBlock)}\n\nTrusted reader contract: write for ${input.audienceProfile}. Trusted output requirement: create one derived short post of ${input.shortForm?.min ?? 180}-${input.shortForm?.max ?? 300} words from the saved article. Preserve the central observation, state one concrete practical consequence, and close with one natural invitation or question. Do not mention delivery channels, another output, or the drafting process. Do not use Markdown.\n\nReturn only this JSON object shape: {"role":"final_drafter","body":"plain publication prose"}.`,
       messages: [{ role: "user" as const, content: boundary.contextBlock }],
-      maxOutputTokens: finalDrafterOutputTokens(input.shortForm?.max),
+      maxOutputTokens: input.maxOutputTokens,
       reasoningEffort: "low" as const,
       responseFormat: { type: "json_schema" as const },
       metadata: { agentRole: "final_drafter" as const, task: "draft", retryStage: "derived_short", modelTier: input.tier, publicationTarget: "derived_short", targetWordRange: input.shortForm ? { min: input.shortForm.min, max: input.shortForm.max } : undefined, sourceFingerprint: checksum(boundary.contextBlock).slice(0, 10) },
@@ -690,13 +704,33 @@ function savedBoardReaderSnapshot(database: Database | ReturnType<typeof readDb>
     .get(ideaId) as { prompt_manifest: string; original_capture: string } | undefined;
   if (!stored) throw new Error("The saved Editorial Board reader contract is unavailable. Run the Editorial Board again before this scoped action.");
   try {
-    const parsed = immutableReaderContractSchema.safeParse(JSON.parse(stored.prompt_manifest).readerContract);
-    if (parsed.success) return { readerContract: parsed.data, originalCapture: stored.original_capture };
+    const manifest = JSON.parse(stored.prompt_manifest);
+    const parsed = immutableReaderContractSchema.safeParse(manifest.readerContract);
+    const rawFinalDrafterAssignment = manifest.provider?.roleAssignments?.final_drafter;
+    const finalDrafterAssignment = savedFinalDrafterAssignmentSchema.safeParse(rawFinalDrafterAssignment);
+    const legacyFinalDrafterAssignment = rawFinalDrafterAssignment?.maxOutputTokens === undefined
+      && rawFinalDrafterAssignment?.reasoningEffort === undefined
+      ? legacyFinalDrafterAssignmentSchema.safeParse(rawFinalDrafterAssignment)
+      : undefined;
+    if (parsed.success) return {
+      readerContract: parsed.data,
+      originalCapture: stored.original_capture,
+      finalDrafterAssignment: finalDrafterAssignment.success
+        ? finalDrafterAssignment.data
+        : legacyFinalDrafterAssignment?.success
+          ? { ...legacyFinalDrafterAssignment.data, maxOutputTokens: LEGACY_FINAL_DRAFTER_OUTPUT_TOKENS, reasoningEffort: "low" as const }
+          : undefined,
+    };
   } catch {
     // Use the same safe message below. Persisted provenance is data, not a
     // reason to fall back to mutable preferences or disclose parser details.
   }
   throw new Error("The saved Editorial Board reader contract is invalid. Run the Editorial Board again before this scoped action.");
+}
+
+function savedFinalDrafterAssignmentForRecovery(savedBoard: ReturnType<typeof savedBoardReaderSnapshot>) {
+  if (savedBoard.finalDrafterAssignment) return savedBoard.finalDrafterAssignment;
+  throw new Error("The saved Editorial Board Final Drafter allowance is unavailable. Run the Editorial Board again before retrying the derived short post.");
 }
 
 function loadImmutableReaderContract(database: Database | ReturnType<typeof readDb>, ideaId: string): ImmutableReaderContract {
@@ -951,6 +985,8 @@ function persistModelCall(
     recoveryOfReviewRunId?: string;
     escalationReason?: string;
     diagnostic?: ReturnType<typeof failureDiagnostic>;
+    maxOutputTokens?: number;
+    reasoningEffort?: ModelRequest["reasoningEffort"];
   },
 ) {
   const callId = identifier("model_call");
@@ -1000,6 +1036,8 @@ function persistModelCall(
         responseModel: input.response?.model ?? null,
         injectionSignals: input.injectionSignals ?? [],
         routeTier: input.attemptedTier ?? null,
+        maxOutputTokens: input.maxOutputTokens ?? null,
+        reasoningEffort: input.reasoningEffort ?? null,
         maximumReservedCost: input.reservedCost ?? null,
         attemptNumber: input.attemptNumber ?? 1,
         reviewRunId: input.reviewRunId ?? null,
@@ -1093,6 +1131,8 @@ export function persistAttempts(
       escalationReason: input.escalationReason,
       recoveryOfReviewRunId: input.recoveryOfReviewRunId,
       diagnostic,
+      maxOutputTokens: attempt.request.maxOutputTokens,
+      reasoningEffort: attempt.request.reasoningEffort,
     });
   });
 }
@@ -1438,12 +1478,17 @@ export function estimateDerivedShortDraft(
       .prepare("SELECT body FROM draft_versions WHERE content_item_id = ? AND publication_format = 'article' ORDER BY version_number DESC LIMIT 1")
       .get(mutableSnapshot.contentItemId) as { body: string } | undefined;
     if (!article) return 0;
-    const readerContract = savedReaderContractOrUndefined(database, ideaId);
+    let savedBoard: ReturnType<typeof savedBoardReaderSnapshot>;
+    try {
+      savedBoard = savedBoardReaderSnapshot(database, ideaId);
+    } catch {
+      return 0;
+    }
     // A manually supplied article is not eligible for scoped derived output
     // recovery until a Board run has captured its immutable reader contract.
-    if (!readerContract) return 0;
-    const snapshot = snapshotWithImmutableReaderContract(mutableSnapshot, readerContract);
+    const snapshot = snapshotWithImmutableReaderContract(mutableSnapshot, savedBoard.readerContract);
     if (!hasDerivedShortOutput(snapshot.outputShape)) return 0;
+    const finalDrafterAssignment = savedFinalDrafterAssignmentForRecovery(savedBoard);
     const voice = database
       .prepare("SELECT source_path FROM voice_skill_versions WHERE source_path = ? AND status = 'ready' ORDER BY loaded_at DESC LIMIT 1")
       .get(sourceStatus.voiceSkill.path) as { source_path: string } | undefined;
@@ -1458,6 +1503,7 @@ export function estimateDerivedShortDraft(
       provider: providerName,
       model,
       tier,
+      maxOutputTokens: finalDrafterAssignment.maxOutputTokens,
     });
     const oneAttempt = provider.estimateCost?.(
       requestMaximumUsage(scoped.request),
@@ -2063,6 +2109,7 @@ async function executeDerivedShortDraft(
   try {
     const mutableSnapshot = loadSnapshot(database, ideaId);
     const savedBoard = savedBoardReaderSnapshot(database, ideaId);
+    const finalDrafterAssignment = savedFinalDrafterAssignmentForRecovery(savedBoard);
     const snapshot = snapshotWithImmutableReaderContract(
       mutableSnapshot,
       savedBoard.readerContract,
@@ -2084,6 +2131,7 @@ async function executeDerivedShortDraft(
       provider: input.providerName,
       model: input.model,
       tier: input.tier,
+      maxOutputTokens: finalDrafterAssignment.maxOutputTokens,
     });
     const metered = new CumulativeBudgetProvider(provider, input.budgetCap, true);
     const started = metered.attempts.length;

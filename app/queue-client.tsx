@@ -2483,11 +2483,12 @@ export function IdeaDetailView({
                         ? `An article-grounded editorial scene guided by “${idea.visualCandidateBrief.authorDirection}”.`
                         : `An article-grounded editorial scene built around “${customIllustrationFocusForOutput(idea.visualCandidateBrief.sourceDraftText)}”, showing one clear decision point, accountable ownership, and the operating path that follows. No text in the image.`}</p>
                       {customIllustrationCostDisclosure()}
+                      {idea.visualCandidateBrief.status === "recommended" && <p className="concept-approval-note">Approving this replacement concept only saves your decision. It creates no image request and no charge. Image generation remains a separate action.</p>}
                       <button disabled={busy || draftDirty || primaryPublished || (!idea.customImageRoute.available && idea.visualCandidateBrief.status === "approved")} onClick={() => void createVisual(
                         idea.visualCandidateBrief?.status === "recommended"
                           ? { operation: "approve", format: primaryFormat, briefId: idea.visualCandidateBrief!.id }
                           : { operation: "render_custom", format: primaryFormat, briefId: idea.visualCandidateBrief!.id },
-                      )}>{idea.visualCandidateBrief.status === "recommended" ? "Approve custom illustration" : "Generate custom illustration"}</button>
+                      )}>{idea.visualCandidateBrief.status === "recommended" ? "Approve concept · no image call" : "Generate custom illustration"}</button>
                       {recheckCustomIllustrationSetup(busy || draftDirty || primaryPublished)}
                       <button disabled={busy || draftDirty || primaryPublished} onClick={() => void createVisual({ operation: "dismiss", format: primaryFormat, briefId: idea.visualCandidateBrief?.id })}>Keep this concept as history and prepare another version</button>
                     </>}

@@ -1044,6 +1044,34 @@ test("keeps an exact-output custom illustration visible when the author leaves d
   await expect(companion.getByRole("button", { name: "Approve concept · no image call" })).toBeVisible();
 });
 
+test("keeps replacement custom-concept approval separate from paid image generation", async ({ page }) => {
+  const ideaId = await createIdeaThroughWrite(page);
+  const actions: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST" || !request.url().endsWith(`/api/ideas/${ideaId}`)) return;
+    const action = JSON.parse(request.postData() ?? "{}").action;
+    if (typeof action === "string") actions.push(action);
+  });
+  const companion = page.locator(".visual-companion").first();
+  await companion.locator(":scope > summary").click();
+  await companion.getByRole("button", { name: /Prepare (selected |suggested )?visual brief/ }).click();
+  await companion.getByRole("button", { name: "Approve visual brief" }).click();
+  await companion.getByRole("button", { name: "Render approved visual" }).click();
+  await companion.getByText("Create a new visual version").click();
+  await companion.getByRole("radio", { name: /Custom illustration/ }).check();
+  await companion.getByLabel("What should change?").fill("Show a calm handoff from pilot learning to accountable operating work.");
+  await companion.getByRole("button", { name: "Prepare custom illustration" }).click();
+
+  const candidate = companion.locator(".visual-version-candidate");
+  await expect(candidate.getByText(/Approving this replacement concept only saves your decision.*no image request and no charge/i)).toBeVisible();
+  await candidate.getByRole("button", { name: "Approve concept · no image call" }).click();
+  expect(actions).not.toContain("create_custom_visual_illustration");
+  const saved = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: { visualCandidateBrief?: { status: string; customIllustration: boolean } } };
+  expect(saved.idea.visualCandidateBrief).toMatchObject({ status: "approved", customIllustration: true });
+  await expect(candidate.getByRole("button", { name: "Generate custom illustration" })).toBeVisible();
+  await expect(candidate.getByRole("button", { name: "Generate custom illustration" })).toBeDisabled();
+});
+
 test("keeps a dismissed custom illustration revision visible as saved no-render history after reload", async ({ page }) => {
   await createIdeaThroughWrite(page);
   await page.locator(".visual-companion > summary").first().click();

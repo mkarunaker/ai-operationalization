@@ -8,6 +8,7 @@ import { VisualFlow } from "./visual-flow";
 import type { EditorialRunProgress } from "@/editorial/run-progress";
 import { boardRoleStageStatus, derivedShortCreationStageStatus, isBoardReviewIncomplete, primaryDraftCreationStageStatus } from "@/editorial/board-status";
 import { suggestedVisualTemplateFor } from "@/visual/companion";
+import { customIllustrationFocusForOutput, visualGuidanceForReview } from "@/visual/guidance";
 
 export type Status =
   | "inbox"
@@ -730,6 +731,22 @@ export function IdeaDetailView({
   const [researchEvidence, setResearchEvidence] = useState("");
   const [researchInterpretation, setResearchInterpretation] = useState("");
   const [researchSources, setResearchSources] = useState("");
+  const primaryFormat: "short" | "article" = idea.outputShape === "short" ? "short" : "article";
+  const primaryOutput = idea.shortPost ?? idea.article;
+  const primaryReview = primaryFormat === "short" ? idea.shortPostFinalReview : idea.articleFinalReview;
+  const visualDirectionSourceId = idea.visualBrief?.id ?? primaryReview?.runId;
+  const suggestedReviewVisualGuidance = primaryReview && primaryOutput && !idea.visualBrief
+    ? visualGuidanceForReview({
+        title: idea.title,
+        body: primaryOutput.body,
+        recommendations: primaryReview.recommendationStatuses.map((item) => item.recommendation),
+      })
+    : "";
+  const [visualDirectionEdit, setVisualDirectionEdit] = useState<{ sourceId?: string; value: string }>({ value: "" });
+  const visualDirection = visualDirectionEdit.sourceId === visualDirectionSourceId
+    ? visualDirectionEdit.value
+    : idea.visualBrief?.authorDirection || suggestedReviewVisualGuidance;
+  const setVisualDirection = (value: string) => setVisualDirectionEdit({ sourceId: visualDirectionSourceId, value });
   const [visualTemplate, setVisualTemplate] = useState<VisualTemplate | undefined>(() => savedVisualTemplate(idea.visualCompanion, idea.visualBrief));
   // A derived short output has its own brief and grammar. It must never borrow
   // the article selector merely because both outputs appear on one Write page.
@@ -740,7 +757,6 @@ export function IdeaDetailView({
   const [visualClaims, setVisualClaims] = useState<string[]>([]);
   const [visualCaption, setVisualCaption] = useState("");
   const [visualAltText, setVisualAltText] = useState("");
-  const [visualDirection, setVisualDirection] = useState("");
   const [visualColorScheme, setVisualColorScheme] = useState<"violet" | "forest" | "copper">();
   const visualBriefEditor = (brief: VisualBriefView, selectedTemplate?: VisualTemplate) => {
     const template = selectedTemplate ?? brief.template ?? visualTemplate;
@@ -847,6 +863,8 @@ export function IdeaDetailView({
         ? "Enter a valid run budget greater than $0."
         : liveBudget > livePreview.maximumBudgetCap
           ? `The run budget cannot exceed $${livePreview.maximumBudgetCap.toFixed(2)}.`
+          : livePreview.estimatedCost > livePreview.maximumBudgetCap
+            ? `This output range and quality route require a $${livePreview.estimatedCost.toFixed(4)} upper-bound reservation, above the $${livePreview.maximumBudgetCap.toFixed(2)} hard ceiling. Reduce the target range or choose a lower-cost quality route.`
           : livePreview.estimatedCost > liveBudget
             ? `Raise the cap to at least the $${livePreview.estimatedCost.toFixed(4)} upper-bound reservation.`
             : undefined;
@@ -995,8 +1013,6 @@ export function IdeaDetailView({
         { id: "provenance", label: "Save provenance, usage, latency, and cost", status: interruptedBoardRun ? "failed" as const : "completed" as const },
       ]
     : undefined;
-  const primaryFormat: "short" | "article" = idea.outputShape === "short" ? "short" : "article";
-  const primaryOutput = idea.shortPost ?? idea.article;
   const primaryOutputLabel = primaryFormat === "short" ? "Short post" : "Article";
   const primaryOutputVersionLabel = primaryFormat === "short" ? "short-post" : "article";
   const suggestedPrimaryVisualTemplate = primaryOutput
@@ -1034,7 +1050,6 @@ export function IdeaDetailView({
     idea.derivedShortVisualCompanion?.visualBriefId
       && idea.derivedShortVisualCompanion.visualBriefId === idea.derivedShortVisualBrief?.id,
   );
-  const primaryReview = primaryFormat === "short" ? idea.shortPostFinalReview : idea.articleFinalReview;
   const visualCostDisclosure = (outputLabel: string) => (
     <p className="visual-cost-disclosure">
       <b>Rendering cost:</b> $0.00 local for this exact {outputLabel.toLowerCase()} deterministic diagram. No provider call is made.
@@ -2162,11 +2177,11 @@ export function IdeaDetailView({
               <div className="review-columns">
                 <div>
                   <b>Editorial assessment · original recommendations</b>
-                  <ul>
+                  <ul aria-label="Original recommendation decisions">
                     {primaryReview.recommendationStatuses.map((item) => (
                       <li key={item.recommendation}>
-                        {item.recommendation}
-                        <small className="recommendation-disposition">{item.disposition?.replace("_", " ") ?? "not yet recorded"}</small>
+                        <span>{item.recommendation}</span>
+                        <small className="recommendation-disposition">Decision: {item.disposition ? item.disposition.replace("_", " ").replace(/^./, (letter) => letter.toUpperCase()) : "Not yet recorded"}</small>
                       </li>
                     ))}
                   </ul>
@@ -2199,6 +2214,15 @@ export function IdeaDetailView({
               <p>
                 <strong>Next step:</strong> {primaryReview.nextStep}
               </p>
+              {!idea.visualBrief && (
+                <section className="review-visual-guidance">
+                  <b>Visual guidance</b>
+                  <p>This 30–40-word local starting point uses this exact saved output and review. Edit it freely. Your wording is saved only when you prepare a visual concept.</p>
+                  <label>Visual guidance for this saved {primaryOutputLabel.toLowerCase()}
+                    <textarea maxLength={1_000} value={visualDirection} onChange={(event) => setVisualDirection(event.target.value)} />
+                  </label>
+                </section>
+              )}
               {idea.editorialBrief && primaryReview.recommendationStatuses.length > 0 && (
                 <section className="recommendation-decisions">
                   <h4>Record your decision on the original recommendations</h4>
@@ -2389,15 +2413,18 @@ export function IdeaDetailView({
                   <>
                     {idea.visualBrief?.customIllustration ? <>
                       <p><b>Custom editorial illustration.</b> The image will use this exact saved output and your direction as reference, without a diagram template or text in the image.</p>
-                      <p><b>Concept:</b> a clean editorial scene that clarifies the article’s practical tension{idea.visualBrief.authorDirection ? `, guided by “${idea.visualBrief.authorDirection}”` : ""}.</p>
+                      <p><b>Concept:</b> {idea.visualBrief.authorDirection
+                        ? `An article-grounded editorial scene guided by “${idea.visualBrief.authorDirection}”.`
+                        : `An article-grounded editorial scene built around “${customIllustrationFocusForOutput(idea.visualBrief.sourceDraftText)}”, showing one clear decision point, accountable ownership, and the operating path that follows. No text in the image.`}</p>
                       {idea.visualBrief.status === "recommended" && updateCustomVisualConcept && <label className="visual-direction-field">Revise custom illustration direction before approval <small>This updates only the saved concept. It does not approve or generate an image.</small><textarea value={visualDirection} maxLength={1000} placeholder={idea.visualBrief.authorDirection || "For example: show a clear decision from a pilot to accountable operating work."} onChange={(event) => setVisualDirection(event.target.value)} /></label>}
                       {idea.visualBrief.status === "recommended" && updateCustomVisualConcept && <button disabled={busy || draftDirty || primaryPublished} onClick={() => void updateCustomVisualConcept(idea.visualBrief!.id, visualDirection.trim() || idea.visualBrief!.authorDirection)}>Save custom concept revision</button>}
                       {customIllustrationCostDisclosure()}
+                      {idea.visualBrief.status === "recommended" && <p className="concept-approval-note">Approving this concept only saves your decision. It creates no image request and no charge. Image generation remains a separate action.</p>}
                       <button disabled={busy || draftDirty || primaryPublished || (!idea.customImageRoute.available && idea.visualBrief.status === "approved")} onClick={() => void createVisual(
                         idea.visualBrief?.status === "recommended"
                           ? { operation: "approve", format: primaryFormat, briefId: idea.visualBrief.id }
                           : { operation: "render_custom", format: primaryFormat, briefId: idea.visualBrief!.id },
-                      )}>{idea.visualBrief.status === "recommended" ? "Approve custom illustration" : "Generate custom illustration"}</button>
+                      )}>{idea.visualBrief.status === "recommended" ? "Approve concept · no image call" : "Generate custom illustration"}</button>
                       {recheckCustomIllustrationSetup(busy || draftDirty || primaryPublished)}
                     </> : <p><b>No visual recommended for this exact output.</b> You can still explicitly choose one deterministic diagram if it would materially help the reader.</p>}
                     <details className="visual-template-alternative">
@@ -2452,7 +2479,9 @@ export function IdeaDetailView({
                     </>}
                     {idea.visualCandidateBrief.recommendation === "no_visual" && <>
                       <p><b>Custom editorial illustration.</b> The current rendered visual remains active while this article-grounded custom version is reviewed.</p>
-                      <p><b>Concept:</b> a clean editorial scene that clarifies the article’s practical tension{idea.visualCandidateBrief.authorDirection ? `, guided by “${idea.visualCandidateBrief.authorDirection}”` : ""}, with no template or text rendered into the image.</p>
+                      <p><b>Concept:</b> {idea.visualCandidateBrief.authorDirection
+                        ? `An article-grounded editorial scene guided by “${idea.visualCandidateBrief.authorDirection}”.`
+                        : `An article-grounded editorial scene built around “${customIllustrationFocusForOutput(idea.visualCandidateBrief.sourceDraftText)}”, showing one clear decision point, accountable ownership, and the operating path that follows. No text in the image.`}</p>
                       {customIllustrationCostDisclosure()}
                       <button disabled={busy || draftDirty || primaryPublished || (!idea.customImageRoute.available && idea.visualCandidateBrief.status === "approved")} onClick={() => void createVisual(
                         idea.visualCandidateBrief?.status === "recommended"
@@ -2529,14 +2558,18 @@ export function IdeaDetailView({
             {!idea.derivedShortVisualCompanion ? (
               idea.derivedShortVisualBrief?.recommendation === "no_visual" ? (
                 <>
-                  {idea.derivedShortVisualBrief.authorDirection ? <>
-                    <p><b>Custom editorial illustration.</b> It will use this exact saved derived post and your direction as reference, without a diagram template or text in the image.</p>
+                  {idea.derivedShortVisualBrief.customIllustration ? <>
+                    <p><b>Custom editorial illustration.</b> The image will use this exact saved derived post and your direction as reference, without a diagram template or text in the image.</p>
+                    <p><b>Concept:</b> {idea.derivedShortVisualBrief.authorDirection
+                      ? `An article-grounded editorial scene guided by “${idea.derivedShortVisualBrief.authorDirection}”.`
+                      : `An article-grounded editorial scene built around “${customIllustrationFocusForOutput(idea.derivedShortVisualBrief.sourceDraftText)}”, showing one clear decision point, accountable ownership, and the operating path that follows. No text in the image.`}</p>
                     {customIllustrationCostDisclosure()}
+                    {idea.derivedShortVisualBrief.status === "recommended" && <p className="concept-approval-note">Approving this concept only saves your decision. It creates no image request and no charge. Image generation remains a separate action.</p>}
                     <button disabled={busy || derivedShortDirty || derivedShortPublished || (!idea.customImageRoute.available && idea.derivedShortVisualBrief.status === "approved")} onClick={() => void createVisual(
                       idea.derivedShortVisualBrief?.status === "recommended"
                         ? { operation: "approve", format: "derived_short", briefId: idea.derivedShortVisualBrief.id }
                       : { operation: "render_custom", format: "derived_short", briefId: idea.derivedShortVisualBrief!.id },
-                    )}>{idea.derivedShortVisualBrief.status === "recommended" ? "Approve custom illustration" : "Generate custom illustration"}</button>
+                    )}>{idea.derivedShortVisualBrief.status === "recommended" ? "Approve concept · no image call" : "Generate custom illustration"}</button>
                     {recheckCustomIllustrationSetup(busy || derivedShortDirty || derivedShortPublished)}
                   </> : <p><b>No visual recommended for this exact derived short post.</b> You can still choose a deterministic diagram if it would materially help the reader.</p>}
                   <details className="visual-template-alternative"><summary>Try a supported deterministic diagram instead</summary><fieldset className="visual-template-picker derived-visual-template-picker" disabled={busy || derivedShortDirty || derivedShortPublished}>

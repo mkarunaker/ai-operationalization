@@ -1,4 +1,5 @@
 import { createUntrustedContextBlock, TRUSTED_INSTRUCTION_BOUNDARY } from "@/ai/prompt-boundary";
+import { customIllustrationFocusForOutput } from "@/visual/guidance";
 
 type FetchLike = typeof fetch;
 
@@ -138,6 +139,7 @@ export function customIllustrationPrompt(input: { title: string; savedOutput: st
   const boundary = createUntrustedContextBlock([
     { source: "author idea title", text: input.title.slice(0, 200) },
     { source: "exact saved article", text: input.savedOutput.slice(0, 12_000) },
+    { source: "local article-grounded concept focus", text: customIllustrationFocusForOutput(input.savedOutput) },
     ...(input.authorDirection ? [{ source: "author illustration direction", text: input.authorDirection.slice(0, 2_000) }] : []),
   ]);
   return {

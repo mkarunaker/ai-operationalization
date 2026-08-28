@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GroundedTestProvider } from "@/ai/grounded-test-provider";
 import type { CostEstimate, ModelProvider, ModelRequest, ModelResponse, TokenUsage } from "@/ai/provider";
-import { DEFAULT_FINAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_PROOFREADER_OUTPUT_TOKENS, DEFAULT_REVIEWER_OUTPUT_TOKENS, DEFAULT_SYNTHESIZER_OUTPUT_TOKENS, modelEnvironmentVariable, routeFor } from "@/ai/model-routing";
+import { DEFAULT_FINAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_PROOFREADER_OUTPUT_TOKENS, DEFAULT_REVIEWER_OUTPUT_TOKENS, DEFAULT_SYNTHESIZER_OUTPUT_TOKENS, MAXIMUM_FINAL_DRAFTER_OUTPUT_TOKENS, MINIMUM_FINAL_DRAFTER_OUTPUT_TOKENS, modelEnvironmentVariable, routeFor } from "@/ai/model-routing";
 import { getAppConfig } from "@/config/env";
 import { getContentStatus, refreshContent, setSelectedKnowledgeDocuments } from "@/content/loader";
 import { CumulativeBudgetProvider, draftOutputAllowancesForIdea, estimateDerivedShortDraft, estimateInitialDrafterRecovery, hasRecoverableInitialDrafterFailure, initialDrafterRecoveryAvailability, initialDrafterRecoveryOutcome, persistAttempts, retryDerivedShortDraftForTest, retryInitialDrafterDraft, retryInitialDrafterDraftForTest, runGroundedEditorialRun, runSingleReviewer, scopedDerivedShortDraftRequestFor } from "@/editorial/grounded-run";
@@ -913,6 +913,35 @@ describe("grounded reader-output boundaries", () => {
       if (previousAllowance === undefined) delete process.env.EDITORIAL_FINAL_DRAFTER_MAX_OUTPUT_TOKENS;
       else process.env.EDITORIAL_FINAL_DRAFTER_MAX_OUTPUT_TOKENS = previousAllowance;
     }
+  });
+
+  it.each([
+    MINIMUM_FINAL_DRAFTER_OUTPUT_TOKENS - 1,
+    MAXIMUM_FINAL_DRAFTER_OUTPUT_TOKENS + 1,
+  ])("rejects a saved Final Drafter allowance of %i before derived-short recovery dispatch", async (invalidAllowance) => {
+    const created = createIdea({ rawNotes: "A malformed saved Final Drafter allowance must fail closed before recovery dispatch." });
+    updateIdea(created.id, {
+      outputShape: "long_with_derived_short",
+      outputPreferences: { longFormEnabled: true, longFormMinWords: 800, longFormMaxWords: 1100, shortFormEnabled: true, shortFormMinWords: 180, shortFormMaxWords: 300, shortFormSource: "derived_from_long" },
+    });
+    const partial = await runGroundedEditorialRun(created.id, new FinalDrafterTruncationProvider());
+    expect(partial.status).toBe("partially_completed");
+
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      const row = database.prepare("SELECT rowid, prompt_manifest FROM editorial_run_snapshots WHERE idea_id = ? ORDER BY rowid DESC LIMIT 1").get(created.id) as { rowid: number; prompt_manifest: string };
+      const manifest = JSON.parse(row.prompt_manifest);
+      manifest.provider.roleAssignments.final_drafter.maxOutputTokens = invalidAllowance;
+      database.prepare("UPDATE editorial_run_snapshots SET prompt_manifest = ? WHERE rowid = ?").run(JSON.stringify(manifest), row.rowid);
+    } finally { database.close(); }
+
+    const provider = new RecordingProvider();
+    expect(estimateDerivedShortDraft(created.id, provider, "grounded-editorial-test-v1", "grounded-test", "low")).toBe(0);
+    await expect(retryDerivedShortDraftForTest(created.id, provider, {
+      providerName: "grounded-test", model: "grounded-editorial-test-v1", tier: "low", budgetCap: 0.05,
+      pricingAssumption: "Synthetic test-only pricing.", recoveryKind: "retry",
+    })).rejects.toThrow(/saved Editorial Board reader contract is invalid/i);
+    expect(provider.requests).toHaveLength(0);
   });
 
   it("uses the immutable saved Board reader contract for scoped estimates and recovery after Develop preferences change", async () => {

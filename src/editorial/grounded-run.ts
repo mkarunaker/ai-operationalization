@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { GroundedTestProvider } from "@/ai/grounded-test-provider";
-import { estimateRouteCost, finalDrafterOutputTokens, initialDrafterOutputTokens, maximumRunBudgetUsd, reviewerOutputTokens, routeFor, routeForProviderTier, synthesizerOutputTokens, type LiveProviderName } from "@/ai/model-routing";
+import { estimateRouteCost, finalDrafterOutputTokens, initialDrafterOutputTokens, maximumRunBudgetUsd, MAXIMUM_FINAL_DRAFTER_OUTPUT_TOKENS, MINIMUM_FINAL_DRAFTER_OUTPUT_TOKENS, reviewerOutputTokens, routeFor, routeForProviderTier, synthesizerOutputTokens, type LiveProviderName } from "@/ai/model-routing";
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
 import { ZenMuxChatCompletionsProvider } from "@/ai/zenmux-provider";
@@ -144,7 +144,7 @@ const savedFinalDrafterAssignmentSchema = z.object({
   model: z.string().trim().min(1),
   tier: z.enum(["low", "medium", "high"]),
   pricingAssumption: z.string().trim().min(1),
-  maxOutputTokens: z.number().int().positive().max(10_000),
+  maxOutputTokens: z.number().int().min(MINIMUM_FINAL_DRAFTER_OUTPUT_TOKENS).max(MAXIMUM_FINAL_DRAFTER_OUTPUT_TOKENS),
   reasoningEffort: z.literal("low"),
 });
 const legacyFinalDrafterAssignmentSchema = savedFinalDrafterAssignmentSchema.omit({ maxOutputTokens: true, reasoningEffort: true });
@@ -712,7 +712,7 @@ function savedBoardReaderSnapshot(database: Database | ReturnType<typeof readDb>
       && rawFinalDrafterAssignment?.reasoningEffort === undefined
       ? legacyFinalDrafterAssignmentSchema.safeParse(rawFinalDrafterAssignment)
       : undefined;
-    if (parsed.success) return {
+    if (parsed.success && (finalDrafterAssignment.success || legacyFinalDrafterAssignment?.success)) return {
       readerContract: parsed.data,
       originalCapture: stored.original_capture,
       finalDrafterAssignment: finalDrafterAssignment.success

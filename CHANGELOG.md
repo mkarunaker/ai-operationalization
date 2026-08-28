@@ -5,6 +5,7 @@
 ### Post-release live-run reliability
 
 - Made Initial and Final Drafter allowances scale from the exact saved word-range target, set both drafters and Proofreader to low reasoning, added bounded server-only Final Drafter and Proofreader overrides, and aligned preview, cost reservation, normal and repair requests, recovery, Advanced settings, and immutable provenance. Ordinary ranges retain proportionate reservations; an oversized route/range combination now names the hard-ceiling conflict before dispatch.
+- Validated saved Final Drafter recovery provenance against the same 1,200-to-9,000-token server policy used for new runs. Out-of-policy current manifests now make scoped estimates unavailable and fail before provider dispatch, while legacy manifests retain their historical 1,200-token allowance.
 - Set the Synthesizer to low reasoning, raised its default output allowance to 1,600 tokens, and added a validated server-only 1,600-to-3,000 operator setting. Estimates, cost reservations, requests, structured repairs, Advanced settings, and immutable Board provenance use the same resolved value.
 - Increased the bounded server-owned reviewer output allowance, set Luna reviewer reasoning to low, included the allowance in estimates and immutable provenance, and disclosed it on scoped retry controls so structured reviews have room to complete without weakening the run cap or automatic-retry policy.
 

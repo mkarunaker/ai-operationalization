@@ -712,7 +712,7 @@ function savedBoardReaderSnapshot(database: Database | ReturnType<typeof readDb>
       && rawFinalDrafterAssignment?.reasoningEffort === undefined
       ? legacyFinalDrafterAssignmentSchema.safeParse(rawFinalDrafterAssignment)
       : undefined;
-    if (parsed.success && (finalDrafterAssignment.success || legacyFinalDrafterAssignment?.success)) return {
+    if (parsed.success) return {
       readerContract: parsed.data,
       originalCapture: stored.original_capture,
       finalDrafterAssignment: finalDrafterAssignment.success
@@ -1488,7 +1488,8 @@ export function estimateDerivedShortDraft(
     // recovery until a Board run has captured its immutable reader contract.
     const snapshot = snapshotWithImmutableReaderContract(mutableSnapshot, savedBoard.readerContract);
     if (!hasDerivedShortOutput(snapshot.outputShape)) return 0;
-    const finalDrafterAssignment = savedFinalDrafterAssignmentForRecovery(savedBoard);
+    const finalDrafterAssignment = savedBoard.finalDrafterAssignment;
+    if (!finalDrafterAssignment) return 0;
     const voice = database
       .prepare("SELECT source_path FROM voice_skill_versions WHERE source_path = ? AND status = 'ready' ORDER BY loaded_at DESC LIMIT 1")
       .get(sourceStatus.voiceSkill.path) as { source_path: string } | undefined;

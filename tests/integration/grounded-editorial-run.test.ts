@@ -7,7 +7,7 @@ import type { CostEstimate, ModelProvider, ModelRequest, ModelResponse, TokenUsa
 import { DEFAULT_FINAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_PROOFREADER_OUTPUT_TOKENS, DEFAULT_REVIEWER_OUTPUT_TOKENS, DEFAULT_SYNTHESIZER_OUTPUT_TOKENS, MAXIMUM_FINAL_DRAFTER_OUTPUT_TOKENS, MINIMUM_FINAL_DRAFTER_OUTPUT_TOKENS, modelEnvironmentVariable, routeFor } from "@/ai/model-routing";
 import { getAppConfig } from "@/config/env";
 import { getContentStatus, refreshContent, setSelectedKnowledgeDocuments } from "@/content/loader";
-import { CumulativeBudgetProvider, draftOutputAllowancesForIdea, estimateDerivedShortDraft, estimateInitialDrafterRecovery, hasRecoverableInitialDrafterFailure, initialDrafterRecoveryAvailability, initialDrafterRecoveryOutcome, persistAttempts, retryDerivedShortDraftForTest, retryInitialDrafterDraft, retryInitialDrafterDraftForTest, runGroundedEditorialRun, runSingleReviewer, scopedDerivedShortDraftRequestFor } from "@/editorial/grounded-run";
+import { CumulativeBudgetProvider, draftOutputAllowancesForIdea, estimateDerivedShortDraft, estimateInitialDrafterRecovery, hasRecoverableInitialDrafterFailure, hasSavedBoardReaderContract, initialDrafterRecoveryAvailability, initialDrafterRecoveryOutcome, persistAttempts, retryDerivedShortDraftForTest, retryInitialDrafterDraft, retryInitialDrafterDraftForTest, runGroundedEditorialRun, runSingleReviewer, scopedDerivedShortDraftRequestFor } from "@/editorial/grounded-run";
 import { liveRunPreview } from "@/editorial/live-run";
 import { getLiveEditorialProgress } from "@/editorial/run-progress";
 import { createIdea, getIdea, listIdeas, proofreadRequestFor, runFinalDraftReview, runLiveProofreadForExactReviewForTest, saveEditedDraft, updateIdea } from "@/lean/service";
@@ -940,8 +940,33 @@ describe("grounded reader-output boundaries", () => {
     await expect(retryDerivedShortDraftForTest(created.id, provider, {
       providerName: "grounded-test", model: "grounded-editorial-test-v1", tier: "low", budgetCap: 0.05,
       pricingAssumption: "Synthetic test-only pricing.", recoveryKind: "retry",
-    })).rejects.toThrow(/saved Editorial Board reader contract is invalid/i);
+    })).rejects.toThrow(/saved Editorial Board Final Drafter allowance is unavailable/i);
     expect(provider.requests).toHaveLength(0);
+  });
+
+  it.each(["long", "short"] as const)("keeps a valid %s-only Board contract available when its unused Final Drafter assignment is invalid", async (outputShape) => {
+    const created = createIdea({ rawNotes: `A ${outputShape}-only Board must not depend on its unused Final Drafter route.` });
+    updateIdea(created.id, {
+      outputShape,
+      outputPreferences: outputShape === "long"
+        ? { longFormEnabled: true, longFormMinWords: 800, longFormMaxWords: 1100, shortFormEnabled: false, shortFormMinWords: 180, shortFormMaxWords: 300, shortFormSource: "standalone" }
+        : { longFormEnabled: false, longFormMinWords: 800, longFormMaxWords: 1100, shortFormEnabled: true, shortFormMinWords: 180, shortFormMaxWords: 300, shortFormSource: "standalone" },
+    });
+    await runGroundedEditorialRun(created.id);
+
+    const database = openDatabase(process.env.DATABASE_PATH!);
+    try {
+      const row = database.prepare("SELECT rowid, prompt_manifest FROM editorial_run_snapshots WHERE idea_id = ? ORDER BY rowid DESC LIMIT 1").get(created.id) as { rowid: number; prompt_manifest: string };
+      const manifest = JSON.parse(row.prompt_manifest);
+      manifest.provider.roleAssignments.final_drafter.model = "";
+      manifest.provider.roleAssignments.final_drafter.maxOutputTokens = MINIMUM_FINAL_DRAFTER_OUTPUT_TOKENS - 1;
+      database.prepare("UPDATE editorial_run_snapshots SET prompt_manifest = ? WHERE rowid = ?").run(JSON.stringify(manifest), row.rowid);
+    } finally { database.close(); }
+
+    expect(hasSavedBoardReaderContract(created.id)).toBe(true);
+    const preview = liveRunPreview(created.id);
+    expect(preview.source.hasSavedBoardContract).toBe(true);
+    expect(preview.proofreader.estimates[outputShape === "long" ? "article" : "short"]).toBeGreaterThan(0);
   });
 
   it("uses the immutable saved Board reader contract for scoped estimates and recovery after Develop preferences change", async () => {

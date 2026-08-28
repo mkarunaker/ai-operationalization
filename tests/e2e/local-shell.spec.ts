@@ -414,6 +414,20 @@ test("offers only the named server-owned live content profiles before a paid Boa
   await expect.poll(() => submittedProfile).toBe("frontier_content");
 });
 
+test("explains when a requested output range cannot fit the immutable live-run ceiling", async ({ page }) => {
+  const ideaId = await createIdeaThroughWrite(page, { shape: "long", longRange: ["4800", "5000"] });
+  await page.route(`**/api/ideas/${ideaId}**`, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET" && new URL(request.url()).searchParams.get("execution") === "live_preview")
+      return route.fulfill({ json: { preview: preview({ available: true, estimatedCost: 1.1114, maximumBudgetCap: 0.75, budgetCap: 0.75 }) } });
+    return route.continue();
+  });
+  await page.goto(`/ideas/${ideaId}/board`);
+  await page.getByText("EDITORIAL BOARD RUN").click();
+  await expect(page.getByText(/This output range and quality route require a \$1\.1114 upper-bound reservation, above the \$0\.75 hard ceiling/)).toBeVisible();
+  await expect(page.getByRole("button", { name: /Run (live editorial review|Editorial Board again)/ })).toBeDisabled();
+});
+
 test("shows the saved BOK evidence backbone before the author edits a grounded draft", async ({ page }) => {
   const ideaId = await createIdeaThroughWrite(page, {
     capture: `${marker("evidence-backbone")}: A team needs an accountable owner and an observable outcome before treating AI adoption as useful work.`,
@@ -517,6 +531,23 @@ test("labels the short-post review with the exact short output", async ({ page }
   await expect(page.getByRole("heading", { name: "Short post review" })).toBeVisible();
   await expect(page.getByText("The saved assessment stays connected to this exact short-post version.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Article review" })).toHaveCount(0);
+});
+
+test("separates recommendation decisions and creates editable exact-output visual guidance after draft review", async ({ page }) => {
+  await createIdeaThroughWrite(page, { shape: "long" });
+  await page.getByRole("button", { name: "Run draft review" }).click();
+
+  const recommendations = page.getByRole("list", { name: "Original recommendation decisions" });
+  await expect(recommendations.getByText("Decision: Not yet recorded").first()).toBeVisible();
+  const guidance = page.getByLabel("Visual guidance for this saved article");
+  await expect(guidance).toBeVisible();
+  const words = (await guidance.inputValue()).trim().split(/\s+/);
+  expect(words.length).toBeGreaterThanOrEqual(30);
+  expect(words.length).toBeLessThanOrEqual(40);
+  await guidance.fill("Show Gate 1 as a quick accountable decision and Gate 2 as a time-bound deferral with a named owner.");
+  await page.locator(".visual-companion > summary").first().click();
+  await page.getByLabel("I want a custom illustration instead").check();
+  await expect(page.getByLabel("What should the illustration emphasize?")).toHaveValue(/Show Gate 1 as a quick accountable decision/);
 });
 
 test("never presents captured prompt or source scaffolding as reader-facing draft prose", async ({ page }) => {
@@ -951,7 +982,7 @@ test("keeps a literal author visual direction out of deterministic templates and
   const companion = page.locator(".visual-companion").first();
   await expect(companion).toContainText("Custom editorial illustration.");
   await expect(companion).toContainText("without a diagram template or text in the image");
-  await expect(companion.getByRole("button", { name: "Approve custom illustration" })).toHaveCount(1);
+  await expect(companion.getByRole("button", { name: "Approve concept · no image call" })).toHaveCount(1);
   await expect(companion.getByText(/Custom illustration unavailable:/)).toHaveCount(1);
   await expect(companion.getByText(/Nothing is running and no image request or charge has been created/)).toHaveCount(1);
   await expect(companion.getByRole("button", { name: "Recheck custom-image setup" })).toHaveCount(1);
@@ -994,21 +1025,51 @@ test("lets the author revise a custom illustration concept before approval witho
   expect(saved.idea.visualBrief).toMatchObject({ authorDirection: revisedDirection, status: "recommended" });
   expect(actions).not.toContain("create_custom_visual_illustration");
 
-  await page.getByRole("button", { name: "Approve custom illustration" }).click();
+  await page.getByRole("button", { name: "Approve concept · no image call" }).click();
   saved = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as typeof saved;
   expect(saved.idea.visualBrief).toMatchObject({ authorDirection: revisedDirection, status: "approved" });
   expect(actions).not.toContain("create_custom_visual_illustration");
 });
 
-test("keeps an article-only custom illustration visible when the author leaves direction blank", async ({ page }) => {
+test("keeps an exact-output custom illustration visible when the author leaves direction blank", async ({ page }) => {
   await createIdeaThroughWrite(page);
   await page.locator(".visual-companion > summary").first().click();
   await page.getByLabel("I want a custom illustration instead").check();
   await page.getByRole("button", { name: "Prepare custom illustration" }).click();
   const companion = page.locator(".visual-companion").first();
   await expect(companion).toContainText("Custom editorial illustration.");
-  await expect(companion).toContainText("clarifies the article’s practical tension.");
-  await expect(companion.getByRole("button", { name: "Approve custom illustration" })).toBeVisible();
+  await expect(companion).toContainText(/Concept: An article-grounded editorial scene built around/);
+  await expect(companion).not.toContainText("clarifies the article’s practical tension");
+  await expect(companion.getByText(/Approving this concept only saves your decision.*no image request/i)).toBeVisible();
+  await expect(companion.getByRole("button", { name: "Approve concept · no image call" })).toBeVisible();
+});
+
+test("keeps replacement custom-concept approval separate from paid image generation", async ({ page }) => {
+  const ideaId = await createIdeaThroughWrite(page);
+  const actions: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST" || !request.url().endsWith(`/api/ideas/${ideaId}`)) return;
+    const action = JSON.parse(request.postData() ?? "{}").action;
+    if (typeof action === "string") actions.push(action);
+  });
+  const companion = page.locator(".visual-companion").first();
+  await companion.locator(":scope > summary").click();
+  await companion.getByRole("button", { name: /Prepare (selected |suggested )?visual brief/ }).click();
+  await companion.getByRole("button", { name: "Approve visual brief" }).click();
+  await companion.getByRole("button", { name: "Render approved visual" }).click();
+  await companion.getByText("Create a new visual version").click();
+  await companion.getByRole("radio", { name: /Custom illustration/ }).check();
+  await companion.getByLabel("What should change?").fill("Show a calm handoff from pilot learning to accountable operating work.");
+  await companion.getByRole("button", { name: "Prepare custom illustration" }).click();
+
+  const candidate = companion.locator(".visual-version-candidate");
+  await expect(candidate.getByText(/Approving this replacement concept only saves your decision.*no image request and no charge/i)).toBeVisible();
+  await candidate.getByRole("button", { name: "Approve concept · no image call" }).click();
+  expect(actions).not.toContain("create_custom_visual_illustration");
+  const saved = await (await page.request.get(`/api/ideas/${ideaId}`)).json() as { idea: { visualCandidateBrief?: { status: string; customIllustration: boolean } } };
+  expect(saved.idea.visualCandidateBrief).toMatchObject({ status: "approved", customIllustration: true });
+  await expect(candidate.getByRole("button", { name: "Generate custom illustration" })).toBeVisible();
+  await expect(candidate.getByRole("button", { name: "Generate custom illustration" })).toBeDisabled();
 });
 
 test("keeps a dismissed custom illustration revision visible as saved no-render history after reload", async ({ page }) => {
@@ -1037,7 +1098,19 @@ test("keeps a dismissed custom illustration revision visible as saved no-render 
   await page.getByRole("radio", { name: /Decision fork/ }).check();
   await page.getByRole("button", { name: "Prepare new visual version" }).click();
   await expect(page.getByText(/Version 3 · recommended/)).toBeVisible();
-  await page.getByRole("button", { name: "Approve new visual version" }).click();
+  const candidate = page.locator(".visual-version-candidate");
+  const approveNewVisual = candidate.getByRole("button", { name: "Approve new visual version" });
+  const candidateSizing = await candidate.evaluate((element) => {
+    const paragraph = element.querySelector("p");
+    return {
+      paragraphFontSize: paragraph ? getComputedStyle(paragraph).fontSize : null,
+      candidateWidth: element.getBoundingClientRect().width,
+    };
+  });
+  const approveButtonWidth = await approveNewVisual.evaluate((button) => button.getBoundingClientRect().width);
+  expect(candidateSizing.paragraphFontSize).toBe("13px");
+  expect(approveButtonWidth).toBeLessThan(candidateSizing.candidateWidth / 2);
+  await approveNewVisual.click();
   await page.getByRole("button", { name: "Generate new visual version" }).click();
   await expect(page.getByText("Version 3 of 3")).toBeVisible();
 });
@@ -1148,6 +1221,26 @@ test("lets an author select a derived-short visual shape", async ({ page }) => {
   await page.getByRole("button", { name: /Prepare (selected |suggested )?derived short visual brief/ }).click();
   await expect(panel).toContainText("Rendering cost:");
   await expect(page.getByRole("button", { name: "Approve derived short visual brief" })).toBeVisible();
+});
+
+test("keeps a blank-direction derived-short custom illustration visible after reload", async ({ page }) => {
+  await createIdeaThroughWrite(page, { shape: "long_with_derived_short" });
+  await page.locator(".derived-short-visual > summary").click();
+  const panel = page.locator(".derived-short-visual");
+  await panel.getByLabel("I want a custom illustration instead").check();
+  await panel.getByRole("button", { name: "Prepare custom illustration" }).click();
+
+  await expect(panel).toContainText("Custom editorial illustration.");
+  await expect(panel).toContainText(/Concept: An article-grounded editorial scene built around/);
+  await expect(panel).not.toContainText("No visual recommended for this exact derived short post.");
+  await expect(panel.getByRole("button", { name: "Approve concept · no image call" })).toBeVisible();
+
+  await page.reload();
+  const reloadedPanel = page.locator(".derived-short-visual");
+  await reloadedPanel.locator(":scope > summary").click();
+  await expect(reloadedPanel).toContainText("Custom editorial illustration.");
+  await expect(reloadedPanel).toContainText(/Concept: An article-grounded editorial scene built around/);
+  await expect(reloadedPanel).not.toContainText("No visual recommended for this exact derived short post.");
 });
 
 test("exposes delivery channel only in Finalize and preserves article-first sequencing", async ({ page }) => {

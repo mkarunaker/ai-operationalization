@@ -1,9 +1,9 @@
-import { defaultRunBudgetUsd, estimateRouteCost, maximumRunBudgetUsd, modelEnvironmentVariable, reviewerOutputTokens, routeFor, routeForProviderTier, synthesizerOutputTokens, type LiveProviderName, type ModelTier } from "@/ai/model-routing";
+import { defaultRunBudgetUsd, estimateRouteCost, maximumRunBudgetUsd, modelEnvironmentVariable, proofreaderOutputTokens, reviewerOutputTokens, routeFor, routeForProviderTier, synthesizerOutputTokens, type LiveProviderName, type ModelTier } from "@/ai/model-routing";
 import { LIVE_BOARD_QUALITY_PROFILES, resolveLiveBoardQualityProfile, tierForLiveBoardRole, type LiveBoardQualityProfile } from "@/config/model-routing";
 import { AnthropicMessagesProvider } from "@/ai/anthropic-provider";
 import { OpenAIResponsesProvider } from "@/ai/openai-provider";
 import { ZenMuxChatCompletionsProvider } from "@/ai/zenmux-provider";
-import { assertDerivedShortRecoveryPolicy, estimateDerivedShortDraft, estimateGroundedEditorialRun, estimateInitialDrafterRecovery, estimateSingleReviewerRun, hasSavedBoardReaderContract, initialDrafterRecoveryAvailability, initialDrafterRecoveryOutcome as initialDrafterRecoveryOutcomeFor, plannedRolesForIdea, retryDerivedShortDraft, retryInitialDrafterDraft, runGroundedEditorialRun, runSingleReviewer, type GroundedRunResult } from "@/editorial/grounded-run";
+import { assertDerivedShortRecoveryPolicy, draftOutputAllowancesForIdea, estimateDerivedShortDraft, estimateGroundedEditorialRun, estimateInitialDrafterRecovery, estimateSingleReviewerRun, hasSavedBoardReaderContract, initialDrafterRecoveryAvailability, initialDrafterRecoveryOutcome as initialDrafterRecoveryOutcomeFor, plannedRolesForIdea, retryDerivedShortDraft, retryInitialDrafterDraft, runGroundedEditorialRun, runSingleReviewer, type GroundedRunResult } from "@/editorial/grounded-run";
 import type { ModelProvider, ModelRequest, ModelResponse, TokenUsage, CostEstimate } from "@/ai/provider";
 import type { AgentRole } from "@/domain/roles";
 import { assertPublishedWorkflowUnlocked, getIdea, proofreadRequestFor, runLiveProofreadForExactReview, type DraftFormat, type ReaderOutputContract } from "@/lean/service";
@@ -84,6 +84,8 @@ export function liveRunPreview(ideaId: string, requestedProfile?: unknown) {
   const qualityProfile = resolveLiveBoardQualityProfile(requestedProfile);
   const reviewerMaxOutputTokens = reviewerOutputTokens();
   const synthesizerMaxOutputTokens = synthesizerOutputTokens();
+  const draftOutputAllowances = draftOutputAllowancesForIdea(ideaId);
+  const proofreaderMaxOutputTokens = proofreaderOutputTokens();
   // A missing local index is an expected setup state after a synthetic-data
   // reset. Keep the Board setup visible and disable only the actions that
   // truly need the source; do not throw from a page-load preview.
@@ -206,12 +208,16 @@ export function liveRunPreview(ideaId: string, requestedProfile?: unknown) {
         tier: planned.tier,
         ...(["strategist", "skeptic", "editor"].includes(role) ? { maxOutputTokens: reviewerMaxOutputTokens, reasoningEffort: "low" as const } : {}),
         ...(role === "synthesizer" ? { maxOutputTokens: synthesizerMaxOutputTokens, reasoningEffort: "low" as const } : {}),
+        ...(role === "initial_drafter" ? { maxOutputTokens: draftOutputAllowances.initialDrafter, reasoningEffort: "low" as const } : {}),
+        ...(role === "final_drafter" ? { maxOutputTokens: draftOutputAllowances.finalDrafter, reasoningEffort: "low" as const } : {}),
       };
     }),
     proofreader: {
       provider: proofreaderRoute.provider,
       model: proofreaderRoute.model || "Model configuration required",
       tier: proofreaderRoute.tier,
+      maxOutputTokens: proofreaderMaxOutputTokens,
+      reasoningEffort: "low" as const,
       estimates: proofreaderEstimates,
       // A configured provider alone is not enough: live proofread is bound to
       // the immutable Board manifest and must remain deterministic until one

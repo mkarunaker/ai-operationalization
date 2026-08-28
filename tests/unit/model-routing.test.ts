@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_REVIEWER_OUTPUT_TOKENS, DEFAULT_RUN_BUDGET_USD, DEFAULT_SYNTHESIZER_OUTPUT_TOKENS, MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS, MAXIMUM_REVIEWER_OUTPUT_TOKENS, MAXIMUM_RUN_BUDGET_USD, MAXIMUM_SYNTHESIZER_OUTPUT_TOKENS, defaultRunBudgetUsd, estimateRouteCost, initialDrafterOutputTokens, maximumRunBudgetUsd, reviewerOutputTokens, routeFor, synthesizerOutputTokens } from "@/ai/model-routing";
+import { DEFAULT_FINAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, DEFAULT_PROOFREADER_OUTPUT_TOKENS, DEFAULT_REVIEWER_OUTPUT_TOKENS, DEFAULT_RUN_BUDGET_USD, DEFAULT_SYNTHESIZER_OUTPUT_TOKENS, MAXIMUM_FINAL_DRAFTER_OUTPUT_TOKENS, MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS, MAXIMUM_PROOFREADER_OUTPUT_TOKENS, MAXIMUM_REVIEWER_OUTPUT_TOKENS, MAXIMUM_RUN_BUDGET_USD, MAXIMUM_SYNTHESIZER_OUTPUT_TOKENS, defaultRunBudgetUsd, estimateRouteCost, finalDrafterOutputTokens, initialDrafterOutputTokens, maximumRunBudgetUsd, proofreaderOutputTokens, reviewerOutputTokens, routeFor, synthesizerOutputTokens } from "@/ai/model-routing";
 import { DEFAULT_LIVE_BOARD_QUALITY_PROFILE, resolveLiveBoardQualityProfile, tierForLiveBoardRole } from "@/config/model-routing";
 
 describe("model routing", () => {
@@ -84,6 +84,46 @@ describe("model routing", () => {
     } finally {
       if (previous === undefined) delete process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS;
       else process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS = previous;
+    }
+  });
+
+  it("scales the default Initial Drafter allowance for a requested long article without inflating an ordinary article", () => {
+    const previous = process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS;
+    try {
+      delete process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS;
+      expect(initialDrafterOutputTokens(1_100)).toBe(DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS);
+      expect(initialDrafterOutputTokens(5_000)).toBeGreaterThanOrEqual(8_000);
+      expect(initialDrafterOutputTokens(10_000)).toBe(MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS);
+    } finally {
+      if (previous === undefined) delete process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS;
+      else process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS = previous;
+    }
+  });
+
+  it("uses bounded server-owned allowances for the Final Drafter and proofreader", () => {
+    const previousFinal = process.env.EDITORIAL_FINAL_DRAFTER_MAX_OUTPUT_TOKENS;
+    const previousProofreader = process.env.EDITORIAL_PROOFREADER_MAX_OUTPUT_TOKENS;
+    try {
+      delete process.env.EDITORIAL_FINAL_DRAFTER_MAX_OUTPUT_TOKENS;
+      delete process.env.EDITORIAL_PROOFREADER_MAX_OUTPUT_TOKENS;
+      expect(finalDrafterOutputTokens(300)).toBe(DEFAULT_FINAL_DRAFTER_OUTPUT_TOKENS);
+      expect(finalDrafterOutputTokens(5_000)).toBeGreaterThanOrEqual(8_000);
+      expect(proofreaderOutputTokens()).toBe(DEFAULT_PROOFREADER_OUTPUT_TOKENS);
+
+      process.env.EDITORIAL_FINAL_DRAFTER_MAX_OUTPUT_TOKENS = "2400";
+      process.env.EDITORIAL_PROOFREADER_MAX_OUTPUT_TOKENS = "2200";
+      expect(finalDrafterOutputTokens(5_000)).toBe(2_400);
+      expect(proofreaderOutputTokens()).toBe(2_200);
+
+      process.env.EDITORIAL_FINAL_DRAFTER_MAX_OUTPUT_TOKENS = String(MAXIMUM_FINAL_DRAFTER_OUTPUT_TOKENS + 1);
+      process.env.EDITORIAL_PROOFREADER_MAX_OUTPUT_TOKENS = String(MAXIMUM_PROOFREADER_OUTPUT_TOKENS + 1);
+      expect(() => finalDrafterOutputTokens()).toThrow(/Final Drafter output allowance/i);
+      expect(() => proofreaderOutputTokens()).toThrow(/Proofreader output allowance/i);
+    } finally {
+      if (previousFinal === undefined) delete process.env.EDITORIAL_FINAL_DRAFTER_MAX_OUTPUT_TOKENS;
+      else process.env.EDITORIAL_FINAL_DRAFTER_MAX_OUTPUT_TOKENS = previousFinal;
+      if (previousProofreader === undefined) delete process.env.EDITORIAL_PROOFREADER_MAX_OUTPUT_TOKENS;
+      else process.env.EDITORIAL_PROOFREADER_MAX_OUTPUT_TOKENS = previousProofreader;
     }
   });
 

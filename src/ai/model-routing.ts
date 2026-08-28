@@ -21,7 +21,7 @@ export const MAXIMUM_RUN_BUDGET_USD = 0.75;
 // retaining a hard server-side ceiling that cost reservation can enforce.
 export const DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS = 2_400;
 export const MINIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS = 2_000;
-export const MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS = 5_000;
+export const MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS = 9_000;
 // Responses API reasoning tokens share the output allowance with visible
 // structured output. Reserve enough room for low-effort reasoning plus the
 // validated reviewer JSON while retaining a bounded server-owned ceiling.
@@ -31,6 +31,22 @@ export const MAXIMUM_REVIEWER_OUTPUT_TOKENS = 3_000;
 export const DEFAULT_SYNTHESIZER_OUTPUT_TOKENS = 1_600;
 export const MINIMUM_SYNTHESIZER_OUTPUT_TOKENS = 1_600;
 export const MAXIMUM_SYNTHESIZER_OUTPUT_TOKENS = 3_000;
+export const DEFAULT_FINAL_DRAFTER_OUTPUT_TOKENS = 1_600;
+export const MINIMUM_FINAL_DRAFTER_OUTPUT_TOKENS = 1_200;
+export const MAXIMUM_FINAL_DRAFTER_OUTPUT_TOKENS = 9_000;
+export const DEFAULT_PROOFREADER_OUTPUT_TOKENS = 1_600;
+export const MINIMUM_PROOFREADER_OUTPUT_TOKENS = 1_200;
+export const MAXIMUM_PROOFREADER_OUTPUT_TOKENS = 3_000;
+
+function rangeAwareDraftAllowance(defaultTokens: number, maximumTokens: number, targetMaximumWords?: number) {
+  if (!targetMaximumWords || !Number.isFinite(targetMaximumWords) || targetMaximumWords <= 0) return defaultTokens;
+  // Publication words are not provider tokens. Reserve a conservative 1.5
+  // tokens per requested word plus a bounded 700-token reasoning/JSON margin,
+  // then round upward so the displayed reservation and dispatched request use
+  // one stable server-owned value.
+  const projected = Math.ceil((targetMaximumWords * 1.5 + 700) / 100) * 100;
+  return Math.min(maximumTokens, Math.max(defaultTokens, projected));
+}
 
 const openaiPricing = (modelClass: string, input: string, cached: string, output: string) =>
   `OpenAI ${modelClass} standard API pricing assumption: USD ${input} / MTok input, USD ${cached} / MTok cached input, and USD ${output} / MTok output. Reasoning tokens are included in reported output tokens, not charged a second time. Verify against OpenAI billing.`;
@@ -191,12 +207,34 @@ export function maximumRunBudgetUsd(): number {
  * estimate or provider request, and every Board snapshot records the value
  * actually used so a scoped retry cannot silently change it.
  */
-export function initialDrafterOutputTokens(): number {
+export function initialDrafterOutputTokens(targetMaximumWords?: number): number {
   const raw = process.env.EDITORIAL_INITIAL_DRAFTER_MAX_OUTPUT_TOKENS;
-  if (raw === undefined || raw.trim() === "") return DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS;
+  if (raw === undefined || raw.trim() === "")
+    return rangeAwareDraftAllowance(DEFAULT_INITIAL_DRAFTER_OUTPUT_TOKENS, MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS, targetMaximumWords);
   const value = Number(raw);
   if (!Number.isInteger(value) || value < MINIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS || value > MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS)
     throw new Error(`Initial Drafter output allowance must be an integer between ${MINIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS} and ${MAXIMUM_INITIAL_DRAFTER_OUTPUT_TOKENS}.`);
+  return value;
+}
+
+/** Resolve the bounded Final Drafter allowance for the saved short-post range. */
+export function finalDrafterOutputTokens(targetMaximumWords?: number): number {
+  const raw = process.env.EDITORIAL_FINAL_DRAFTER_MAX_OUTPUT_TOKENS;
+  if (raw === undefined || raw.trim() === "")
+    return rangeAwareDraftAllowance(DEFAULT_FINAL_DRAFTER_OUTPUT_TOKENS, MAXIMUM_FINAL_DRAFTER_OUTPUT_TOKENS, targetMaximumWords);
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < MINIMUM_FINAL_DRAFTER_OUTPUT_TOKENS || value > MAXIMUM_FINAL_DRAFTER_OUTPUT_TOKENS)
+    throw new Error(`Final Drafter output allowance must be an integer between ${MINIMUM_FINAL_DRAFTER_OUTPUT_TOKENS} and ${MAXIMUM_FINAL_DRAFTER_OUTPUT_TOKENS}.`);
+  return value;
+}
+
+/** Resolve the bounded low-reasoning proofreader allowance. */
+export function proofreaderOutputTokens(): number {
+  const raw = process.env.EDITORIAL_PROOFREADER_MAX_OUTPUT_TOKENS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_PROOFREADER_OUTPUT_TOKENS;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < MINIMUM_PROOFREADER_OUTPUT_TOKENS || value > MAXIMUM_PROOFREADER_OUTPUT_TOKENS)
+    throw new Error(`Proofreader output allowance must be an integer between ${MINIMUM_PROOFREADER_OUTPUT_TOKENS} and ${MAXIMUM_PROOFREADER_OUTPUT_TOKENS}.`);
   return value;
 }
 
